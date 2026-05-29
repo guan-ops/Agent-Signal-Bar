@@ -27,7 +27,7 @@ Agent Signal Bar is a local-first macOS menu bar app that uses three red, yellow
 ## Menu Bar Panel
 
 <p align="center">
-  <img src="docs/assets/menu-bar-panel.png" alt="Agent Signal Bar menu bar panel" width="560">
+  <img src="docs/assets/menu-bar-panel-en.png" alt="Agent Signal Bar menu bar panel" width="560">
 </p>
 
 Click the menu bar signal light to open a compact panel with the current status, running agents, the latest event, and quick actions for opening agents, clearing alerts, pausing monitoring, opening settings, and quitting.
