@@ -35,10 +35,10 @@ Click the menu bar signal light to open a compact panel with the current status,
 ## Settings Window
 
 <p align="center">
-  <img src="docs/assets/settings-activity-en.png" alt="Agent Signal Bar settings window Activity page" width="720">
+  <img src="docs/assets/settings-glass-en.png" alt="Agent Signal Bar settings window Activity page with the standard glass effect" width="720">
 </p>
 
-The settings window includes Activity, Style, Effects, Connect, General, and About pages for monitoring agents, tuning the status light, customizing effects, managing integrations, and checking app information.
+The settings window includes Activity, Style, Effects, Connect, General, and About pages for monitoring agents, tuning the status light, customizing effects, managing integrations, and checking app information. The screenshot above shows the Activity page with the standard glass effect enabled.
 
 ## Features
 
