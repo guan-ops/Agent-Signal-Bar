@@ -12,7 +12,9 @@ final class StatusBarController: NSObject, NSWindowDelegate {
     private var recoveryWindow: NSWindow?
     private var didPresentRecoveryWindowForCurrentDisable = false
     private var lastRenderKey: StatusRenderKey?
+    private var popoverOpenedAt = Date.distantPast
     private var cancellables = Set<AnyCancellable>()
+    private let settingsOpenClickDebounce: TimeInterval = 0.25
 
     private struct StatusRenderKey: Equatable {
         let length: CGFloat
@@ -300,16 +302,19 @@ final class StatusBarController: NSObject, NSWindowDelegate {
     private func showPopover() {
         guard let button = statusItem?.button else { return }
 
-        NSApp.activate(ignoringOtherApps: true)
-
         let popover = NSPopover()
         popover.behavior = .transient
         popover.animates = false
         popover.contentSize = NSSize(width: MenuBarPanelView.panelWidth, height: MenuBarPanelView.panelHeight)
+        popoverOpenedAt = Date()
         popover.contentViewController = NSHostingController(
             rootView: MenuBarPanelView(model: model) { [weak self] in
-                self?.closePopover()
-                self?.showDebugWindow()
+                guard let self else { return }
+                guard Date().timeIntervalSince(self.popoverOpenedAt) >= self.settingsOpenClickDebounce else {
+                    return
+                }
+                self.closePopover()
+                self.showDebugWindow()
             }
         )
         popover.contentViewController?.view.appearance = model.appTheme.nsAppearance
@@ -326,14 +331,13 @@ final class StatusBarController: NSObject, NSWindowDelegate {
             window.appearance = self.model.appTheme.nsAppearance
             window.backgroundColor = .clear
             window.isOpaque = false
-            window.makeKey()
-            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
     private func closePopover() {
         popover?.performClose(nil)
         popover = nil
+        popoverOpenedAt = .distantPast
     }
 
     func showDebugWindow() {
@@ -342,9 +346,9 @@ final class StatusBarController: NSObject, NSWindowDelegate {
 
     private func showRecoveryWindow() {
         if let recoveryWindow {
-            recoveryWindow.makeKeyAndOrderFront(nil)
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
+            recoveryWindow.makeKeyAndOrderFront(nil)
             return
         }
 
@@ -376,7 +380,7 @@ final class StatusBarController: NSObject, NSWindowDelegate {
         }
 
         sender.orderOut(nil)
-        NSApp.setActivationPolicy(.regular)
+        NSApp.setActivationPolicy(.accessory)
         return false
     }
 

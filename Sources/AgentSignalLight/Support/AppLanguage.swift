@@ -146,6 +146,15 @@ extension MenuBarStatusModel {
         }
     }
 
+    func displayName(for effect: SettingsGlassEffect) -> String {
+        switch effect {
+        case .standard:
+            return text("标准", "Standard")
+        case .enhanced:
+            return text("增强", "Enhanced")
+        }
+    }
+
     func displayName(for layout: TrafficSignalLayout) -> String {
         switch layout {
         case .horizontal:
@@ -456,7 +465,7 @@ private enum AppLocalization {
         "Activity": localized(zhHant: "執行", ja: "実行", ko: "활동", es: "Actividad", fr: "Activite", de: "Aktivitaet", pt: "Atividade"),
         "Agent Activity": localized(zhHant: "Agent 執行詳情", ja: "Agent の実行状況", ko: "Agent 활동 세부 정보", es: "Actividad del Agent", fr: "Activite de l'agent", de: "Agent Aktivitaet", pt: "Atividade do Agent"),
         "Status": localized(zhHant: "狀態", ja: "状態", ko: "상태", es: "Estado", fr: "Etat", de: "Status", pt: "Status"),
-        "Look": localized(zhHant: "外觀", ja: "外観", ko: "모양", es: "Aspecto", fr: "Apparence", de: "Darstellung", pt: "Aparencia"),
+        "Style": localized(zhHant: "樣式", ja: "スタイル", ko: "스타일", es: "Estilo", fr: "Style", de: "Stil", pt: "Estilo"),
         "Signals": localized(zhHant: "燈效", ja: "信号", ko: "신호", es: "Senales", fr: "Signaux", de: "Signale", pt: "Sinais"),
         "Effects": localized(zhHant: "燈效", ja: "エフェクト", ko: "등 효과", es: "Efectos", fr: "Effets", de: "Effekte", pt: "Efeitos"),
         "Connect": localized(zhHant: "連接", ja: "接続", ko: "연결", es: "Conectar", fr: "Connexion", de: "Verbinden", pt: "Conectar"),
@@ -502,10 +511,12 @@ private enum AppLocalization {
         "No files were written. Click Install to apply changes.": localized(zhHant: "尚未寫入檔案，點擊安裝連接套用更改。", ja: "ファイルは未変更です。インストールで変更を適用します。", ko: "파일은 아직 쓰지 않았습니다. 설치를 눌러 적용하세요.", es: "No se escribieron archivos. Haz clic en Instalar para aplicar.", fr: "Aucun fichier ecrit. Cliquez Installer pour appliquer.", de: "Keine Dateien geschrieben. Mit Installieren anwenden.", pt: "Nenhum arquivo foi escrito. Clique em Instalar para aplicar."),
         "Connections are ready.": localized(zhHant: "連接已準備好。", ja: "接続は準備できています。", ko: "연결이 준비되었습니다.", es: "Las conexiones estan listas.", fr: "Les connexions sont pretes.", de: "Verbindungen sind bereit.", pt: "Conexoes prontas."),
         "Hooks are up to date.": localized(zhHant: "Hook 已是最新。", ja: "Hooks は最新です。", ko: "Hook이 최신 상태입니다.", es: "Los hooks estan actualizados.", fr: "Les hooks sont a jour.", de: "Hooks sind aktuell.", pt: "Hooks atualizados."),
-        "Appearance": localized(zhHant: "外觀", ja: "外観", ko: "모양", es: "Aspecto", fr: "Apparence", de: "Darstellung", pt: "Aparencia"),
         "Language": localized(zhHant: "語言", ja: "言語", ko: "언어", es: "Idioma", fr: "Langue", de: "Sprache", pt: "Idioma"),
         "Theme": localized(zhHant: "主題", ja: "テーマ", ko: "테마", es: "Tema", fr: "Theme", de: "Theme", pt: "Tema"),
+        "Settings glass": localized(zhHant: "設定毛玻璃", ja: "設定のガラス", ko: "설정 유리 효과", es: "Cristal de ajustes", fr: "Verre des reglages", de: "Einstellungen Glas", pt: "Vidro dos ajustes"),
+        "Glass style": localized(zhHant: "毛玻璃效果", ja: "ガラス効果", ko: "유리 효과", es: "Estilo de cristal", fr: "Style verre", de: "Glasstil", pt: "Estilo de vidro"),
         "Follow System": localized(zhHant: "跟隨系統", ja: "システム連動", ko: "시스템 따르기", es: "Seguir sistema", fr: "Suivre le systeme", de: "System folgen", pt: "Seguir sistema"),
+        "Enhanced": localized(zhHant: "增強", ja: "強調", ko: "강화", es: "Mejorado", fr: "Renforce", de: "Verstaerkt", pt: "Reforcado"),
         "Light": localized(zhHant: "白色", ja: "ライト", ko: "밝게", es: "Claro", fr: "Clair", de: "Hell", pt: "Claro"),
         "Dark": localized(zhHant: "黑色", ja: "ダーク", ko: "어둡게", es: "Oscuro", fr: "Sombre", de: "Dunkel", pt: "Escuro"),
         "Status bar style": localized(zhHant: "狀態列風格", ja: "表示スタイル", ko: "상태 막대 스타일", es: "Estilo de barra", fr: "Style de barre", de: "Statusleistenstil", pt: "Estilo da barra"),

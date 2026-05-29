@@ -32,6 +32,11 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
     }
 }
 
+enum SettingsGlassEffect: String, CaseIterable, Hashable {
+    case standard
+    case enhanced
+}
+
 @MainActor
 final class MenuBarStatusModel: ObservableObject {
     @Published private(set) var snapshot: SignalSnapshot
@@ -52,6 +57,8 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var isCodexDesktopMonitoringEnabled: Bool
     @Published var appLanguage: AppLanguage
     @Published var appTheme: AppTheme
+    @Published var isSettingsGlassEnabled: Bool
+    @Published var settingsGlassEffect: SettingsGlassEffect
     @Published var isMonitoringPaused = false
     @Published private(set) var desktopAppSessions: [SessionStatus] = []
     @Published private(set) var isLaunchAtLoginEnabled = false
@@ -145,6 +152,10 @@ final class MenuBarStatusModel: ObservableObject {
         let storedCompletedSignalEffect = UserDefaults.standard.string(forKey: "completedSignalEffect")
         let storedLanguage = UserDefaults.standard.string(forKey: "appLanguage")
         let storedTheme = UserDefaults.standard.string(forKey: "appTheme")
+        let storedSettingsGlassEnabled = UserDefaults.standard.object(forKey: "isSettingsGlassEnabled") as? Bool
+        let storedSettingsGlassEffect =
+            UserDefaults.standard.string(forKey: "settingsGlassEffect")
+            ?? UserDefaults.standard.string(forKey: "settingsMenuGlassEffect")
         let storedSignalLightAgentScope = UserDefaults.standard.string(forKey: "signalLightAgentScope")
         let shouldApplyEffectDefaults = UserDefaults.standard.integer(forKey: "signalEffectDefaultsVersion") < Self.effectDefaultsVersion
         displayLayout = storedLayout.flatMap(TrafficSignalLayout.init(rawValue:)) ?? Self.defaultDisplayLayout
@@ -172,6 +183,9 @@ final class MenuBarStatusModel: ObservableObject {
         }
         appLanguage = storedLanguage.flatMap(AppLanguage.init(rawValue:)) ?? .system
         appTheme = storedTheme.flatMap(AppTheme.init(rawValue:)) ?? .system
+        isSettingsGlassEnabled = storedSettingsGlassEnabled ?? true
+        settingsGlassEffect =
+            storedSettingsGlassEffect.flatMap(SettingsGlassEffect.init(rawValue:)) ?? .enhanced
         macOSHorizontalUsesTrafficLightSize =
             UserDefaults.standard.object(forKey: "macOSHorizontalUsesTrafficLightSize") as? Bool
             ?? UserDefaults.standard.object(forKey: "macOSUsesTrafficLightSize") as? Bool
@@ -382,6 +396,16 @@ final class MenuBarStatusModel: ObservableObject {
     func setAppTheme(_ theme: AppTheme) {
         appTheme = theme
         UserDefaults.standard.set(theme.rawValue, forKey: "appTheme")
+    }
+
+    func setSettingsGlassEnabled(_ enabled: Bool) {
+        isSettingsGlassEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isSettingsGlassEnabled")
+    }
+
+    func setSettingsGlassEffect(_ effect: SettingsGlassEffect) {
+        settingsGlassEffect = effect
+        UserDefaults.standard.set(effect.rawValue, forKey: "settingsGlassEffect")
     }
 
     var statusBarTooltip: String {

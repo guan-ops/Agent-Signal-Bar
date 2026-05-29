@@ -33,7 +33,7 @@ Click the menu bar signal light to open a compact panel with the current status,
 - macOS menu bar signal light with horizontal and vertical layouts.
 - Two visual styles: classic signal board and minimal dots.
 - Menu bar panel with current status, running agents, latest event, quick actions, and quit.
-- Settings window with Run, Appearance, Effects, Connections, General, and About pages.
+- Settings window with Activity, Style, Effects, Connections, General, and About pages.
 - Codex Desktop activity monitoring, Codex hooks, Claude Code hooks, and generic JSON event input.
 - Multi-session aggregation so permission, failure, and blocked states are not overwritten by normal working states.
 - Local CLI for scripts, automation, and custom agents.
@@ -251,6 +251,7 @@ Tests/                     Swift tests
 - [Local script setup](docs/LOCAL_SCRIPT_SETUP.md)
 - [GitHub release management](docs/GITHUB_RELEASES.md)
 - [Release checklist](docs/RELEASE_CHECKLIST.md)
+- [Changelog](CHANGELOG.md)
 
 ## Developer
 

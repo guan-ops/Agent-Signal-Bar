@@ -16,26 +16,30 @@ struct DebugWindowView: View {
     private let activityRecentEventLimit = 15
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-                .padding(.horizontal, 22)
-                .padding(.top, 20)
-                .padding(.bottom, 16)
-                .fixedSize(horizontal: false, vertical: true)
-                .layoutPriority(2)
+        ZStack {
+            settingsWindowBackground
+                .ignoresSafeArea()
 
-            Divider()
+            VStack(spacing: 0) {
+                header
+                    .padding(.horizontal, 22)
+                    .padding(.top, 20)
+                    .padding(.bottom, 16)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(2)
 
-            settingsMenu
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(.bar)
-                .fixedSize(horizontal: false, vertical: true)
-                .layoutPriority(2)
+                Divider()
 
-            Divider()
+                settingsMenu
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(2)
 
-            settingsContentArea
+                Divider()
+
+                settingsContentArea
+            }
         }
         .frame(width: 768, height: 900)
         .preferredColorScheme(model.appTheme.colorScheme)
@@ -67,8 +71,11 @@ struct DebugWindowView: View {
                     .contentShape(Rectangle())
                     .background {
                         if selectedSettingsTab == tab {
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(Color.accentColor.opacity(0.14))
+                            glassControlBackground(cornerRadius: 7)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(selectedMenuItemTint)
+                                }
                         }
                     }
                 }
@@ -123,6 +130,7 @@ struct DebugWindowView: View {
                 .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .topLeading)
             }
             .scrollIndicators(.hidden)
+            .scrollContentBackground(.hidden)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -153,7 +161,7 @@ struct DebugWindowView: View {
         case .activity:
             return model.text("运行", "Activity")
         case .appearance:
-            return model.text("外观", "Look")
+            return model.text("样式", "Style")
         case .signals:
             return model.text("灯效", "Effects")
         case .connections:
@@ -345,6 +353,21 @@ struct DebugWindowView: View {
                     themeMenu
                 }
                 .zIndex(expandedSettingsDropdown == .theme ? 1000 : 0)
+
+                Toggle(model.text("设置毛玻璃", "Settings glass"), isOn: settingsGlassEnabledBinding)
+                    .font(settingsRowTitleFont)
+                    .toggleStyle(.switch)
+
+                if model.isSettingsGlassEnabled {
+                    settingRow(model.text("毛玻璃效果", "Glass style")) {
+                        compactSegmentedControl(
+                            options: SettingsGlassEffect.allCases,
+                            selection: settingsGlassEffectBinding
+                        ) { effect in
+                            model.displayName(for: effect)
+                        }
+                    }
+                }
 
                 Toggle(model.text("开机自启动", "Start at login"), isOn: launchAtLoginBinding)
                     .font(settingsRowTitleFont)
@@ -712,7 +735,7 @@ struct DebugWindowView: View {
     }
 
     private var appearanceSettings: some View {
-        settingsSection(model.text("外观", "Appearance")) {
+        settingsSection(model.text("样式", "Style")) {
             settingRow(model.text("状态栏风格", "Status bar style")) {
                 compactSegmentedControl(
                     options: TrafficSignalStyle.allCases,
@@ -1104,8 +1127,7 @@ struct DebugWindowView: View {
         .buttonStyle(.plain)
         .frame(width: width, height: dropdownControlHeight, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(solidControlFill)
+            glassControlBackground(cornerRadius: 7)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -1158,8 +1180,7 @@ struct DebugWindowView: View {
         .padding(.horizontal, 10)
         .frame(width: width, height: dropdownControlHeight)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(solidControlFill)
+            glassControlBackground(cornerRadius: 7)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -1178,8 +1199,7 @@ struct DebugWindowView: View {
         .padding(.vertical, 3)
         .frame(width: width)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(solidDropdownFill)
+            glassDropdownBackground(cornerRadius: 8)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -1281,8 +1301,7 @@ struct DebugWindowView: View {
         .padding(.horizontal, 10)
         .frame(width: width ?? settingsActionButtonWidth, height: dropdownControlHeight)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(solidControlFill)
+            glassControlBackground(cornerRadius: 7)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -1323,14 +1342,69 @@ struct DebugWindowView: View {
         .padding(2)
         .frame(width: effectSegmentWidth, height: dropdownControlHeight)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(solidControlFill)
+            glassControlBackground(cornerRadius: 7)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .stroke(solidControlStroke, lineWidth: 0.5)
         )
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    private func glassControlBackground(cornerRadius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(model.isSettingsGlassEnabled ? glassControlTint : solidControlFill)
+    }
+
+    private func glassDropdownBackground(cornerRadius: CGFloat) -> some View {
+        ZStack {
+            if model.isSettingsGlassEnabled {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(glassDropdownTint)
+            } else {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(solidDropdownFill)
+            }
+        }
+    }
+
+    private var settingsWindowBackground: some View {
+        ZStack {
+            if model.isSettingsGlassEnabled {
+                SettingsGlassBackdropView(effect: model.settingsGlassEffect, colorScheme: colorScheme)
+                Rectangle()
+                    .fill(glassWindowTint)
+            } else {
+                Color(nsColor: NSColor.windowBackgroundColor)
+            }
+        }
+    }
+
+    private var glassControlTint: Color {
+        if colorScheme == .dark {
+            return Color.white.opacity(model.settingsGlassEffect == .enhanced ? 0.055 : 0.075)
+        }
+        return Color.white.opacity(model.settingsGlassEffect == .enhanced ? 0.18 : 0.30)
+    }
+
+    private var glassDropdownTint: Color {
+        if colorScheme == .dark {
+            return Color.white.opacity(0.055)
+        }
+        return Color.white.opacity(0.16)
+    }
+
+    private var glassWindowTint: Color {
+        if colorScheme == .dark {
+            return Color.black.opacity(model.settingsGlassEffect == .enhanced ? 0.08 : 0.18)
+        }
+        return Color.white.opacity(model.settingsGlassEffect == .enhanced ? 0.05 : 0.18)
+    }
+
+    private var selectedMenuItemTint: Color {
+        Color.accentColor.opacity(colorScheme == .dark ? 0.24 : 0.16)
     }
 
     private var solidControlFill: Color {
@@ -1352,23 +1426,27 @@ struct DebugWindowView: View {
     }
 
     private var settingsPickerWidth: CGFloat {
-        usesCompactLatinLayout ? 136 : 122
+        settingsControlWidth
     }
 
     private var settingsActionButtonWidth: CGFloat {
-        usesCompactLatinLayout ? 148 : 142
+        settingsControlWidth
     }
 
     private var diagnosticActionButtonWidth: CGFloat {
-        usesCompactLatinLayout ? 126 : 118
+        settingsControlWidth
     }
 
     private var effectMenuWidth: CGFloat {
-        usesCompactLatinLayout ? 162 : 150
+        settingsControlWidth
     }
 
     private var effectSegmentWidth: CGFloat {
-        effectMenuWidth
+        settingsControlWidth
+    }
+
+    private var settingsControlWidth: CGFloat {
+        usesCompactLatinLayout ? 162 : 150
     }
 
     private var signalTestButtonWidth: CGFloat {
@@ -1769,6 +1847,20 @@ struct DebugWindowView: View {
         )
     }
 
+    private var settingsGlassEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { model.isSettingsGlassEnabled },
+            set: { model.setSettingsGlassEnabled($0) }
+        )
+    }
+
+    private var settingsGlassEffectBinding: Binding<SettingsGlassEffect> {
+        Binding(
+            get: { model.settingsGlassEffect },
+            set: { model.setSettingsGlassEffect($0) }
+        )
+    }
+
     private var statusBarStyleBinding: Binding<TrafficSignalStyle> {
         Binding(
             get: { model.statusBarStyle },
@@ -1837,6 +1929,38 @@ struct DebugWindowView: View {
             get: { model.trafficLightVerticalUsesMacOSSize ? .large : .standard },
             set: { model.setTrafficLightVerticalUsesMacOSSize($0 == .large) }
         )
+    }
+}
+
+private struct SettingsGlassBackdropView: NSViewRepresentable {
+    let effect: SettingsGlassEffect
+    let colorScheme: ColorScheme
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        configure(view)
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        configure(view)
+    }
+
+    private func configure(_ view: NSVisualEffectView) {
+        view.material = material
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.isEmphasized = true
+        view.appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
+    }
+
+    private var material: NSVisualEffectView.Material {
+        switch effect {
+        case .standard:
+            return .popover
+        case .enhanced:
+            return .hudWindow
+        }
     }
 }
 

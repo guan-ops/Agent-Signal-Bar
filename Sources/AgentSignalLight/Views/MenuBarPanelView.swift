@@ -639,15 +639,16 @@ private struct PanelTrafficSignalView: View {
 private struct PopoverBackdropView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
-        view.material = .popover
-        view.blendingMode = .behindWindow
-        view.state = .active
-        view.isEmphasized = true
+        configure(view)
         return view
     }
 
     func updateNSView(_ view: NSVisualEffectView, context: Context) {
-        view.material = .popover
+        configure(view)
+    }
+
+    private func configure(_ view: NSVisualEffectView) {
+        view.material = .hudWindow
         view.blendingMode = .behindWindow
         view.state = .active
         view.isEmphasized = true
