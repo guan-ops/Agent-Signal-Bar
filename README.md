@@ -24,6 +24,19 @@
 
 Agent Signal Bar is a local-first macOS menu bar app that uses three red, yellow, and green signal lights to show the current state of local AI agents. It helps you see whether Codex, Claude Code, or a local script is idle, working, done, waiting for approval, or blocked without switching back to a terminal or editor.
 
+## Download And Open
+
+For normal use, download the app from [GitHub Releases](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest), not from the green `Code` button. The `Code > Download ZIP` file is source code and does not contain a ready-to-open app installer.
+
+1. Open the [latest release](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest).
+2. Download `AgentSignalLight-local.dmg`.
+3. Open the DMG and drag `AgentSignalLight.app` to `Applications`.
+4. Open Agent Signal Bar from `Applications`.
+
+If macOS blocks the first launch because the build is not notarized yet, right-click the app and choose `Open`, or use `System Settings > Privacy & Security > Open Anyway`.
+
+Developers can also download the source code and run `./script/build_and_run.sh`.
+
 ## Menu Bar Panel
 
 <p align="center">

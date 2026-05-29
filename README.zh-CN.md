@@ -24,6 +24,19 @@
 
 Agent Signal Bar 是一个本地优先的 macOS 状态栏应用，用红、黄、绿三颗信号灯显示本机 AI Agent 的运行状态。它适合放在菜单栏常驻使用，让你不用切回终端或编辑器，也能快速判断 Codex、Claude Code 或本地脚本现在是否空闲、执行中、完成、需要授权或已经阻塞。
 
+## 下载和打开
+
+普通用户请从 [GitHub Releases](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest) 下载 App，不要点绿色的 `Code` 按钮。`Code > Download ZIP` 下载的是源码包，里面不会直接出现可双击打开的 App 安装包。
+
+1. 打开 [最新 Release](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest)。
+2. 下载 `AgentSignalLight-local.dmg`。
+3. 打开 DMG，把 `AgentSignalLight.app` 拖到 `Applications`。
+4. 从 `Applications` 打开 Agent Signal Bar。
+
+如果 macOS 首次打开时提示无法验证开发者，这是因为当前包还没有公证。可以右键 App 选择 `打开`，或到 `系统设置 > 隐私与安全性 > 仍要打开`。
+
+开发者也可以下载源码后运行 `./script/build_and_run.sh`。
+
 ## 状态栏小菜单
 
 <p align="center">
