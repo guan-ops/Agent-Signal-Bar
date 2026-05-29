@@ -341,11 +341,9 @@ private extension SignalStateStore {
         var removedNonCompletedSession = false
 
         document.sessions = previousSessions.filter { _, record in
-            let ttlSeconds = record.signal.displayState == .completed
-                ? completedTTLSeconds
-                : sessionTTLSeconds
+            let ttlSeconds = runtimeTTLSeconds(for: record.signal)
             let shouldKeep = now.timeIntervalSince(record.updatedAt) <= ttlSeconds
-            if !shouldKeep && record.signal.displayState != .completed {
+            if !shouldKeep && shouldExpiredSessionMarkStateStale(record.signal) {
                 removedNonCompletedSession = true
             }
             return shouldKeep
@@ -355,6 +353,24 @@ private extension SignalStateStore {
             hadSessionsBeforePrune: !previousSessions.isEmpty,
             removedNonCompletedSession: removedNonCompletedSession
         )
+    }
+
+    func runtimeTTLSeconds(for signal: AgentSignal) -> Double {
+        switch signal {
+        case .done, .toolDone, .subagentStop:
+            return completedTTLSeconds
+        default:
+            return sessionTTLSeconds
+        }
+    }
+
+    func shouldExpiredSessionMarkStateStale(_ signal: AgentSignal) -> Bool {
+        switch signal {
+        case .done, .toolDone, .subagentStop, .idle, .sessionStart, .sessionEnd, .turnEnd:
+            return false
+        default:
+            return signal.displayState != .completed
+        }
     }
 
     func readSnapshotLocked(persistingRuntimeChanges: Bool) throws -> SignalSnapshot {

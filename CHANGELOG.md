@@ -1,8 +1,32 @@
 # Changelog
 
-[English](#101---2026-05-30) | [简体中文](#101---2026-05-30-简体中文)
+[English](#103---2026-05-30) | [简体中文](#103---2026-05-30-简体中文)
 
-## 1.0.1 - 2026-05-30 简体中文
+## 1.0.3 - 2026-05-30
+
+### Fixed
+
+- Fixed fresh installs and first launch showing stale `Step Done` / `步骤完成` from previous Codex Desktop logs.
+- Codex Desktop monitoring now starts from the current file position instead of replaying old session history.
+- Step-complete runtime signals now expire back to idle promptly instead of lingering as an active session.
+
+### Changed
+
+- Refreshed README screenshots for solid and standard glass settings-window comparisons.
+
+## 1.0.3 - 2026-05-30 简体中文
+
+### 修复
+
+- 修复新安装或首次启动时，会把旧 Codex Desktop 日志里的 `步骤完成` 显示成当前状态的问题。
+- Codex Desktop 监控现在从当前日志位置开始读取，不再回放旧会话历史。
+- `步骤完成` 这类过渡状态会更快回到空闲，不会长时间停留为运行中会话。
+
+### 改进
+
+- 更新 README 中普通背景和标准毛玻璃设置窗口的对比截图。
+
+## 1.0.1 - 2026-05-30
 
 ### Added
 
@@ -21,7 +45,7 @@
 - Fixed an intermittent issue where clicking the menu bar signal light could also open the settings window.
 - Fixed settings-window tab-bar color mismatch against the rest of the window.
 
-## 1.0.1 - 2026-05-30
+## 1.0.1 - 2026-05-30 简体中文
 
 ### 新增
 

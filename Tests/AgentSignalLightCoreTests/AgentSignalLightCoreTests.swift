@@ -726,6 +726,28 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssert((storedDocument.updatedAt ?? .distantPast) > oldDate)
     }
 
+    func testToolDoneSessionExpiresBackToIdle() throws {
+        let fixture = try makeTemporaryStore(completedTTLSeconds: 0.01)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let oldDate = Date(timeIntervalSince1970: 100)
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .toolDone,
+                updatedAt: oldDate,
+                sessions: ["worker": SessionRecord(signal: .toolDone, updatedAt: oldDate)]
+            ),
+            in: fixture.store
+        )
+        let snapshot = fixture.store.readSnapshot()
+        let storedDocument = try storedDocument(in: fixture.store)
+
+        XCTAssert(snapshot.aggregate == .idle)
+        XCTAssert(snapshot.sessions.isEmpty)
+        XCTAssert(storedDocument.aggregate == .idle)
+        XCTAssert(storedDocument.sessions.isEmpty)
+    }
+
     private func makeTemporaryStore(
         sessionTTLSeconds: Double = 86_400,
         completedTTLSeconds: Double = 8,

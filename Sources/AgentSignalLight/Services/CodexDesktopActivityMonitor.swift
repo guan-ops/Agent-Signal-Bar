@@ -16,9 +16,11 @@ final class CodexDesktopActivityMonitor {
     private let completedLookbackSeconds: TimeInterval
     private let maxInitialTailBytes: UInt64
     private let fullScanInterval: TimeInterval
+    private let replaysInitialHistory: Bool
     private var offsetsByPath: [String: UInt64] = [:]
     private var cachedRecentFiles: [SessionFile] = []
     private var lastFullScanAt: Date?
+    private var hasPrimedExistingFiles = false
 
     init(
         sessionsRootURL: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -28,7 +30,8 @@ final class CodexDesktopActivityMonitor {
         initialLookbackSeconds: TimeInterval = 30 * 60,
         completedLookbackSeconds: TimeInterval = 15,
         maxInitialTailBytes: UInt64 = 512 * 1024,
-        fullScanInterval: TimeInterval = 6
+        fullScanInterval: TimeInterval = 6,
+        replaysInitialHistory: Bool = false
     ) {
         self.sessionsRootURL = sessionsRootURL
         self.fileManager = fileManager
@@ -37,16 +40,26 @@ final class CodexDesktopActivityMonitor {
         self.completedLookbackSeconds = completedLookbackSeconds
         self.maxInitialTailBytes = maxInitialTailBytes
         self.fullScanInterval = fullScanInterval
+        self.replaysInitialHistory = replaysInitialHistory
     }
 
     func reset() {
         offsetsByPath.removeAll()
         cachedRecentFiles.removeAll()
         lastFullScanAt = nil
+        hasPrimedExistingFiles = false
     }
 
     func poll(now: Date = Date()) -> CodexDesktopActivity? {
         let files = recentSessionFiles(now: now)
+        if shouldPrimeExistingFiles {
+            for file in files {
+                offsetsByPath[file.path] = file.size
+            }
+            hasPrimedExistingFiles = true
+            return nil
+        }
+
         var activities: [CodexDesktopActivity] = []
 
         for file in files {
@@ -67,6 +80,10 @@ final class CodexDesktopActivityMonitor {
         return activities.max { lhs, rhs in
             (lhs.timestamp ?? .distantPast) < (rhs.timestamp ?? .distantPast)
         }
+    }
+
+    private var shouldPrimeExistingFiles: Bool {
+        !replaysInitialHistory && !hasPrimedExistingFiles
     }
 
     private func recentSessionFiles(now: Date) -> [SessionFile] {
