@@ -2,6 +2,18 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+<p align="center">
+  <img src="docs/assets/app-icon.png" alt="Agent Signal Bar 应用图标" width="104">
+</p>
+
+<p align="center">
+  <strong>本地 AI Agent 的 macOS 状态栏信号灯。</strong>
+</p>
+
+<p align="center">
+  <img src="docs/assets/status-bar-demo.gif" alt="Agent Signal Bar 灯效演示" width="720">
+</p>
+
 Agent Signal Bar 是一个本地优先的 macOS 状态栏应用，用红、黄、绿三颗信号灯显示本机 AI Agent 的运行状态。它适合放在菜单栏常驻使用，让你不用切回终端或编辑器，也能快速判断 Codex、Claude Code 或本地脚本现在是否空闲、执行中、完成、需要授权或已经阻塞。
 
 ## 主要功能
