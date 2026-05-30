@@ -17,14 +17,14 @@
 </p>
 
 <p align="center">
-  <a href="marketing/social/video/agent-signal-bar-promo-9x16.mp4">
-    <img src="marketing/social/video/qa-frames/01-intro.png" alt="Agent Signal Bar 21.6 second vertical promo video cover" width="340">
+  <a href="marketing/social/video/agent-signal-bar-promo-en-9x16.mp4">
+    <img src="marketing/social/video/qa-frames/01-intro-en.png" alt="Agent Signal Bar 21.6 second English vertical promo video cover" width="340">
   </a>
 </p>
 
 <p align="center">
-  <a href="marketing/social/video/agent-signal-bar-promo-9x16.mp4"><strong>Watch the 21.6s product video</strong></a><br>
-  <sub>Vertical 9:16 promo video for social media, showing status bar styles, light effects, the menu panel, and settings.</sub>
+  <a href="marketing/social/video/agent-signal-bar-promo-en-9x16.mp4"><strong>Watch the 21.6s English product video</strong></a><br>
+  <sub>English 9:16 promo video for social media, showing status bar styles, light effects, the menu panel, and settings.</sub>
 </p>
 
 <p align="center">

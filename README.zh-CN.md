@@ -17,14 +17,14 @@
 </p>
 
 <p align="center">
-  <a href="marketing/social/video/agent-signal-bar-promo-9x16.mp4">
-    <img src="marketing/social/video/qa-frames/01-intro.png" alt="Agent Signal Bar 21.6 秒竖版宣传视频封面" width="340">
+  <a href="marketing/social/video/agent-signal-bar-promo-zh-CN-9x16.mp4">
+    <img src="marketing/social/video/qa-frames/01-intro-zh-CN.png" alt="Agent Signal Bar 21.6 秒中文竖版宣传视频封面" width="340">
   </a>
 </p>
 
 <p align="center">
-  <a href="marketing/social/video/agent-signal-bar-promo-9x16.mp4"><strong>观看 21.6 秒产品宣传视频</strong></a><br>
-  <sub>9:16 竖版宣传视频，展示状态栏样式、灯效、小菜单和设置界面。</sub>
+  <a href="marketing/social/video/agent-signal-bar-promo-zh-CN-9x16.mp4"><strong>观看 21.6 秒中文产品宣传视频</strong></a><br>
+  <sub>中文 9:16 竖版宣传视频，展示状态栏样式、灯效、小菜单和设置界面。</sub>
 </p>
 
 <p align="center">
