@@ -958,15 +958,33 @@ struct DebugWindowView: View {
             }
 
             settingRow(model.text("更新", "Updates")) {
-                Button {
-                    model.checkForUpdates()
-                } label: {
-                    settingsActionSurface(
-                        model.text("检查更新", "Check for Updates"),
-                        systemImage: "arrow.triangle.2.circlepath"
-                    )
+                HStack(spacing: 8) {
+                    Button {
+                        model.checkForUpdates()
+                    } label: {
+                        settingsActionSurface(
+                            model.isUpdateCheckRunning
+                                ? model.text("检查中", "Checking")
+                                : model.text("检查更新", "Check for Updates"),
+                            systemImage: "arrow.triangle.2.circlepath"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.isUpdateCheckRunning)
+
+                    if model.updateReleasePageURL != nil {
+                        Button {
+                            model.openLatestReleasePage()
+                        } label: {
+                            settingsActionSurface(
+                                model.text("打开下载页面", "Open Download Page"),
+                                systemImage: "arrow.up.forward.app",
+                                width: 180
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .buttonStyle(.plain)
             }
 
             if let updateCheckMessage = model.updateCheckMessage {

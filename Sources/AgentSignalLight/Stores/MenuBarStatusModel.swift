@@ -103,7 +103,9 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var isDiagnosticsExportRunning = false
     @Published var diagnosticsExportMessage: String?
     @Published private(set) var releaseInfo: ReleaseInfo = .current()
+    @Published private(set) var isUpdateCheckRunning = false
     @Published var updateCheckMessage: String?
+    @Published private(set) var updateReleasePageURL: URL?
     @Published var lastError: String?
 
     let animationClock = SignalAnimationClock()
@@ -113,6 +115,7 @@ final class MenuBarStatusModel: ObservableObject {
     private let hookInstallManager: HookInstallManager
     private let diagnosticsExportManager: DiagnosticsExportManager
     private let codexDesktopActivityMonitor: CodexDesktopActivityMonitor
+    private let updateChecker: GitHubReleaseUpdateChecker
     private let codexDesktopPollQueue = DispatchQueue(label: "com.agentsignallight.codex-desktop-poll")
     private var pollTimer: Timer?
     private var animationTimer: Timer?
@@ -178,13 +181,15 @@ final class MenuBarStatusModel: ObservableObject {
         launchAtLoginManager: LaunchAtLoginManager = LaunchAtLoginManager(),
         hookInstallManager: HookInstallManager = HookInstallManager(),
         diagnosticsExportManager: DiagnosticsExportManager = DiagnosticsExportManager(),
-        codexDesktopActivityMonitor: CodexDesktopActivityMonitor = CodexDesktopActivityMonitor()
+        codexDesktopActivityMonitor: CodexDesktopActivityMonitor = CodexDesktopActivityMonitor(),
+        updateChecker: GitHubReleaseUpdateChecker = GitHubReleaseUpdateChecker()
     ) {
         self.store = store
         self.launchAtLoginManager = launchAtLoginManager
         self.hookInstallManager = hookInstallManager
         self.diagnosticsExportManager = diagnosticsExportManager
         self.codexDesktopActivityMonitor = codexDesktopActivityMonitor
+        self.updateChecker = updateChecker
         let storedLayout = UserDefaults.standard.string(forKey: "trafficSignalLayout")
         let storedStyle = UserDefaults.standard.string(forKey: "trafficSignalStyle")
         let storedMacOSStrength = UserDefaults.standard.string(forKey: "macOSBreathingStrength")
@@ -635,9 +640,52 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     func checkForUpdates() {
-        let prefix = text("当前版本", "Current version")
-        let suffix = text("暂无可用更新。", "No updates are available.")
-        updateCheckMessage = "\(prefix) \(releaseInfo.version)。\(suffix)"
+        guard !isUpdateCheckRunning else { return }
+
+        let currentVersion = releaseInfo.version
+        let checker = updateChecker
+        isUpdateCheckRunning = true
+        updateReleasePageURL = nil
+        updateCheckMessage = text("正在检查 GitHub Releases...", "Checking GitHub Releases...")
+        lastError = nil
+
+        Task {
+            do {
+                let result = try await checker.check(currentVersion: currentVersion)
+                await MainActor.run {
+                    self.isUpdateCheckRunning = false
+                    self.updateReleasePageURL = result.isUpdateAvailable ? result.releasePageURL : nil
+                    if result.isUpdateAvailable {
+                        self.updateCheckMessage = self.text(
+                            "发现新版本 \(result.latestVersion)（当前 \(result.currentVersion)）。",
+                            "Version \(result.latestVersion) is available. Current version: \(result.currentVersion)."
+                        )
+                    } else {
+                        self.updateCheckMessage = self.text(
+                            "当前版本 \(result.currentVersion)。已是最新版本。",
+                            "Current version \(result.currentVersion). You are up to date."
+                        )
+                    }
+                    self.lastError = nil
+                }
+            } catch {
+                let errorMessage = error.localizedDescription
+                await MainActor.run {
+                    self.isUpdateCheckRunning = false
+                    self.updateReleasePageURL = GitHubReleaseUpdateChecker.fallbackReleasePageURL
+                    self.updateCheckMessage = self.text(
+                        "检查更新失败：\(errorMessage)",
+                        "Update check failed: \(errorMessage)"
+                    )
+                    self.lastError = nil
+                }
+            }
+        }
+    }
+
+    func openLatestReleasePage() {
+        let url = updateReleasePageURL ?? GitHubReleaseUpdateChecker.fallbackReleasePageURL
+        NSWorkspace.shared.open(url)
         lastError = nil
     }
 

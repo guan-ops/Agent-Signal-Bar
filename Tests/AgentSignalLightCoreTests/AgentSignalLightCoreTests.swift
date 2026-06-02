@@ -1047,6 +1047,35 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssert(storedDocument.sessions.isEmpty)
     }
 
+    func testGitHubReleaseUpdateCheckerComparesSemanticVersions() {
+        XCTAssertEqual(GitHubReleaseUpdateChecker.displayVersion(from: "v1.1.0"), "1.1.0")
+        XCTAssertEqual(GitHubReleaseUpdateChecker.compareVersions("1.1.1", "1.1.0"), .orderedDescending)
+        XCTAssertEqual(GitHubReleaseUpdateChecker.compareVersions("v1.1.0", "1.1"), .orderedSame)
+        XCTAssertEqual(GitHubReleaseUpdateChecker.compareVersions("1.0.9", "1.1.0"), .orderedAscending)
+    }
+
+    func testGitHubReleaseUpdateCheckerDecodesLatestRelease() throws {
+        let data = Data(
+            """
+            {
+              "tag_name": "v1.2.0",
+              "html_url": "https://github.com/guan-ops/Agent-Signal-Bar/releases/tag/v1.2.0",
+              "assets": [
+                {
+                  "name": "AgentSignalLight-local.dmg",
+                  "browser_download_url": "https://github.com/guan-ops/Agent-Signal-Bar/releases/download/v1.2.0/AgentSignalLight-local.dmg"
+                }
+              ]
+            }
+            """.utf8
+        )
+
+        let release = try GitHubReleaseUpdateChecker.decodeLatestRelease(from: data)
+
+        XCTAssertEqual(release.tagName, "v1.2.0")
+        XCTAssertEqual(release.preferredDownloadURL?.lastPathComponent, "AgentSignalLight-local.dmg")
+    }
+
     private func makeTemporaryStore(
         sessionTTLSeconds: Double = 86_400,
         completedTTLSeconds: Double = 90,
