@@ -1,8 +1,8 @@
 import Foundation
 
 struct ReleaseInfo: Equatable, Sendable {
-    static let fallbackVersion = "1.1.0"
-    static let fallbackBuild = "1"
+    static var fallbackVersion: String { VersionConfiguration.current.version }
+    static var fallbackBuild: String { VersionConfiguration.current.build }
 
     let version: String
     let build: String
@@ -141,7 +141,7 @@ struct ReleaseInfo: Equatable, Sendable {
         return appURL
     }
 
-    private static var appResourceURL: URL? {
+    fileprivate static var appResourceURL: URL? {
         appBundleURL?.appendingPathComponent("Contents").appendingPathComponent("Resources")
     }
 
@@ -155,6 +155,71 @@ struct ReleaseInfo: Equatable, Sendable {
         }
 
         return plist
+    }
+}
+
+private struct VersionConfiguration {
+    let version: String
+    let build: String
+
+    static var current: VersionConfiguration {
+        candidateURLs()
+            .lazy
+            .compactMap { VersionConfiguration(url: $0) }
+            .first ?? VersionConfiguration(version: "0.0.0", build: "0")
+    }
+
+    init(version: String, build: String) {
+        self.version = version
+        self.build = build
+    }
+
+    init?(url: URL) {
+        guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
+            return nil
+        }
+
+        let values = contents
+            .split(whereSeparator: \.isNewline)
+            .reduce(into: [String: String]()) { result, line in
+                let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
+                guard parts.count == 2 else { return }
+                result[parts[0].trimmingCharacters(in: .whitespacesAndNewlines)] =
+                    parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+
+        guard let version = values["VERSION"],
+              let build = values["BUILD"],
+              Self.isValidVersion(version),
+              Self.isValidBuild(build) else {
+            return nil
+        }
+
+        self.version = version
+        self.build = build
+    }
+
+    private static func candidateURLs() -> [URL] {
+        var urls: [URL] = []
+        let resourceFileName = "AgentSignalLight-version.env"
+
+        if let resourceURL = ReleaseInfo.appResourceURL ?? Bundle.main.resourceURL?.standardizedFileURL {
+            urls.append(resourceURL.appendingPathComponent(resourceFileName))
+        }
+
+        let currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .standardizedFileURL
+        urls.append(currentDirectoryURL.appendingPathComponent("VERSION"))
+
+        return urls
+    }
+
+    private static func isValidVersion(_ value: String) -> Bool {
+        value.range(of: #"^[0-9]+\.[0-9]+\.[0-9]+$"#, options: .regularExpression) != nil
+    }
+
+    private static func isValidBuild(_ value: String) -> Bool {
+        value.range(of: #"^[0-9]+$"#, options: .regularExpression) != nil
     }
 }
 

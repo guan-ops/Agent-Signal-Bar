@@ -84,8 +84,7 @@ This keeps GitHub Releases readable instead of publishing only an automatic comm
 
 Before tagging a new version, confirm:
 
-- `script/package_app.sh` has the intended `CFBundleShortVersionString`.
-- `Sources/AgentSignalLight/Services/ReleaseInfo.swift` has the same fallback version.
+- `VERSION` has the intended `VERSION=x.y.z` and monotonically increasing `BUILD=n`.
 - `docs/releases/<tag>.md` exists and includes clear Chinese and English release notes.
 - `README.md` and `README.zh-CN.md` describe the current behavior.
 - `./script/verify_release_all.sh --skip-package` passes if artifacts already exist.

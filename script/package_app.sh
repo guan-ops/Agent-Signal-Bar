@@ -38,9 +38,32 @@ APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON="$APP_RESOURCES/AppIcon.icns"
 RELEASE_INFO="$APP_RESOURCES/$APP_NAME-release-info.json"
+VERSION_FILE="$ROOT_DIR/VERSION"
+VERSION_RESOURCE="$APP_RESOURCES/$APP_NAME-version.env"
 trap 'rm -rf "$STAGING_DIR"' EXIT
 
 cd "$ROOT_DIR"
+
+read_version_value() {
+  local key="$1"
+  awk -F= -v key="$key" '$1 == key { print $2; exit }' "$VERSION_FILE"
+}
+
+if [[ ! -f "$VERSION_FILE" ]]; then
+  echo "missing version file: $VERSION_FILE" >&2
+  exit 1
+fi
+
+APP_VERSION="$(read_version_value VERSION)"
+APP_BUILD="$(read_version_value BUILD)"
+if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "invalid VERSION in $VERSION_FILE: $APP_VERSION" >&2
+  exit 1
+fi
+if [[ ! "$APP_BUILD" =~ ^[0-9]+$ ]]; then
+  echo "invalid BUILD in $VERSION_FILE: $APP_BUILD" >&2
+  exit 1
+fi
 
 swift_tool() {
   if [[ -n "${DEVELOPER_DIR:-}" ]]; then
@@ -75,6 +98,7 @@ cp "$ROOT_DIR/scripts/agent-signal-run" "$APP_RESOURCES/scripts/agent-signal-run
 cp "$ROOT_DIR/scripts/codex-signal-hook" "$APP_RESOURCES/scripts/codex-signal-hook"
 cp "$ROOT_DIR/scripts/claude-code-signal-hook" "$APP_RESOURCES/scripts/claude-code-signal-hook"
 cp "$ROOT_DIR/scripts/generic-agent-signal-hook" "$APP_RESOURCES/scripts/generic-agent-signal-hook"
+cp "$VERSION_FILE" "$VERSION_RESOURCE"
 chmod +x "$APP_BINARY"
 chmod +x "$APP_RESOURCES/dist/bin/agent-signal" \
   "$APP_RESOURCES/script/export_diagnostics.sh" \
@@ -103,9 +127,11 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundleName</key>
   <string>$APP_DISPLAY_NAME</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.1.0</string>
+  <string>$APP_VERSION</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>$APP_BUILD</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>© 2026 XiongYang Guan · MIT License</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSApplicationCategoryType</key>
