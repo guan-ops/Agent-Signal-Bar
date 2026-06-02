@@ -156,6 +156,7 @@ public struct TrafficSignalView: View {
     var macOSHorizontalUsesTrafficLightSize: Bool
     var trafficLightVerticalUsesMacOSSize: Bool
     var allLightsOn: Bool
+    var usesSystemGrayLights: Bool
     var effectCustomization: SignalEffectCustomization
 
     public init(
@@ -168,6 +169,7 @@ public struct TrafficSignalView: View {
         macOSHorizontalUsesTrafficLightSize: Bool = false,
         trafficLightVerticalUsesMacOSSize: Bool = false,
         allLightsOn: Bool = false,
+        usesSystemGrayLights: Bool = false,
         effectCustomization: SignalEffectCustomization = .default
     ) {
         self.snapshot = snapshot
@@ -179,6 +181,7 @@ public struct TrafficSignalView: View {
         self.macOSHorizontalUsesTrafficLightSize = macOSHorizontalUsesTrafficLightSize
         self.trafficLightVerticalUsesMacOSSize = trafficLightVerticalUsesMacOSSize
         self.allLightsOn = allLightsOn
+        self.usesSystemGrayLights = usesSystemGrayLights
         self.effectCustomization = effectCustomization
     }
 
@@ -236,6 +239,7 @@ public struct TrafficSignalView: View {
             macOSHorizontalUsesTrafficLightSize: macOSHorizontalUsesTrafficLightSize,
             trafficLightVerticalUsesMacOSSize: trafficLightVerticalUsesMacOSSize,
             allLightsOn: allLightsOn,
+            usesSystemGrayLights: usesSystemGrayLights,
             effectCustomization: effectCustomization
         )
     }
@@ -270,6 +274,7 @@ private struct SignalLampDot: View {
     let macOSHorizontalUsesTrafficLightSize: Bool
     let trafficLightVerticalUsesMacOSSize: Bool
     let allLightsOn: Bool
+    let usesSystemGrayLights: Bool
     let effectCustomization: SignalEffectCustomization
 
     var body: some View {
@@ -378,6 +383,10 @@ private struct SignalLampDot: View {
     }
 
     private func lampBaseColor(for color: SignalLampColor) -> Color {
+        if usesSystemGrayLights {
+            return .secondary
+        }
+
         switch color {
         case .green:
             return Color(red: 0.16, green: 0.78, blue: 0.34)
@@ -389,7 +398,11 @@ private struct SignalLampDot: View {
     }
 
     private func shadowOpacity(for intensity: Double) -> Double {
-        intensity * 0.35
+        if usesSystemGrayLights {
+            return 0
+        }
+
+        return intensity * 0.35
     }
 
     private var inactiveFill: Color {

@@ -38,7 +38,7 @@ Agent Signal Bar v2 的状态栏灯语只回答一个问题：
 
 `active` 只能使用绿色动态，不出现黄色或红色。动态同时改变亮度和大小，灯位本身保持固定，避免状态栏布局抖动。运行详情单灯、极简圆点和经典灯牌都使用同一套亮度与大小呼吸曲线；经典灯牌只额外保留黑色灯牌外壳。`done` 默认是绿色 completed，不再是黄色。黄色只表示 needs review，红色只表示 permission 或 blocked。
 
-`completed` 是短暂停留状态，默认 8 秒后自动回到 `ready`，可以用 `AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS` 覆盖。普通 active/warning session 过期仍会进入 `stale`，但 completed 过期代表“完成提示结束”，不会误报状态不可信。
+`completed` 是短暂停留状态，默认 90 秒后自动回到 `ready`，可以用 `AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS` 覆盖。普通 active/warning session 过期仍会进入 `stale`，但 completed 过期代表“完成提示结束”，不会误报状态不可信。
 
 Successful `Stop` events from Codex and Claude Code map to `done`. A following `SessionEnd` preserves completed and alert sessions, so the short completion hint is still visible until the completed TTL expires. A completed event does not downgrade an existing `needs_review` / `permission` / `blocked` / `stale` / `paused` session; those states keep priority until cleared or replaced by a stronger explicit event.
 

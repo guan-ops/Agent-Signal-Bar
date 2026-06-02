@@ -5,8 +5,10 @@ import Combine
 import SwiftUI
 
 struct MenuBarPanelView: View {
-    static let panelWidth: CGFloat = 320
+    static let panelWidth: CGFloat = 304
     static let panelHeight: CGFloat = 372
+    private static let contentInset: CGFloat = 16
+    private static let actionColumnSpacing: CGFloat = 8
 
     let model: MenuBarStatusModel
     var onOpenSettings: (() -> Void)?
@@ -48,7 +50,7 @@ struct MenuBarPanelView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, Self.contentInset)
                     .padding(.top, 16)
                     .padding(.bottom, 12)
                     .frame(width: Self.panelWidth, alignment: .leading)
@@ -62,11 +64,11 @@ struct MenuBarPanelView: View {
                 .zIndex(0)
 
                 Divider()
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, Self.contentInset)
                     .zIndex(0)
 
                 mainActions
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, Self.contentInset)
                     .padding(.top, 10)
                     .padding(.bottom, 10)
                     .frame(width: Self.panelWidth, alignment: .leading)
@@ -85,12 +87,12 @@ struct MenuBarPanelView: View {
                 Text("Agent Signal Bar")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text(model.displayName(for: viewState.snapshot.aggregate))
+                Text(model.displayName(for: viewState.lightSnapshot.aggregate))
                     .font(.title2.weight(.semibold))
                     .lineLimit(1)
                     .allowsTightening(true)
                     .minimumScaleFactor(0.80)
-                Text(model.humanAction(for: viewState.snapshot.aggregate))
+                Text(model.humanAction(for: viewState.lightSnapshot.aggregate))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -99,20 +101,12 @@ struct MenuBarPanelView: View {
             }
 
             Spacer()
-
-            Button {
-                model.reload()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.borderless)
-            .help(model.text("刷新", "Refresh"))
         }
     }
 
     private var statusSummary: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Text(model.summary(for: viewState.snapshot.aggregate))
+            Text(model.summary(for: viewState.lightSnapshot.aggregate))
                 .font(.subheadline)
                 .lineLimit(2)
                 .allowsTightening(true)
@@ -160,25 +154,11 @@ struct MenuBarPanelView: View {
     }
 
     private var visibleAgentSessions: [SessionStatus] {
-        var seenAgents: Set<String> = []
-        var sessions: [SessionStatus] = []
-
-        for session in viewState.snapshot.sessions {
-            guard isVisibleAgentSession(session) else { continue }
-            let agentKey = normalizedAgentKey(session.agent, fallback: session.sessionID)
-            guard !seenAgents.contains(agentKey) else { continue }
-            seenAgents.insert(agentKey)
-            sessions.append(session)
-            if sessions.count == 3 {
-                break
-            }
-        }
-
-        return sessions
+        Array(allVisibleAgentSessions.prefix(3))
     }
 
     private var visibleOpenAgentSessions: [SessionStatus] {
-        visibleAgentSessions.filter { session in
+        allVisibleAgentSessions.filter { session in
             switch normalizedAgentKey(session.agent, fallback: session.sessionID) {
             case "codex", "claude":
                 return true
@@ -186,6 +166,21 @@ struct MenuBarPanelView: View {
                 return false
             }
         }
+    }
+
+    private var allVisibleAgentSessions: [SessionStatus] {
+        var seenAgents: Set<String> = []
+        var sessions: [SessionStatus] = []
+
+        for session in viewState.activitySnapshot.sessions {
+            guard isVisibleAgentSession(session) else { continue }
+            let agentKey = normalizedAgentKey(session.agent, fallback: session.sessionID)
+            guard !seenAgents.contains(agentKey) else { continue }
+            seenAgents.insert(agentKey)
+            sessions.append(session)
+        }
+
+        return sessions
     }
 
     private func isLiveAgentSession(_ session: SessionStatus) -> Bool {
@@ -197,8 +192,14 @@ struct MenuBarPanelView: View {
             return true
         }
 
-        guard session.signal.displayState == .active else { return false }
-        return isLiveAgentSession(session)
+        switch session.signal.displayState {
+        case .active:
+            return isLiveAgentSession(session)
+        case .completed, .needsReview, .permission, .blocked, .stale:
+            return true
+        case .ready, .paused:
+            return false
+        }
     }
 
     private func isDesktopPresenceSession(_ session: SessionStatus) -> Bool {
@@ -216,7 +217,7 @@ struct MenuBarPanelView: View {
             }
         )
 
-        return Array(viewState.snapshot.recentEvents.lazy.filter { event in
+        return Array(viewState.activitySnapshot.recentEvents.lazy.filter { event in
             let eventKey = "\(event.sessionID)|\(event.signal.rawValue)|\(event.event ?? "")"
             return !currentSessionKeys.contains(eventKey)
         }.prefix(menuRecentEventLimit))
@@ -249,7 +250,7 @@ struct MenuBarPanelView: View {
 
     private var mainActions: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: .top, spacing: Self.actionColumnSpacing) {
                 openAgentAction
 
                 Button {
@@ -264,7 +265,7 @@ struct MenuBarPanelView: View {
             .frame(maxWidth: .infinity, alignment: .center)
             .zIndex(isOpenAgentDropdownExpanded ? 1000 : 0)
 
-            HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: .top, spacing: Self.actionColumnSpacing) {
                 Button {
                     closeOpenAgentDropdown()
                     model.toggleMonitoring()
@@ -356,8 +357,7 @@ struct MenuBarPanelView: View {
         .frame(width: openAgentDropdownWidth)
         .fixedSize(horizontal: false, vertical: true)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(solidDropdownFill)
+            openAgentDropdownBackground(cornerRadius: 8)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -367,7 +367,7 @@ struct MenuBarPanelView: View {
     }
 
     private var actionButtonWidth: CGFloat {
-        usesCompactLatinLayout ? 136 : 132
+        (Self.panelWidth - Self.contentInset * 2 - Self.actionColumnSpacing) / 2
     }
 
     private var openAgentDropdownWidth: CGFloat { actionButtonWidth }
@@ -419,7 +419,7 @@ struct MenuBarPanelView: View {
         .frame(width: actionButtonWidth, height: actionButtonHeight, alignment: .center)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(solidControlFill)
+                .fill(panelMenuBarFill)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -529,10 +529,36 @@ struct MenuBarPanelView: View {
             : Color(nsColor: NSColor(calibratedWhite: 0.92, alpha: 1))
     }
 
+    private var panelMenuBarFill: some ShapeStyle {
+        .tertiary.opacity(0.08)
+    }
+
     private var solidDropdownFill: Color {
         colorScheme == .dark
             ? Color(nsColor: NSColor(calibratedWhite: 0.18, alpha: 1))
             : Color(nsColor: NSColor(calibratedWhite: 0.97, alpha: 1))
+    }
+
+    private func openAgentDropdownBackground(cornerRadius: CGFloat) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.ultraThinMaterial)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(panelDropdownTint)
+        }
+    }
+
+    private var panelDropdownTint: Color {
+        switch (colorScheme, model.settingsGlassEffect) {
+        case (.dark, .reduced):
+            return Color.white.opacity(0.09)
+        case (.dark, .standard):
+            return Color.white.opacity(0.065)
+        case (_, .reduced):
+            return Color.white.opacity(0.26)
+        case (_, .standard):
+            return Color.white.opacity(0.18)
+        }
     }
 
     private var solidControlStroke: Color {
@@ -546,6 +572,8 @@ struct MenuBarPanelView: View {
 @MainActor
 private final class MenuBarPanelViewState: ObservableObject {
     @Published var snapshot: SignalSnapshot
+    @Published var lightSnapshot: SignalSnapshot
+    @Published var activitySnapshot: SignalSnapshot
     @Published var appTheme: AppTheme
     @Published var isMonitoringPaused: Bool
     @Published var lastError: String?
@@ -555,6 +583,8 @@ private final class MenuBarPanelViewState: ObservableObject {
 
     init(model: MenuBarStatusModel) {
         snapshot = model.displaySnapshot
+        lightSnapshot = model.lightSnapshot
+        activitySnapshot = model.activitySnapshot
         appTheme = model.appTheme
         isMonitoringPaused = model.isMonitoringPaused
         lastError = model.lastError
@@ -563,21 +593,28 @@ private final class MenuBarPanelViewState: ObservableObject {
         model.$snapshot
             .sink { [weak self, weak model] _ in
                 guard let model else { return }
-                self?.snapshot = model.displaySnapshot
+                self?.refreshSnapshots(from: model)
             }
             .store(in: &cancellables)
 
         model.$desktopAppSessions
             .sink { [weak self, weak model] _ in
                 guard let model else { return }
-                self?.snapshot = model.displaySnapshot
+                self?.refreshSnapshots(from: model)
             }
             .store(in: &cancellables)
 
         model.$signalLightAgentScope
             .sink { [weak self, weak model] _ in
                 guard let model else { return }
-                self?.snapshot = model.displaySnapshot
+                self?.refreshSnapshots(from: model)
+            }
+            .store(in: &cancellables)
+
+        model.$statusLightOverride
+            .sink { [weak self, weak model] _ in
+                guard let model else { return }
+                self?.refreshSnapshots(from: model)
             }
             .store(in: &cancellables)
 
@@ -590,8 +627,10 @@ private final class MenuBarPanelViewState: ObservableObject {
 
         model.$isMonitoringPaused
             .removeDuplicates()
-            .sink { [weak self] isMonitoringPaused in
+            .sink { [weak self, weak model] isMonitoringPaused in
                 self?.isMonitoringPaused = isMonitoringPaused
+                guard let model else { return }
+                self?.refreshSnapshots(from: model)
             }
             .store(in: &cancellables)
 
@@ -609,6 +648,12 @@ private final class MenuBarPanelViewState: ObservableObject {
             }
             .store(in: &cancellables)
     }
+
+    private func refreshSnapshots(from model: MenuBarStatusModel) {
+        snapshot = model.displaySnapshot
+        lightSnapshot = model.lightSnapshot
+        activitySnapshot = model.activitySnapshot
+    }
 }
 
 private struct PanelTrafficSignalView: View {
@@ -622,16 +667,17 @@ private struct PanelTrafficSignalView: View {
 
     var body: some View {
         TrafficSignalView(
-            snapshot: model.displaySnapshot,
-            tick: animationClock.tick,
+            snapshot: model.lightSnapshot,
+            tick: model.lightTick,
             size: .panel,
             layout: .horizontal,
-            style: .trafficLight,
+            style: model.statusBarStyle,
             macOSBreathingStrength: model.macOSBreathingStrength,
             macOSHorizontalUsesTrafficLightSize: model.macOSHorizontalUsesTrafficLightSize,
             trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
-            allLightsOn: model.isStatusBarAllLightsOn,
-            effectCustomization: model.signalEffectCustomization
+            allLightsOn: model.lightAllLightsOn,
+            usesSystemGrayLights: model.lightUsesSystemGrayLights,
+            effectCustomization: model.lightEffectCustomization
         )
     }
 }
@@ -648,10 +694,10 @@ private struct PopoverBackdropView: NSViewRepresentable {
     }
 
     private func configure(_ view: NSVisualEffectView) {
-        view.material = .hudWindow
+        view.material = .menu
         view.blendingMode = .behindWindow
         view.state = .active
-        view.isEmphasized = true
+        view.isEmphasized = false
     }
 }
 

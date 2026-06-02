@@ -2,13 +2,27 @@ import Foundation
 
 public enum JSONPayload {
     public static func object(from data: Data) -> [String: Any] {
-        guard !data.isEmpty,
-              let parsed = try? JSONSerialization.jsonObject(with: data),
-              let object = parsed as? [String: Any]
-        else {
-            return [:]
+        (try? requiredObject(from: data)) ?? [:]
+    }
+
+    public static func requiredObject(from data: Data) throws -> [String: Any] {
+        guard !data.isEmpty else { return [:] }
+        let parsed = try JSONSerialization.jsonObject(with: data)
+        guard let object = parsed as? [String: Any] else {
+            throw JSONPayloadError.topLevelValueIsNotObject
         }
         return object
+    }
+}
+
+public enum JSONPayloadError: Error, LocalizedError {
+    case topLevelValueIsNotObject
+
+    public var errorDescription: String? {
+        switch self {
+        case .topLevelValueIsNotObject:
+            return "Hook JSON payload must be an object."
+        }
     }
 }
 
@@ -482,7 +496,7 @@ private func canonicalClaudeEventName(_ value: String) -> String {
 
 private func firstString(_ payload: [String: Any], keys: [String]) -> String? {
     for key in keys {
-        if let value = payload[key] as? String,
+        if let value = scalarString(payload[key]),
            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return value
         }
@@ -490,7 +504,7 @@ private func firstString(_ payload: [String: Any], keys: [String]) -> String? {
 
     for expectedKey in keys.map(normalizedEventName) {
         for (key, value) in payload where normalizedEventName(key) == expectedKey {
-            if let value = value as? String,
+            if let value = scalarString(value),
                !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return value
             }
@@ -498,6 +512,19 @@ private func firstString(_ payload: [String: Any], keys: [String]) -> String? {
     }
 
     return nil
+}
+
+private func scalarString(_ value: Any?) -> String? {
+    switch value {
+    case let value as String:
+        return value
+    case let value as Bool:
+        return value ? "true" : "false"
+    case let value as NSNumber:
+        return value.stringValue
+    default:
+        return nil
+    }
 }
 
 private func findNestedString(_ value: Any, keys: [String]) -> String? {

@@ -15,7 +15,6 @@ struct AgentSignalChecks {
         try checkDoneDoesNotClearWarningSession()
         try checkClearWarningPreservesWorkingSession()
         try checkManualSignalsParticipateInAggregation()
-        try checkSignalTestClearsOnlyManualSession()
         try checkNonPausedSignalResumesFromPausedAggregate()
         try checkSessionEndRemovesSession()
         try checkSessionEndPreservesCompletedAndWarningSessions()
@@ -407,17 +406,27 @@ struct AgentSignalChecks {
         let startedLine = """
         {"timestamp":"2026-05-29T02:18:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}
         """
+        let heartbeatLine = """
+        {"timestamp":"2026-06-01T15:37:11.108Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400}}}
+        """
+        let compactedLine = """
+        {"timestamp":"2026-06-01T15:34:42.602Z","type":"compacted","payload":{"message":"","replacement_history":[]}}
+        """
 
         let toolActivity = CodexDesktopSessionParser.activity(from: toolLine, defaultSessionID: "codex-desktop:test")
         let doneActivity = CodexDesktopSessionParser.activity(from: doneLine, defaultSessionID: "codex-desktop:test")
         let userActivity = CodexDesktopSessionParser.activity(from: userLine, defaultSessionID: "codex-desktop:test")
         let startedActivity = CodexDesktopSessionParser.activity(from: startedLine, defaultSessionID: "codex-desktop:test")
+        let heartbeatActivity = CodexDesktopSessionParser.activity(from: heartbeatLine, defaultSessionID: "codex-desktop:test")
+        let compactedActivity = CodexDesktopSessionParser.activity(from: compactedLine, defaultSessionID: "codex-desktop:test")
 
         try expect(toolActivity?.signal == .working, "Desktop function_call should map to working")
         try expect(toolActivity?.event == "DesktopToolCall:exec_command", "Desktop tool name should be retained")
         try expect(doneActivity?.signal == .done, "Desktop task_complete should map to done")
         try expect(userActivity == nil, "Desktop user messages should not map to responding")
         try expect(startedActivity?.signal == .thinking, "Desktop task_started should map to thinking")
+        try expect(heartbeatActivity?.signal == .thinking, "Desktop token_count heartbeat should keep Codex active")
+        try expect(compactedActivity?.signal == .thinking, "Desktop compacted event should map to thinking")
     }
 
     private static func checkClearWarningPreservesWorkingSession() throws {
@@ -446,26 +455,6 @@ struct AgentSignalChecks {
         let resetSnapshot = try store.setManualSignal(.idle)
         try expect(resetSnapshot.aggregate == .idle, "manual idle should clear to idle")
         try expect(resetSnapshot.sessions.isEmpty, "manual idle should clear sessions")
-    }
-
-    private static func checkSignalTestClearsOnlyManualSession() throws {
-        let store = makeStore()
-
-        _ = try store.applySessionSignal(.working, sessionID: "codex-main", agent: "codex")
-        let testSnapshot = try store.setSignalTestSignal(.permission)
-
-        try expect(testSnapshot.aggregate == .permission, "signal test should override display while enabled")
-        try expect(
-            testSnapshot.sessions.map(\.sessionID) == ["manual", "codex-main"],
-            "signal test should add a manual session without deleting real sessions"
-        )
-
-        let clearedSnapshot = try store.clearSignalTestSignal()
-        try expect(clearedSnapshot.aggregate == .working, "exiting signal test should restore the real aggregate")
-        try expect(
-            clearedSnapshot.sessions.map(\.sessionID) == ["codex-main"],
-            "exiting signal test should only remove the manual test session"
-        )
     }
 
     private static func checkNonPausedSignalResumesFromPausedAggregate() throws {
@@ -689,7 +678,7 @@ struct AgentSignalChecks {
 
     private static func makeStore(
         sessionTTLSeconds: Double = 60,
-        completedTTLSeconds: Double = 8,
+        completedTTLSeconds: Double = 90,
         eventLimit: Int = 30
     ) -> SignalStateStore {
         let directory = FileManager.default.temporaryDirectory

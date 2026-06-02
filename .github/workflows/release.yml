@@ -33,8 +33,18 @@ jobs:
       - name: Run Swift tests
         run: swift test
 
+      - name: Build products
+        run: |
+          swift build --product AgentSignalLight
+          swift build --product agent-signal
+          swift build --product agent-signal-checks
+          swift build --product agent-signal-icon-preview
+
       - name: Package release
         run: ./script/package_release.sh
+
+      - name: Verify release artifacts
+        run: ./script/verify_release_all.sh --skip-package
 
       - name: Prepare release notes
         run: |

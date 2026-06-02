@@ -31,8 +31,8 @@ To publish a new release:
 ```bash
 git status --short
 git pull --ff-only
-NEXT_TAG=v1.0.6
-cp docs/releases/v1.0.5.md "docs/releases/${NEXT_TAG}.md"
+NEXT_TAG=v1.1.1
+cp docs/releases/v1.1.0.md "docs/releases/${NEXT_TAG}.md"
 # Edit docs/releases/${NEXT_TAG}.md before tagging.
 git tag "${NEXT_TAG}"
 git push origin "${NEXT_TAG}"

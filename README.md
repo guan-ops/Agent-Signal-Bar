@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  Customizable light effects · Multilingual UI · Local-first · Codex and Claude Code hooks
+  Customizable light effects · Multilingual UI · Local-first · Codex Desktop monitoring · Claude Code hooks
 </p>
 
 <p align="center">
@@ -24,7 +24,7 @@
   <em>Animated effect preview rendered from the real status bar icon renderer, configured with the red/yellow/green sequence effect.</em>
 </p>
 
-Agent Signal Bar is a local-first macOS menu bar app that uses three red, yellow, and green signal lights to show the current state of local AI agents. It helps you see whether Codex, Claude Code, or a local script is idle, working, done, waiting for approval, or blocked without switching back to a terminal or editor.
+Agent Signal Bar is a local-first macOS menu bar app that uses three red, yellow, and green signal lights to show the current state of local AI agents. It helps you see whether Codex, Claude Code, or a local script is idle, thinking, working, done, waiting for approval, or blocked without switching back to a terminal or editor.
 
 ## Download And Open
 
@@ -56,24 +56,24 @@ Click the menu bar signal light to open a compact panel with the current status,
   </tr>
   <tr>
     <td><img src="docs/assets/settings-solid-en.png" alt="Agent Signal Bar settings window Activity page without Liquid Glass" width="420"></td>
-    <td><img src="docs/assets/settings-liquid-glass-default-en.png" alt="Agent Signal Bar settings window Activity page with the default reduced Liquid Glass effect" width="420"></td>
+    <td><img src="docs/assets/settings-liquid-glass-default-en.png" alt="Agent Signal Bar settings window Activity page with the default standard Liquid Glass effect" width="420"></td>
   </tr>
 </table>
 
-Both images are real screen-region screenshots of the Activity page. The left image shows the normal solid settings window, while the right image shows the default reduced Liquid Glass style with the desktop background participating in the window material. Liquid Glass is on by default at reduced strength and can be adjusted in `General > Liquid glass`.
+Both images are real screenshots of the current Activity page. The left image shows the normal solid settings window, while the right image shows the default Standard Liquid Glass style with the desktop background participating in the window material. Liquid Glass is on by default and can be adjusted between Standard and Enhanced in `General > Liquid glass`.
 
 ## Features
 
 - macOS menu bar signal light with horizontal and vertical layouts.
 - Two visual styles: classic signal board and minimal dots.
 - Menu bar panel with current status, running agents, latest event, quick actions, and quit.
-- Settings window with Activity, Style, Effects, Connections, General, and About pages.
-- Codex Desktop activity monitoring, Codex hooks, Claude Code hooks, and generic JSON event input.
+- Settings window with Activity, General, Connections, Advanced, and About pages.
+- Codex Desktop activity monitoring without required hooks, plus optional Codex hooks, Claude Code hooks, and generic JSON event input.
 - Multi-session aggregation so permission, failure, and blocked states are not overwritten by normal working states.
 - Local CLI for scripts, automation, and custom agents.
 - Multilingual UI with system-language detection and manual language switching.
 - Customizable light effects, including blink speed, breathing strength, and per-state effect choices.
-- Theme selection, launch at login, and effect testing.
+- Theme selection and launch at login.
 - No cloud service is required. State files, hooks, and diagnostics stay on your Mac.
 
 ## Signal Language
@@ -97,7 +97,7 @@ Default effect settings:
 - Working: slow green flash
 - Done: steady green
 
-Effects can be customized in the Effects page of the settings window.
+Effects can be customized in the Advanced page of the settings window.
 
 ## Light Effect Preview
 
@@ -115,7 +115,7 @@ When multiple agents or sessions are active, the menu bar shows the highest-prio
 paused > blocked > permission > needs_review > stale > active > completed > ready
 ```
 
-Red states are never overwritten by normal work. Yellow attention states are also protected from newer working events. `done` is visible for 8 seconds by default, then returns to idle.
+Red states are never overwritten by normal work. Yellow attention states are also protected from newer working events. `done` is visible for 90 seconds by default, then returns to idle.
 
 ## Quick Start
 
@@ -205,7 +205,7 @@ Wrap any command as an agent run:
 
 ## Agent Integration
 
-Codex Desktop can work without manually installing hooks. Keep `Monitor Codex Desktop` enabled in the app and Agent Signal Bar will read local Codex session logs to detect thinking, working, step-done, and done states. Hooks are still useful for Codex CLI/TUI, project-scoped automation, Claude Code, and other local agents that report events directly.
+Codex Desktop can work without manually installing hooks. Keep `Monitor Codex Desktop` enabled in the app and Agent Signal Bar will read local Codex session logs to detect thinking, working, step-done, and done states. Hooks are optional for Codex Desktop, but they are still useful for Codex CLI/TUI, Codex IDE compatibility, project-scoped automation, Claude Code, and other local agents that report events directly.
 
 Codex Desktop activity comes from the local Codex session log. Normal browser usage does not trigger Agent Signal Bar unless it is part of an active Codex task that is using tools.
 
@@ -214,7 +214,7 @@ Integration verification status:
 - Codex has been tested in real use and is fully verified.
 - Claude Code hook support is implemented, but it has not yet been verified with a live Claude Code workflow.
 
-Install Codex and Claude Code hooks:
+Install hooks when you need CLI/IDE or Claude Code integration:
 
 ```bash
 ./script/install_hooks.py --target all --codex-scope project --dry-run
@@ -275,7 +275,7 @@ Environment variables:
 export AGENT_SIGNAL_LIGHT_STATE_FILE=/path/to/status.json
 export AGENT_SIGNAL_LIGHT_STATE_DIR=/tmp/agent-signal
 export AGENT_SIGNAL_LIGHT_EVENT_LIMIT=30
-export AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS=8
+export AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS=90
 export SIGNAL_LIGHT_SESSION_TTL_SECONDS=1800
 ```
 

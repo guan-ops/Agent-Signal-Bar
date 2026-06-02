@@ -217,6 +217,40 @@ def event_contains_command(blocks: list[Any], command: str) -> bool:
     return False
 
 
+def command_points_to_agent_signal_wrapper(command: str, spec: TargetSpec) -> bool:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.split()
+
+    if not parts:
+        return False
+
+    executable = Path(parts[0]).expanduser()
+    if executable.name != spec.wrapper.name:
+        return False
+
+    if executable.resolve(strict=False) == spec.wrapper.resolve(strict=False):
+        return True
+
+    normalized_path = str(executable).lower()
+    if any(
+        marker in normalized_path
+        for marker in [
+            "agent-signal",
+            "agentsignal",
+            "agent signal",
+            "ai agent状态栏红绿灯",
+        ]
+    ):
+        return True
+
+    # Older bundled installers used a plain ".../scripts/<wrapper>" path before
+    # the app resource location was stable. Only accept that exact legacy shape
+    # after the executable basename has already matched above.
+    return executable.parent.name == "scripts"
+
+
 def remove_stale_agent_signal_commands(
     blocks: list[Any],
     *,
@@ -224,7 +258,6 @@ def remove_stale_agent_signal_commands(
     current_command: str,
 ) -> tuple[list[Any], bool]:
     migrated = False
-    wrapper_name = spec.wrapper.name
     filtered_blocks: list[Any] = []
 
     for block in blocks:
@@ -240,7 +273,11 @@ def remove_stale_agent_signal_commands(
         filtered_hooks: list[Any] = []
         for item in hooks:
             command = item.get("command") if isinstance(item, dict) else None
-            if isinstance(command, str) and command != current_command and wrapper_name in command:
+            if (
+                isinstance(command, str)
+                and command != current_command
+                and command_points_to_agent_signal_wrapper(command, spec)
+            ):
                 migrated = True
                 continue
             filtered_hooks.append(item)
@@ -327,7 +364,6 @@ def remove_hooks(spec: TargetSpec) -> MergeResult:
         raise ValueError(f"{spec.path} has a non-object 'hooks' value")
 
     removed_events: list[str] = []
-    wrapper_name = spec.wrapper.name
 
     for event, blocks in list(hooks.items()):
         if not isinstance(blocks, list):
@@ -349,7 +385,7 @@ def remove_hooks(spec: TargetSpec) -> MergeResult:
             filtered_hooks: list[Any] = []
             for item in block_hooks:
                 command = item.get("command") if isinstance(item, dict) else None
-                if isinstance(command, str) and wrapper_name in command:
+                if isinstance(command, str) and command_points_to_agent_signal_wrapper(command, spec):
                     removed_from_event = True
                     continue
                 filtered_hooks.append(item)

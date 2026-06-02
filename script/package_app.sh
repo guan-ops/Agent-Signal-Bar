@@ -103,7 +103,7 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundleName</key>
   <string>$APP_DISPLAY_NAME</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.5</string>
+  <string>1.1.0</string>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>CFBundlePackageType</key>
@@ -153,13 +153,13 @@ data = {
     "minimum_system_version": info.get("LSMinimumSystemVersion"),
     "signing": {
         "mode": "developer_id" if signing_identity else "ad_hoc",
-        "identity": signing_identity,
+        "identity_configured": bool(signing_identity),
         "developer_id_identities_available": developer_id_count,
         "hardened_runtime_requested": bool(signing_identity),
         "timestamp_requested": bool(signing_identity),
     },
     "notarization": {
-        "profile": notary_profile,
+        "profile_configured": bool(notary_profile),
         "ready_to_submit": bool(signing_identity and notary_profile),
         "status": "not_submitted",
     },

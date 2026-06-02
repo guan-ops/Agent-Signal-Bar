@@ -1,6 +1,7 @@
 .build/
 .swiftpm/
 .codex/hooks.json
+.codex/hooks.json.*
 dist/
 DerivedData/
 marketing/

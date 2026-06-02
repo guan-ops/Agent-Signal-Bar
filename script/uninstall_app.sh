@@ -27,6 +27,38 @@ Options:
 EOF
 }
 
+canonical_path() {
+  /usr/bin/python3 - "$1" <<'PY'
+import pathlib
+import sys
+
+print(pathlib.Path(sys.argv[1]).expanduser().resolve(strict=False))
+PY
+}
+
+validate_state_dir_for_purge() {
+  local target
+  local home
+  target="$(canonical_path "$STATE_DIR")"
+  home="$(canonical_path "$HOME")"
+
+  case "$target" in
+    ""|"/"|"/tmp"|"/var"|"/var/tmp"|"/Users"|"$home")
+      echo "Refusing to purge unsafe state directory: $target" >&2
+      exit 1
+      ;;
+  esac
+
+  case "$target" in
+    *agent-signal*|*AgentSignal*|*agent_signal*)
+      ;;
+    *)
+      echo "Refusing to purge non-Agent-Signal-looking directory: $target" >&2
+      exit 1
+      ;;
+  esac
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --remove-hooks)
@@ -81,6 +113,7 @@ fi
 rm -rf "$INSTALLED_APP"
 
 if [[ "$PURGE_STATE" -eq 1 ]]; then
+  validate_state_dir_for_purge
   rm -rf "$STATE_DIR"
 fi
 

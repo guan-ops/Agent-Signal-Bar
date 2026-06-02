@@ -28,6 +28,13 @@ public enum CodexDesktopSessionParser {
         let sessionID = sessionID(in: payload) ?? defaultSessionID
 
         switch topLevelType {
+        case "compacted":
+            return CodexDesktopActivity(
+                signal: .thinking,
+                sessionID: sessionID,
+                event: "DesktopContextCompacted",
+                timestamp: timestamp
+            )
         case "event_msg":
             return activityFromEventMessage(
                 payload,
@@ -53,6 +60,13 @@ private extension CodexDesktopSessionParser {
         timestamp: Date?
     ) -> CodexDesktopActivity? {
         switch payload["type"] as? String {
+        case "token_count":
+            return CodexDesktopActivity(
+                signal: .thinking,
+                sessionID: sessionID,
+                event: "DesktopActivityHeartbeat",
+                timestamp: timestamp
+            )
         case "task_started", "user_message":
             return CodexDesktopActivity(
                 signal: .thinking,

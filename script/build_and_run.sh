@@ -10,6 +10,19 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cd "$ROOT_DIR"
 
+usage() {
+  cat <<EOF
+usage: $0 [run|--debug|--logs|--telemetry|--verify|--status-item-verify|--ui-verify]
+
+Builds Agent Signal Bar, launches the app bundle, and optionally verifies UI/runtime health.
+EOF
+}
+
+if [[ "$MODE" == "--help" || "$MODE" == "-h" || "$MODE" == "help" ]]; then
+  usage
+  exit 0
+fi
+
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
 APP_BUNDLE="$("$ROOT_DIR/script/package_app.sh")"
@@ -69,12 +82,19 @@ checks = {
     "status_item_exists": True,
     "button_exists": True,
     "image_exists": True,
-    "action_exists": True,
     "tooltip_exists": True,
 }
 for key, expected in checks.items():
     if data.get(key) is not expected:
         raise SystemExit(f"{key} was {data.get(key)!r}, expected {expected!r}")
+
+status_menu_mode = data.get("status_menu_mode", "detailed")
+if status_menu_mode == "simple":
+    if data.get("menu_exists") is not True:
+        raise SystemExit(f"menu_exists was {data.get('menu_exists')!r}, expected True for simple mode")
+else:
+    if data.get("action_exists") is not True:
+        raise SystemExit(f"action_exists was {data.get('action_exists')!r}, expected True for detailed mode")
 
 if data.get("length", 0) <= 0:
     raise SystemExit("status item length should be positive")
@@ -138,7 +158,7 @@ case "$MODE" in
     verify_debug_window
     ;;
   *)
-    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|--status-item-verify|--ui-verify]" >&2
+    usage >&2
     exit 2
     ;;
 esac

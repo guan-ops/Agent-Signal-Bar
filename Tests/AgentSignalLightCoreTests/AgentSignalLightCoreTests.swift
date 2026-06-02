@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+@testable import AgentSignalLight
 @testable import AgentSignalLightCore
 
 final class AgentSignalLightCoreTests: XCTestCase {
@@ -10,6 +11,16 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssert(AgentSignal.normalized("PermissionRequest") == .permissionRequest)
         XCTAssert(AgentSignal.normalized("notification") == .notification)
         XCTAssert(AgentSignal.normalized("max-tokens") == .maxTokens)
+    }
+
+    func testJSONPayloadThrowsForInvalidHookPayload() {
+        XCTAssertThrowsError(
+            try JSONPayload.requiredObject(from: Data(#"{"event":"PreToolUse""#.utf8))
+        )
+        XCTAssertThrowsError(
+            try JSONPayload.requiredObject(from: Data(#"["PreToolUse"]"#.utf8))
+        )
+        XCTAssertNoThrow(try JSONPayload.requiredObject(from: Data()))
     }
 
     func testCodexDesktopSessionParserMapsFunctionCallsToWorking() {
@@ -40,6 +51,142 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssert(activity?.signal == .done)
         XCTAssert(activity?.event == "DesktopTaskComplete")
+    }
+
+    func testCodexDesktopSessionParserMapsUserInputRequestsToAttention() {
+        let line = """
+        {"timestamp":"2026-05-29T02:20:43.081Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"call_1"}}
+        """
+
+        let activity = CodexDesktopSessionParser.activity(
+            from: line,
+            defaultSessionID: "codex-desktop:thread"
+        )
+
+        XCTAssert(activity?.signal == .attention)
+        XCTAssert(activity?.event == "DesktopToolCall:request_user_input")
+    }
+
+    func testCodexDesktopSessionParserDoesNotTreatPermissionProfileAsPermissionRequest() {
+        let line = """
+        {"timestamp":"2026-05-29T02:20:43.081Z","type":"turn_context","payload":{"approval_policy":"on-request","permission_profile":{"type":"managed","network":"restricted"}}}
+        """
+
+        XCTAssertNil(
+            CodexDesktopSessionParser.activity(
+                from: line,
+                defaultSessionID: "codex-desktop:thread"
+            )
+        )
+    }
+
+    func testCodexDesktopSessionParserMapsHeartbeatAndCompactionToThinking() {
+        let heartbeatLine = """
+        {"timestamp":"2026-06-01T15:37:11.108Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400}}}
+        """
+        let compactedLine = """
+        {"timestamp":"2026-06-01T15:34:42.602Z","type":"compacted","payload":{"message":"","replacement_history":[]}}
+        """
+
+        let heartbeatActivity = CodexDesktopSessionParser.activity(
+            from: heartbeatLine,
+            defaultSessionID: "codex-desktop:thread"
+        )
+        let compactedActivity = CodexDesktopSessionParser.activity(
+            from: compactedLine,
+            defaultSessionID: "codex-desktop:thread"
+        )
+
+        XCTAssert(heartbeatActivity?.signal == .thinking)
+        XCTAssert(heartbeatActivity?.event == "DesktopActivityHeartbeat")
+        XCTAssert(compactedActivity?.signal == .thinking)
+        XCTAssert(compactedActivity?.event == "DesktopContextCompacted")
+    }
+
+    func testCodexDesktopActivityMonitorReturnsAllNewActivitiesInOrder() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let reasoningTimestamp = isoTimestamp(now.addingTimeInterval(-2))
+        let toolTimestamp = isoTimestamp(now.addingTimeInterval(-1))
+
+        let sessionFile = fixture.sessionsRoot
+            .appendingPathComponent("2026/06/02", isDirectory: true)
+            .appendingPathComponent("rollout-2026-06-02T00-00-00-019e83ed-3f20-7000-9000-000000000001.jsonl")
+        try FileManager.default.createDirectory(
+            at: sessionFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try [
+            #"{"timestamp":"\#(reasoningTimestamp)","type":"response_item","payload":{"type":"reasoning"}}"#,
+            #"{"timestamp":"\#(toolTimestamp)","type":"response_item","payload":{"type":"function_call","name":"exec_command"}}"#
+        ].joined(separator: "\n")
+            .appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: fixture.sessionsRoot,
+            replaysInitialHistory: true
+        )
+        let activities = monitor.poll(now: now)
+
+        XCTAssertEqual(activities.map(\.signal), [.thinking, .working])
+        XCTAssertEqual(activities.map(\.event), ["DesktopThinking", "DesktopToolCall:exec_command"])
+    }
+
+    func testCodexDesktopActivityMonitorKeepsPartialJSONLUntilComplete() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let reasoningTimestamp = isoTimestamp(now.addingTimeInterval(-3))
+        let toolTimestamp = isoTimestamp(now.addingTimeInterval(-1))
+
+        let sessionFile = fixture.sessionsRoot
+            .appendingPathComponent("rollout-2026-06-02T00-00-00-019e83ed-3f20-7000-9000-000000000002.jsonl")
+        try #"{"timestamp":"\#(reasoningTimestamp)","type":"response_item","payload":{"type":"reasoning"}}"#
+            .appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: fixture.sessionsRoot,
+            replaysInitialHistory: true
+        )
+        _ = monitor.poll(now: now)
+
+        let partialLine = #"{"timestamp":"\#(toolTimestamp)","type":"response_item","payload":{"type":"function_call","name":"apply_patch"}"#
+        try FileHandle(forWritingTo: sessionFile).appendString(partialLine)
+        XCTAssertEqual(monitor.poll(now: now.addingTimeInterval(1)), [])
+
+        try FileHandle(forWritingTo: sessionFile).appendString("}\n")
+        let completedActivities = monitor.poll(now: now.addingTimeInterval(2))
+
+        XCTAssertEqual(completedActivities.count, 1)
+        XCTAssertEqual(completedActivities.first?.signal, .working)
+        XCTAssertEqual(completedActivities.first?.event, "DesktopToolCall:apply_patch")
+    }
+
+    func testCodexDesktopActivityMonitorDoesNotReplayHistoryByDefault() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let oldTimestamp = isoTimestamp(now.addingTimeInterval(-10))
+        let newTimestamp = isoTimestamp(now.addingTimeInterval(1))
+
+        let sessionFile = fixture.sessionsRoot
+            .appendingPathComponent("rollout-2026-06-02T00-00-00-019e83ed-3f20-7000-9000-000000000003.jsonl")
+        try #"{"timestamp":"\#(oldTimestamp)","type":"response_item","payload":{"type":"reasoning"}}"#
+            .appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let monitor = CodexDesktopActivityMonitor(sessionsRootURL: fixture.sessionsRoot)
+        XCTAssert(monitor.poll(now: now).isEmpty)
+
+        try FileHandle(forWritingTo: sessionFile)
+            .appendString(#"{"timestamp":"\#(newTimestamp)","type":"response_item","payload":{"type":"function_call","name":"exec_command"}}"# + "\n")
+        let activities = monitor.poll(now: now.addingTimeInterval(2))
+
+        XCTAssertEqual(activities.map(\.signal), [.working])
+        XCTAssertEqual(activities.map(\.event), ["DesktopToolCall:exec_command"])
     }
 
     func testCodexDesktopSessionParserIgnoresUserMessagesAndStartsNewTasks() {
@@ -271,6 +418,22 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssert(alertSnapshot.recentEvents.first?.signal == .sessionEnd)
     }
 
+    func testSessionEndDoesNotClearPausedAggregate() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        _ = try fixture.store.applySessionSignal(.off, sessionID: "manual", agent: "manual")
+        let snapshot = try fixture.store.applySessionSignal(
+            .sessionEnd,
+            sessionID: "codex-main",
+            agent: "codex",
+            lastEvent: "SessionEnd"
+        )
+
+        XCTAssertEqual(snapshot.aggregate, .off)
+        XCTAssert(snapshot.sessions.isEmpty)
+    }
+
     func testClearWarningsKeepsWorkingSessions() throws {
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -382,6 +545,64 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssert(snapshot.recentEvents.map(\.event) == ["three", "two"])
     }
 
+    func testApplySessionSignalPreservesProvidedEventTimestamp() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let eventDate = Date(timeIntervalSince1970: 1_780_358_402)
+
+        let snapshot = try fixture.store.applySessionSignal(
+            .working,
+            sessionID: "codex-main",
+            agent: "codex",
+            lastEvent: "DesktopToolCall:exec_command",
+            updatedAt: eventDate
+        )
+
+        XCTAssertEqual(snapshot.sessions.first?.updatedAt, eventDate)
+        XCTAssertEqual(snapshot.recentEvents.first?.updatedAt, eventDate)
+        XCTAssertEqual(snapshot.updatedAt, eventDate)
+    }
+
+    func testApplySessionSignalIgnoresOlderEventsForSameSession() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let newerDate = Date(timeIntervalSince1970: 1_780_358_420)
+        let olderDate = Date(timeIntervalSince1970: 1_780_358_400)
+
+        _ = try fixture.store.applySessionSignal(
+            .permission,
+            sessionID: "codex-main",
+            agent: "codex",
+            lastEvent: "PermissionRequest",
+            updatedAt: newerDate
+        )
+        let snapshot = try fixture.store.applySessionSignal(
+            .working,
+            sessionID: "codex-main",
+            agent: "codex",
+            lastEvent: "PreToolUse",
+            updatedAt: olderDate
+        )
+
+        XCTAssertEqual(snapshot.aggregate, .permission)
+        XCTAssertEqual(snapshot.sessions.first?.signal, .permission)
+        XCTAssertEqual(snapshot.sessions.first?.updatedAt, newerDate)
+        XCTAssertEqual(snapshot.recentEvents.map(\.event), ["PermissionRequest"])
+    }
+
+    func testDuplicateRecentEventsAreCollapsedBeforeCapping() throws {
+        let fixture = try makeTemporaryStore(eventLimit: 4)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        _ = try fixture.store.applySessionSignal(.working, sessionID: "codex-main", agent: "codex", lastEvent: "PreToolUse")
+        _ = try fixture.store.applySessionSignal(.working, sessionID: "codex-main", agent: "codex", lastEvent: "PreToolUse")
+        _ = try fixture.store.applySessionSignal(.working, sessionID: "codex-main", agent: "codex", lastEvent: "PreToolUse")
+        _ = try fixture.store.applySessionSignal(.toolDone, sessionID: "codex-main", agent: "codex", lastEvent: "PostToolUse")
+        let snapshot = try fixture.store.applySessionSignal(.done, sessionID: "codex-main", agent: "codex", lastEvent: "Stop")
+
+        XCTAssert(snapshot.recentEvents.map(\.event) == ["Stop", "PostToolUse", "PreToolUse"])
+    }
+
     func testCodexHookMappingCoversCoreEventsAndFailures() {
         XCTAssert(CodexHookAdapter.chooseSignal(eventName: "PreToolUse", payload: [:]) == .working)
         XCTAssert(CodexHookAdapter.chooseSignal(eventName: "Stop", payload: [:]) == .done)
@@ -433,6 +654,21 @@ final class AgentSignalLightCoreTests: XCTestCase {
                 payload: ["sessionId": "camel-session"],
                 environment: ["CODEX_SESSION_ID": "env-session"]
             ) == "camel-session"
+        )
+    }
+
+    func testHookSessionKeysAcceptNumericPayloadValues() {
+        XCTAssertEqual(
+            CodexHookAdapter.sessionKey(payload: ["session_id": 12_345], environment: [:]),
+            "12345"
+        )
+        XCTAssertEqual(
+            ClaudeHookAdapter.sessionKey(payload: ["conversation_id": 67_890], environment: [:]),
+            "67890"
+        )
+        XCTAssertEqual(
+            GenericHookAdapter.sessionKey(payload: ["run_id": 42], environment: [:], agent: "local"),
+            "42"
         )
     }
 
@@ -702,6 +938,69 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssert((storedDocument.updatedAt ?? .distantPast) > oldDate)
     }
 
+    func testStateStoreReadsFractionalSecondDatesFromExternalJSON() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let timestamp = isoTimestamp(now)
+        let json = """
+        {
+          "schema_version": 1,
+          "aggregate": "working",
+          "updated_at": "\(timestamp)",
+          "sessions": {
+            "external": {
+              "agent": "external",
+              "signal": "working",
+              "last_event": "ExternalWrite",
+              "updated_at": "\(timestamp)"
+            }
+          },
+          "events": [
+            {
+              "id": "external-event",
+              "session_id": "external",
+              "agent": "external",
+              "signal": "working",
+              "event": "ExternalWrite",
+              "updated_at": "\(timestamp)"
+            }
+          ]
+        }
+        """
+
+        try FileManager.default.createDirectory(
+            at: fixture.store.stateFileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try json.write(to: fixture.store.stateFileURL, atomically: true, encoding: .utf8)
+
+        let snapshot = fixture.store.readSnapshot()
+
+        XCTAssertEqual(snapshot.aggregate, .working)
+        XCTAssertEqual(snapshot.sessions.first?.sessionID, "external")
+        XCTAssertEqual(snapshot.sessions.first?.lastEvent, "ExternalWrite")
+    }
+
+    func testDefaultStateFileURLTrimsBlankEnvironmentValues() {
+        let explicitFallback = SignalStateStore.defaultStateFileURL(
+            environment: [
+                "AGENT_SIGNAL_LIGHT_STATE_FILE": "   ",
+                "AGENT_SIGNAL_LIGHT_STATE_DIR": "  /tmp/trimmed-agent-signal  "
+            ]
+        )
+        XCTAssertEqual(explicitFallback.path, "/tmp/trimmed-agent-signal/status.json")
+
+        let defaultFallback = SignalStateStore.defaultStateFileURL(
+            environment: [
+                "AGENT_SIGNAL_LIGHT_STATE_FILE": "\n\t",
+                "AGENT_SIGNAL_LIGHT_STATE_DIR": "  ",
+                "SIGNAL_LIGHT_STATE_DIR": "\n"
+            ]
+        )
+        XCTAssertEqual(defaultFallback.path, "/tmp/agent-signal/status.json")
+    }
+
     func testCompletedSessionExpiresBackToIdle() throws {
         let fixture = try makeTemporaryStore(completedTTLSeconds: 0.01)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -750,7 +1049,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
     private func makeTemporaryStore(
         sessionTTLSeconds: Double = 86_400,
-        completedTTLSeconds: Double = 8,
+        completedTTLSeconds: Double = 90,
         eventLimit: Int = 30
     ) throws -> (store: SignalStateStore, directory: URL) {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
@@ -764,6 +1063,20 @@ final class AgentSignalLightCoreTests: XCTestCase {
             eventLimit: eventLimit
         )
         return (store, directory)
+    }
+
+    private func makeTemporaryCodexSessionsRoot() throws -> (sessionsRoot: URL, directory: URL) {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("agent-signal-light-codex-sessions-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = directory.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        return (sessionsRoot, directory)
+    }
+
+    private func isoTimestamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 
     private func storedDocument(in store: SignalStateStore) throws -> SignalStateDocument {
@@ -781,5 +1094,17 @@ final class AgentSignalLightCoreTests: XCTestCase {
             withIntermediateDirectories: true
         )
         try encoder.encode(document).write(to: store.stateFileURL)
+    }
+}
+
+private extension FileHandle {
+    func appendString(_ value: String) throws {
+        defer {
+            try? close()
+        }
+        try seekToEnd()
+        if let data = value.data(using: .utf8) {
+            try write(contentsOf: data)
+        }
     }
 }

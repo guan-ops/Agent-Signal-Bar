@@ -38,9 +38,9 @@ The all-in-one release gate replaces the old manual command chain. It packages r
 - Turn `显示状态栏信号` off; the settings window should open immediately so the app is recoverable.
 - Close that settings window while `显示状态栏信号` is still off; the app should exit instead of running invisibly.
 - Relaunch once with `显示状态栏信号` off; the settings window should open automatically.
-- Open `灯效`; confirm `灯效自定义` exposes active effect, active speed, alert flash speed, done effect, and breathing strength, and test buttons stay disabled until `启用灯效测试` is on.
-- While a real non-manual session is active, enable `灯效测试` inside `灯效`, click `请求授权`, then turn `启用灯效测试` off; the real session should return and only the manual test session should be removed.
-- Confirm `状态栏全亮` lights all three dots in the current status bar style and turns off when `启用灯效测试` is turned off.
+- Open `高级`; confirm light-effect customization exposes active effect, active speed, alert flash speed, done effect, and breathing strength.
+- Trigger real or CLI-driven `thinking`, `working`, `permission`, `blocked`, and `done` signals; confirm the status bar animation follows the current customization and returns to the live session state afterward.
+- Confirm pause/resume monitoring plays the configured pause/resume light transitions and then returns to the correct live state.
 - Confirm the menu shows the current version/build and release state such as `Local / not notarized`.
 - Open `运行`, confirm it shows the current aggregate status, monitoring state, active sessions, and recent events without exposing raw JSON; the summary signal should be one pure-color lamp only, independent of the selected status bar style, while keeping the same status color and flashing/breathing timing.
 - Open `通用`, confirm language is a dropdown menu, the status bar controls are in this same page, and switch between `跟随系统`, `简体中文`, `English`, and one additional language; the settings window and menu bar panel should update immediately.

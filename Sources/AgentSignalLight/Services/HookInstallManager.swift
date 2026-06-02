@@ -1,11 +1,21 @@
 import Foundation
 
 struct HookInstallManager: Sendable {
+    private static let commandTimeout: TimeInterval = 30
+
     func preview() throws -> HookInstallResult {
         let root = try hookRoot()
         return try runInstallHooks(
             hookRoot: root,
             arguments: ["--target", "all", "--codex-scope", root.codexScope, "--dry-run"]
+        )
+    }
+
+    func previewCodex() throws -> HookInstallResult {
+        let root = try hookRoot()
+        return try runInstallHooks(
+            hookRoot: root,
+            arguments: ["--target", "codex", "--codex-scope", root.codexScope, "--dry-run"]
         )
     }
 
@@ -22,6 +32,14 @@ struct HookInstallManager: Sendable {
         return try runInstallHooks(
             hookRoot: root,
             arguments: ["--target", "all", "--codex-scope", root.codexScope, "--install"]
+        )
+    }
+
+    func installCodex() throws -> HookInstallResult {
+        let root = try hookRoot()
+        return try runInstallHooks(
+            hookRoot: root,
+            arguments: ["--target", "codex", "--codex-scope", root.codexScope, "--install"]
         )
     }
 
@@ -45,20 +63,30 @@ struct HookInstallManager: Sendable {
         process.arguments = ["python3", scriptURL.path] + arguments
         process.currentDirectoryURL = hookRootURL
 
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
+        let outputURL = temporaryCaptureURL(suffix: "out")
+        let errorURL = temporaryCaptureURL(suffix: "err")
+        try Data().write(to: outputURL)
+        try Data().write(to: errorURL)
+        let outputHandle = try FileHandle(forWritingTo: outputURL)
+        let errorHandle = try FileHandle(forWritingTo: errorURL)
+        defer {
+            try? outputHandle.close()
+            try? errorHandle.close()
+            try? FileManager.default.removeItem(at: outputURL)
+            try? FileManager.default.removeItem(at: errorURL)
+        }
+        process.standardOutput = outputHandle
+        process.standardError = errorHandle
 
         try process.run()
-        process.waitUntilExit()
+        try waitForProcess(process, timeout: Self.commandTimeout)
 
         let output = String(
-            data: outputPipe.fileHandleForReading.readDataToEndOfFile(),
+            data: (try? Data(contentsOf: outputURL)) ?? Data(),
             encoding: .utf8
         ) ?? ""
         let error = String(
-            data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
+            data: (try? Data(contentsOf: errorURL)) ?? Data(),
             encoding: .utf8
         ) ?? ""
 
@@ -73,6 +101,24 @@ struct HookInstallManager: Sendable {
         }
 
         return result
+    }
+
+    private func temporaryCaptureURL(suffix: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("agent-signal-hook-\(UUID().uuidString).\(suffix)")
+    }
+
+    private func waitForProcess(_ process: Process, timeout: TimeInterval) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        if process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+            throw HookInstallError.commandTimedOut(timeout)
+        }
     }
 
     private func hookRoot() throws -> HookRoot {
@@ -124,6 +170,7 @@ enum HookInstallError: Error, LocalizedError {
     case cannotLocateProjectRoot(String)
     case missingInstallScript(String)
     case commandFailed(HookInstallResult)
+    case commandTimedOut(TimeInterval)
 
     var errorDescription: String? {
         switch self {
@@ -134,6 +181,8 @@ enum HookInstallError: Error, LocalizedError {
         case .commandFailed(let result):
             let detail = result.displayText
             return detail.isEmpty ? "hook 安装命令失败，退出码 \(result.exitCode)" : detail
+        case .commandTimedOut(let timeout):
+            return "hook 安装命令超过 \(Int(timeout)) 秒仍未结束，已停止。"
         }
     }
 }

@@ -23,7 +23,7 @@ struct LaunchAtLoginManager: Sendable {
     }
 
     var isEnabled: Bool {
-        FileManager.default.fileExists(atPath: plistURL.path)
+        FileManager.default.fileExists(atPath: plistURL.path) && launchctlPrintSucceeds()
     }
 
     func setEnabled(_ enabled: Bool) throws {
@@ -40,40 +40,73 @@ struct LaunchAtLoginManager: Sendable {
             withIntermediateDirectories: true
         )
 
-        let plist = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-          <key>Label</key>
-          <string>\(label)</string>
-          <key>ProgramArguments</key>
-          <array>
-            <string>/usr/bin/open</string>
-            <string>\(appURL.path)</string>
-          </array>
-          <key>RunAtLoad</key>
-          <true/>
-          <key>StandardOutPath</key>
-          <string>/tmp/agent-signal/app.out.log</string>
-          <key>StandardErrorPath</key>
-          <string>/tmp/agent-signal/app.err.log</string>
-        </dict>
-        </plist>
-        """
-
         try FileManager.default.createDirectory(
             at: URL(fileURLWithPath: "/tmp/agent-signal", isDirectory: true),
             withIntermediateDirectories: true
         )
-        try plist.write(to: plistURL, atomically: true, encoding: .utf8)
-        try? runLaunchctl(arguments: ["bootout", "gui/\(getuid())", plistURL.path], allowsFailure: true)
-        try runLaunchctl(arguments: ["bootstrap", "gui/\(getuid())", plistURL.path])
+        try launchAgentPlistData().write(to: plistURL, options: .atomic)
+
+        do {
+            try? runLaunchctl(arguments: ["bootout", "gui/\(getuid())", plistURL.path], allowsFailure: true)
+            try runLaunchctl(arguments: ["bootstrap", "gui/\(getuid())", plistURL.path])
+        } catch {
+            try? FileManager.default.removeItem(at: plistURL)
+            throw error
+        }
     }
 
     private func uninstall() throws {
         try? runLaunchctl(arguments: ["bootout", "gui/\(getuid())", plistURL.path], allowsFailure: true)
         try? FileManager.default.removeItem(at: plistURL)
+    }
+
+    private func launchAgentPlistData() throws -> Data {
+        let plist: [String: Any] = [
+            "Label": label,
+            "ProgramArguments": [
+                "/usr/bin/open",
+                appURL.path
+            ],
+            "RunAtLoad": true,
+            "StandardOutPath": "/tmp/agent-signal/app.out.log",
+            "StandardErrorPath": "/tmp/agent-signal/app.err.log"
+        ]
+
+        return try PropertyListSerialization.data(
+            fromPropertyList: plist,
+            format: .xml,
+            options: 0
+        )
+    }
+
+    private func launchctlPrintSucceeds() -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["print", "gui/\(getuid())/\(label)"]
+
+        if let nullHandle = FileHandle(forWritingAtPath: "/dev/null") {
+            process.standardOutput = nullHandle
+            process.standardError = nullHandle
+        }
+
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+
+        let deadline = Date().addingTimeInterval(Self.launchctlTimeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        if process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+            return false
+        }
+
+        return process.terminationStatus == 0
     }
 
     private func runLaunchctl(arguments: [String], allowsFailure: Bool = false) throws {

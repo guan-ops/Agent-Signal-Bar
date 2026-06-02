@@ -43,5 +43,12 @@ jobs:
       - name: Run Swift tests
         run: swift test
 
+      - name: Build products
+        run: |
+          swift build --product AgentSignalLight
+          swift build --product agent-signal
+          swift build --product agent-signal-checks
+          swift build --product agent-signal-icon-preview
+
       - name: Verify local integrations
         run: ./script/verify_local_integrations.sh

@@ -149,11 +149,18 @@ extension MenuBarStatusModel {
     func displayName(for effect: SettingsGlassEffect) -> String {
         switch effect {
         case .reduced:
-            return text("减弱", "Reduced")
-        case .standard:
             return text("标准", "Standard")
-        case .enhanced:
+        case .standard:
             return text("增强", "Enhanced")
+        }
+    }
+
+    func displayName(for mode: StatusMenuMode) -> String {
+        switch mode {
+        case .detailed:
+            return text("复杂", "Detailed")
+        case .simple:
+            return text("简约", "Simple")
         }
     }
 
@@ -350,10 +357,6 @@ extension MenuBarStatusModel {
             return text("会话结束", "Session Ended")
         case "ManualSet":
             return text("手动设置", "Manual Set")
-        case "SignalTest":
-            return text("灯效测试", "Signal Test")
-        case "SignalTestOff":
-            return text("退出灯效测试", "Signal Test Off")
         case "ClearWarning":
             return text("清除提醒", "Clear Warning")
         case "DesktopThinking":
@@ -364,6 +367,10 @@ extension MenuBarStatusModel {
             return text("输出中", "Responding")
         case "DesktopTaskStarted":
             return text("思考中", "Thinking")
+        case "DesktopActivityHeartbeat":
+            return text("活动中", "Active")
+        case "DesktopContextCompacted":
+            return text("整理上下文", "Compacting Context")
         case "DesktopTaskComplete":
             return text("完成", "Done")
         case "DesktopTurnAborted":
@@ -471,6 +478,8 @@ private enum AppLocalization {
         "Signals": localized(zhHant: "燈效", ja: "信号", ko: "신호", es: "Senales", fr: "Signaux", de: "Signale", pt: "Sinais"),
         "Effects": localized(zhHant: "燈效", ja: "エフェクト", ko: "등 효과", es: "Efectos", fr: "Effets", de: "Effekte", pt: "Efeitos"),
         "Connect": localized(zhHant: "連接", ja: "接続", ko: "연결", es: "Conectar", fr: "Connexion", de: "Verbinden", pt: "Conectar"),
+        "Advanced": localized(zhHant: "進階", ja: "詳細", ko: "고급", es: "Avanzado", fr: "Avance", de: "Erweitert", pt: "Avancado"),
+        "Advanced Settings": localized(zhHant: "進階設定", ja: "詳細設定", ko: "고급 설정", es: "Ajustes avanzados", fr: "Reglages avances", de: "Erweiterte Einstellungen", pt: "Configuracoes avancadas"),
         "About": localized(zhHant: "關於", ja: "情報", ko: "정보", es: "Acerca de", fr: "A propos", de: "Info", pt: "Sobre"),
         "Updated": localized(zhHant: "更新", ja: "更新", ko: "업데이트", es: "Actualizado", fr: "Mis a jour", de: "Aktualisiert", pt: "Atualizado"),
         "Live": localized(zhHant: "即時", ja: "ライブ", ko: "실시간", es: "En vivo", fr: "Direct", de: "Live", pt: "Ao vivo"),
@@ -488,7 +497,6 @@ private enum AppLocalization {
         "Open Agent Signal Bar automatically after macOS login": localized(zhHant: "登入 macOS 後自動開啟 Agent Signal Bar", ja: "macOS ログイン後に Agent Signal Bar を自動で開きます", ko: "macOS 로그인 후 Agent Signal Bar를 자동으로 엽니다", es: "Abrir Agent Signal Bar automaticamente al iniciar sesion en macOS", fr: "Ouvrir Agent Signal Bar automatiquement apres la connexion macOS", de: "Agent Signal Bar nach der macOS Anmeldung automatisch oeffnen", pt: "Abrir Agent Signal Bar automaticamente apos login no macOS"),
         "Open Agent": localized(zhHant: "開啟 Agent", ja: "Agent を開く", ko: "Agent 열기", es: "Abrir Agent", fr: "Ouvrir l'agent", de: "Agent oeffnen", pt: "Abrir Agent"),
         "Clear Warning": localized(zhHant: "清除提醒", ja: "警告消去", ko: "경고 지우기", es: "Borrar aviso", fr: "Effacer l'alerte", de: "Warnung loeschen", pt: "Limpar aviso"),
-        "Hold and drag to reorder": localized(zhHant: "按住並拖動可調整位置", ja: "長押しで並べ替え", ko: "길게 눌러 끌어 순서 변경", es: "Mantener y arrastrar para ordenar", fr: "Maintenir et glisser pour reordonner", de: "Halten und ziehen zum Sortieren", pt: "Segure e arraste para reordenar"),
         "Status Bar": localized(zhHant: "狀態列", ja: "ステータスバー", ko: "상태 막대", es: "Barra de estado", fr: "Barre d'etat", de: "Statusleiste", pt: "Barra de status"),
         "Show status bar signal": localized(zhHant: "顯示狀態列信號", ja: "信号を表示", ko: "상태 막대 신호 표시", es: "Mostrar senal en la barra", fr: "Afficher le signal dans la barre", de: "Signal in der Statusleiste anzeigen", pt: "Mostrar sinal na barra"),
         "Hold Command and drag the status bar signal to move its position.": localized(zhHant: "按住 Command 並拖動狀態列信號燈，即可調整它在狀態列中的位置。", ja: "Command キーを押しながらステータスバー信号をドラッグすると位置を移動できます。", ko: "Command 키를 누른 채 상태 막대 신호를 드래그하면 위치를 옮길 수 있습니다.", es: "Manten Command y arrastra la senal de la barra de estado para moverla.", fr: "Maintenez Command et faites glisser le signal de la barre d'etat pour le deplacer.", de: "Halte Command gedrueckt und ziehe das Signal in der Statusleiste, um es zu verschieben.", pt: "Segure Command e arraste o sinal da barra de status para mover a posicao."),
@@ -523,6 +531,9 @@ private enum AppLocalization {
         "Light": localized(zhHant: "淺色", ja: "ライト", ko: "밝게", es: "Claro", fr: "Clair", de: "Hell", pt: "Claro"),
         "Dark": localized(zhHant: "深色", ja: "ダーク", ko: "어둡게", es: "Oscuro", fr: "Sombre", de: "Dunkel", pt: "Escuro"),
         "Status bar style": localized(zhHant: "狀態列風格", ja: "表示スタイル", ko: "상태 막대 스타일", es: "Estilo de barra", fr: "Style de barre", de: "Statusleistenstil", pt: "Estilo da barra"),
+        "Status bar menu": localized(zhHant: "狀態列選單", ja: "ステータスメニュー", ko: "상태 막대 메뉴", es: "Menu de barra", fr: "Menu de barre", de: "Statusleistenmenue", pt: "Menu da barra"),
+        "Simple": localized(zhHant: "簡約", ja: "シンプル", ko: "간단", es: "Simple", fr: "Simple", de: "Einfach", pt: "Simples"),
+        "Detailed": localized(zhHant: "複雜", ja: "詳細", ko: "상세", es: "Detallado", fr: "Detaille", de: "Detailliert", pt: "Detalhado"),
         "Direction": localized(zhHant: "方向", ja: "方向", ko: "방향", es: "Direccion", fr: "Direction", de: "Richtung", pt: "Direcao"),
         "Dot breathing": localized(zhHant: "圓點呼吸強度", ja: "ドットの呼吸", ko: "점 호흡", es: "Respiracion del punto", fr: "Respiration du point", de: "Punkt Atmung", pt: "Respiracao do ponto"),
         "Effect Customization": localized(zhHant: "燈效自訂", ja: "効果設定", ko: "등 효과 사용자화", es: "Personalizacion de efectos", fr: "Personnalisation des effets", de: "Effektanpassung", pt: "Personalizacao de efeitos"),
@@ -537,8 +548,6 @@ private enum AppLocalization {
         "Default": localized(zhHant: "預設", ja: "標準", ko: "기본", es: "Predeterminado", fr: "Par defaut", de: "Standard", pt: "Padrao"),
         "Small": localized(zhHant: "小", ja: "小", ko: "작게", es: "Pequeno", fr: "Petit", de: "Klein", pt: "Pequeno"),
         "Large": localized(zhHant: "大", ja: "大", ko: "크게", es: "Grande", fr: "Grand", de: "Gross", pt: "Grande"),
-        "Signal Test": localized(zhHant: "燈效測試", ja: "信号テスト", ko: "신호 테스트", es: "Prueba de senal", fr: "Test du signal", de: "Signaltest", pt: "Teste de sinal"),
-        "Signal Test Off": localized(zhHant: "退出燈效測試", ja: "信号テスト終了", ko: "신호 테스트 종료", es: "Prueba de senal desactivada", fr: "Test du signal desactive", de: "Signaltest aus", pt: "Teste de sinal desligado"),
         "Enable signal test": localized(zhHant: "啟用燈效測試", ja: "テスト有効", ko: "신호 테스트 켜기", es: "Activar prueba de senal", fr: "Activer le test du signal", de: "Signaltest aktivieren", pt: "Ativar teste de sinal"),
         "Turn this off to leave manual testing and return to live agent status.": localized(zhHant: "關閉後會退出手動測試，並恢復真實 Agent 狀態。", ja: "オフにすると手動テストを終了し、実際の Agent 状態に戻ります。", ko: "끄면 수동 테스트를 종료하고 실제 Agent 상태로 돌아갑니다.", es: "Desactivalo para salir de la prueba manual y volver al estado real del Agent.", fr: "Desactivez pour quitter le test manuel et revenir a l'etat reel de l'agent.", de: "Ausschalten beendet den manuellen Test und kehrt zum echten Agent Status zurueck.", pt: "Desative para sair do teste manual e voltar ao status real do Agent."),
         "Idle": localized(zhHant: "空閒", ja: "待機中", ko: "유휴", es: "Inactivo", fr: "Inactif", de: "Leerlauf", pt: "Ocioso"),
@@ -554,7 +563,19 @@ private enum AppLocalization {
         "Automatic setup": localized(zhHant: "自動接入", ja: "自動セットアップ", ko: "자동 설정", es: "Configuracion automatica", fr: "Configuration automatique", de: "Automatische Einrichtung", pt: "Configuracao automatica"),
         "Codex and Claude Code": localized(zhHant: "Codex 和 Claude Code", ja: "Codex と Claude Code", ko: "Codex 및 Claude Code", es: "Codex y Claude Code", fr: "Codex et Claude Code", de: "Codex und Claude Code", pt: "Codex e Claude Code"),
         "Connect Codex CLI / Codex IDE events with project hooks": localized(zhHant: "透過專案 Hook 接入 Codex CLI / Codex IDE 事件", ja: "プロジェクト Hook で Codex CLI / Codex IDE イベントを接続", ko: "프로젝트 Hook으로 Codex CLI / Codex IDE 이벤트 연결", es: "Conecta eventos de Codex CLI / Codex IDE con hooks del proyecto", fr: "Connecte les evenements Codex CLI / Codex IDE avec les hooks projet", de: "Codex CLI / Codex IDE Events ueber Projekt Hooks verbinden", pt: "Conecta eventos do Codex CLI / Codex IDE com hooks do projeto"),
+        "Codex Hook": localized(zhHant: "Codex Hook", ja: "Codex Hook", ko: "Codex Hook", es: "Hook de Codex", fr: "Hook Codex", de: "Codex Hook", pt: "Hook do Codex"),
+        "Codex Desktop can be monitored automatically; Codex CLI / IDE hooks can be checked or installed separately": localized(zhHant: "Codex Desktop 可自動監控；Codex CLI / IDE Hook 可單獨檢查或安裝", ja: "Codex Desktop は自動監視、Codex CLI / IDE Hook は個別に確認またはインストールできます", ko: "Codex Desktop은 자동 모니터링되며 Codex CLI / IDE Hook은 별도로 확인하거나 설치할 수 있습니다", es: "Codex Desktop se puede supervisar automaticamente; los hooks de Codex CLI / IDE se comprueban o instalan por separado", fr: "Codex Desktop peut etre surveille automatiquement; les hooks Codex CLI / IDE se verifient ou s'installent separement", de: "Codex Desktop kann automatisch ueberwacht werden; Codex CLI / IDE Hooks lassen sich separat pruefen oder installieren", pt: "Codex Desktop pode ser monitorado automaticamente; hooks do Codex CLI / IDE podem ser verificados ou instalados separadamente"),
+        "Codex Desktop does not need a hook; Codex CLI / IDE hooks can be checked or installed separately": localized(zhHant: "Codex Desktop 不需要安裝 Hook；Codex CLI / IDE Hook 可單獨檢查或安裝", ja: "Codex Desktop に Hook は不要です。Codex CLI / IDE Hook は個別に確認またはインストールできます", ko: "Codex Desktop은 Hook이 필요 없으며 Codex CLI / IDE Hook은 별도로 확인하거나 설치할 수 있습니다", es: "Codex Desktop no necesita hook; los hooks de Codex CLI / IDE se comprueban o instalan por separado", fr: "Codex Desktop n'a pas besoin de hook; les hooks Codex CLI / IDE se verifient ou s'installent separement", de: "Codex Desktop braucht keinen Hook; Codex CLI / IDE Hooks lassen sich separat pruefen oder installieren", pt: "Codex Desktop nao precisa de hook; hooks do Codex CLI / IDE podem ser verificados ou instalados separadamente"),
+        "Codex Desktop auto monitor": localized(zhHant: "Codex Desktop 自動監控", ja: "Codex Desktop 自動監視", ko: "Codex Desktop 자동 모니터링", es: "Monitor automatico de Codex Desktop", fr: "Surveillance auto Codex Desktop", de: "Codex Desktop automatisch ueberwachen", pt: "Monitor automatico do Codex Desktop"),
+        "Codex Desktop": localized(zhHant: "Codex Desktop", ja: "Codex Desktop", ko: "Codex Desktop", es: "Codex Desktop", fr: "Codex Desktop", de: "Codex Desktop", pt: "Codex Desktop"),
+        "Reads local Codex Desktop logs by default; no hook required": localized(zhHant: "預設讀取本機 Codex Desktop 日誌；無需安裝 Hook", ja: "標準でローカルの Codex Desktop ログを読み取ります。Hook は不要です", ko: "기본적으로 로컬 Codex Desktop 로그를 읽으며 Hook은 필요 없습니다", es: "Lee los registros locales de Codex Desktop por defecto; no requiere hook", fr: "Lit les journaux locaux de Codex Desktop par defaut; aucun hook requis", de: "Liest standardmaessig lokale Codex Desktop Logs; kein Hook erforderlich", pt: "Le logs locais do Codex Desktop por padrao; nao requer hook"),
+        "Auto monitor": localized(zhHant: "自動監控", ja: "自動監視", ko: "자동 모니터링", es: "Monitor automatico", fr: "Surveillance auto", de: "Auto-Ueberwachung", pt: "Monitor automatico"),
+        "Codex CLI / IDE Hook": localized(zhHant: "Codex CLI / IDE Hook", ja: "Codex CLI / IDE Hook", ko: "Codex CLI / IDE Hook", es: "Hook de Codex CLI / IDE", fr: "Hook Codex CLI / IDE", de: "Codex CLI / IDE Hook", pt: "Hook do Codex CLI / IDE"),
+        "Optional enhancement for CLI / IDE, permission requests, and lower latency": localized(zhHant: "可選增強：用於 CLI / IDE、權限請求和更低延遲", ja: "任意の拡張: CLI / IDE、権限リクエスト、低遅延向け", ko: "선택적 확장: CLI / IDE, 권한 요청, 낮은 지연 시간용", es: "Mejora opcional para CLI / IDE, solicitudes de permiso y menor latencia", fr: "Extension facultative pour CLI / IDE, demandes d'autorisation et latence reduite", de: "Optionale Erweiterung fuer CLI / IDE, Berechtigungsanfragen und geringere Latenz", pt: "Melhoria opcional para CLI / IDE, pedidos de permissao e menor latencia"),
+        "Check Codex": localized(zhHant: "檢查 Codex", ja: "Codex を確認", ko: "Codex 확인", es: "Comprobar Codex", fr: "Verifier Codex", de: "Codex pruefen", pt: "Verificar Codex"),
+        "Install Codex": localized(zhHant: "安裝 Codex", ja: "Codex をインストール", ko: "Codex 설치", es: "Instalar Codex", fr: "Installer Codex", de: "Codex installieren", pt: "Instalar Codex"),
         "Global Claude Code hooks for tools, permissions, notifications, subtasks, and stop failures": localized(zhHant: "透過 Claude Code Hook 全域接入，支援工具、權限、通知、子任務和停止失敗", ja: "Claude Code のグローバル Hook でツール、権限、通知、サブタスク、停止失敗に対応", ko: "Claude Code 전역 Hook으로 도구, 권한, 알림, 하위 작업, 중지 실패 지원", es: "Hooks globales de Claude Code para herramientas, permisos, notificaciones, subtareas y fallos al detener", fr: "Hooks globaux Claude Code pour outils, autorisations, notifications, sous-taches et echecs d'arret", de: "Globale Claude Code Hooks fuer Tools, Berechtigungen, Hinweise, Unteraufgaben und Stop Fehler", pt: "Hooks globais do Claude Code para ferramentas, permissoes, notificacoes, subtarefas e falhas ao parar"),
+        "Claude Code global hooks can be checked or installed separately": localized(zhHant: "Claude Code 全域 Hook 可單獨檢查或安裝", ja: "Claude Code のグローバル Hook は個別に確認またはインストールできます", ko: "Claude Code 전역 Hook은 별도로 확인하거나 설치할 수 있습니다", es: "Los hooks globales de Claude Code se comprueban o instalan por separado", fr: "Les hooks globaux Claude Code se verifient ou s'installent separement", de: "Globale Claude Code Hooks lassen sich separat pruefen oder installieren", pt: "Hooks globais do Claude Code podem ser verificados ou instalados separadamente"),
         "Install Claude": localized(zhHant: "安裝 Claude", ja: "Claude をインストール", ko: "Claude 설치", es: "Instalar Claude", fr: "Installer Claude", de: "Claude installieren", pt: "Instalar Claude"),
         "Check Claude": localized(zhHant: "檢查 Claude", ja: "Claude を確認", ko: "Claude 확인", es: "Comprobar Claude", fr: "Verifier Claude", de: "Claude pruefen", pt: "Verificar Claude"),
         "Check or install Claude Code global hooks only": localized(zhHant: "單獨檢查或安裝 Claude Code 全域 Hook", ja: "Claude Code のグローバル Hook だけを確認またはインストール", ko: "Claude Code 전역 Hook만 확인하거나 설치", es: "Comprobar o instalar solo los hooks globales de Claude Code", fr: "Verifier ou installer uniquement les hooks globaux Claude Code", de: "Nur globale Claude Code Hooks pruefen oder installieren", pt: "Verificar ou instalar apenas hooks globais do Claude Code"),
@@ -578,6 +599,11 @@ private enum AppLocalization {
         "Copy release info": localized(zhHant: "複製版本資訊", ja: "リリース情報をコピー", ko: "릴리스 정보 복사", es: "Copiar info de version", fr: "Copier les infos de version", de: "Release Info kopieren", pt: "Copiar info da versao"),
         "Developer": localized(zhHant: "開發者", ja: "開発者", ko: "개발자", es: "Desarrollador", fr: "Developpeur", de: "Entwickler", pt: "Desenvolvedor"),
         "Waiting for status": localized(zhHant: "等待狀態", ja: "状態待ち", ko: "상태 대기 중", es: "Esperando estado", fr: "En attente d'etat", de: "Wartet auf Status", pt: "Aguardando status"),
+        "Not Running": localized(zhHant: "尚未執行", ja: "未実行", ko: "실행 중 아님", es: "No se esta ejecutando", fr: "Non lance", de: "Laeuft nicht", pt: "Nao esta em execucao"),
+        "Waiting to launch": localized(zhHant: "等待啟動", ja: "起動待ち", ko: "실행 대기 중", es: "Esperando inicio", fr: "En attente de lancement", de: "Wartet auf Start", pt: "Aguardando inicio"),
+        "The selected agent is not running.": localized(zhHant: "目前選擇的 Agent 尚未執行。", ja: "選択中の Agent は実行されていません。", ko: "선택한 Agent가 실행 중이 아닙니다.", es: "El Agent seleccionado no esta en ejecucion.", fr: "L'agent selectionne n'est pas en cours.", de: "Der ausgewaehlte Agent laeuft nicht.", pt: "O Agent selecionado nao esta em execucao."),
+        "The selected agent is not running": localized(zhHant: "目前選擇的 Agent 尚未執行", ja: "選択中の Agent は実行されていません", ko: "선택한 Agent가 실행 중이 아닙니다", es: "El Agent seleccionado no esta en ejecucion", fr: "L'agent selectionne n'est pas en cours", de: "Der ausgewaehlte Agent laeuft nicht", pt: "O Agent selecionado nao esta em execucao"),
+        "Launch the selected agent to show live status here.": localized(zhHant: "啟動對應 Agent 後，這裡會顯示即時狀態。", ja: "選択した Agent を起動すると、ここにライブ状態が表示されます。", ko: "선택한 Agent를 실행하면 여기에 실시간 상태가 표시됩니다.", es: "Inicia el Agent seleccionado para ver aqui el estado en vivo.", fr: "Lancez l'agent selectionne pour afficher son etat ici.", de: "Starte den ausgewaehlten Agent, um hier den Live Status zu sehen.", pt: "Inicie o Agent selecionado para mostrar o status ao vivo aqui."),
         "Paused": localized(zhHant: "已暫停", ja: "一時停止中", ko: "일시 중지됨", es: "Pausado", fr: "En pause", de: "Pausiert", pt: "Pausado"),
         "No active agent sessions": localized(zhHant: "沒有執行中的 Agent", ja: "実行中の Agent なし", ko: "활성 Agent 세션 없음", es: "No hay sesiones activas", fr: "Aucune session d'agent active", de: "Keine aktiven Agent Sitzungen", pt: "Nenhuma sessao ativa"),
         "No running agents": localized(zhHant: "沒有執行中的 Agent", ja: "実行中なし", ko: "실행 중인 Agent 없음", es: "No hay agentes en ejecucion", fr: "Aucun agent en cours", de: "Keine laufenden Agents", pt: "Nenhum Agent em execucao"),
@@ -586,6 +612,9 @@ private enum AppLocalization {
         "Settings": localized(zhHant: "設定", ja: "設定", ko: "설정", es: "Ajustes", fr: "Reglages", de: "Einstellungen", pt: "Configuracoes"),
         "Resume": localized(zhHant: "繼續監控", ja: "再開", ko: "재개", es: "Reanudar", fr: "Reprendre", de: "Fortsetzen", pt: "Retomar"),
         "Pause": localized(zhHant: "暫停監控", ja: "一時停止", ko: "일시 중지", es: "Pausar", fr: "Pause", de: "Pause", pt: "Pausar"),
+        "Resume Monitoring": localized(zhHant: "繼續監控", ja: "監視を再開", ko: "모니터링 재개", es: "Reanudar supervision", fr: "Reprendre la surveillance", de: "Ueberwachung fortsetzen", pt: "Retomar monitoramento"),
+        "Pause Monitoring": localized(zhHant: "暫停監控", ja: "監視を一時停止", ko: "모니터링 일시 중지", es: "Pausar supervision", fr: "Mettre la surveillance en pause", de: "Ueberwachung pausieren", pt: "Pausar monitoramento"),
+        "When paused, the status bar light turns off and agent events stop refreshing.": localized(zhHant: "暫停後狀態列燈會熄滅，Agent 事件暫不刷新。", ja: "一時停止中はステータスバーのライトが消え、Agent イベントの更新を止めます。", ko: "일시 중지하면 상태 막대 불이 꺼지고 Agent 이벤트 새로고침이 멈춥니다.", es: "En pausa, la luz de la barra se apaga y los eventos dejan de actualizarse.", fr: "En pause, le voyant de la barre s'eteint et les evenements agent ne se rafraichissent plus.", de: "Bei Pause erlischt das Statusleistenlicht und Agent Ereignisse werden nicht aktualisiert.", pt: "Ao pausar, a luz da barra apaga e os eventos do Agent deixam de atualizar."),
         "Quit": localized(zhHant: "退出", ja: "終了", ko: "종료", es: "Salir", fr: "Quitter", de: "Beenden", pt: "Sair"),
         "Manual": localized(zhHant: "手動", ja: "手動", ko: "수동", es: "Manual", fr: "Manuel", de: "Manuell", pt: "Manual"),
         "Started": localized(zhHant: "開始", ja: "開始", ko: "시작됨", es: "Iniciado", fr: "Demarre", de: "Gestartet", pt: "Iniciado"),
@@ -593,6 +622,10 @@ private enum AppLocalization {
         "Running Step": localized(zhHant: "正在執行步驟", ja: "ステップ実行中", ko: "단계 실행 중", es: "Ejecutando paso", fr: "Execution de l'etape", de: "Schritt wird ausgefuehrt", pt: "Executando etapa"),
         "Step Done": localized(zhHant: "步驟完成", ja: "ステップ完了", ko: "단계 완료", es: "Paso listo", fr: "Etape terminee", de: "Schritt fertig", pt: "Etapa concluida"),
         "Desktop app running": localized(zhHant: "桌面版執行中", ja: "デスクトップ版実行中", ko: "데스크톱 앱 실행 중", es: "App de escritorio en ejecucion", fr: "App de bureau en cours", de: "Desktop App laeuft", pt: "App desktop em execucao"),
+        "Desktop app is running": localized(zhHant: "桌面端正在執行", ja: "デスクトップ版が実行中", ko: "데스크톱 앱 실행 중", es: "La app de escritorio esta en ejecucion", fr: "L'app de bureau est en cours", de: "Desktop App laeuft", pt: "O app desktop esta em execucao"),
+        "CLI / hook is running": localized(zhHant: "CLI / Hook 正在執行", ja: "CLI / Hook が実行中", ko: "CLI / Hook 실행 중", es: "CLI / hook en ejecucion", fr: "CLI / hook en cours", de: "CLI / Hook laeuft", pt: "CLI / hook em execucao"),
+        "Claude Code is running": localized(zhHant: "Claude Code 正在執行", ja: "Claude Code が実行中", ko: "Claude Code 실행 중", es: "Claude Code en ejecucion", fr: "Claude Code en cours", de: "Claude Code laeuft", pt: "Claude Code em execucao"),
+        "Local integration is running": localized(zhHant: "本機接入正在執行", ja: "ローカル連携が実行中", ko: "로컬 연동 실행 중", es: "Integracion local en ejecucion", fr: "Integration locale en cours", de: "Lokale Integration laeuft", pt: "Integracao local em execucao"),
         "Waiting for Permission": localized(zhHant: "等待授權", ja: "権限待ち", ko: "권한 대기 중", es: "Esperando permiso", fr: "Attente d'autorisation", de: "Wartet auf Berechtigung", pt: "Aguardando permissao"),
         "Manual Set": localized(zhHant: "手動設定", ja: "手動設定", ko: "수동 설정", es: "Ajuste manual", fr: "Reglage manuel", de: "Manuell gesetzt", pt: "Definido manualmente"),
         "Thinking": localized(zhHant: "思考中", ja: "考え中", ko: "생각 중", es: "Pensando", fr: "Reflexion", de: "Denkt", pt: "Pensando"),
@@ -629,7 +662,6 @@ private enum AppLocalization {
         "Soft": localized(zhHant: "弱", ja: "弱", ko: "약함", es: "Suave", fr: "Faible", de: "Schwach", pt: "Suave"),
         "Standard": localized(zhHant: "標準", ja: "標準", ko: "표준", es: "Estandar", fr: "Standard", de: "Standard", pt: "Padrao"),
         "Strong": localized(zhHant: "強", ja: "強", ko: "강함", es: "Fuerte", fr: "Fort", de: "Stark", pt: "Forte"),
-        "All lights preview": localized(zhHant: "狀態列全亮預覽", ja: "全点灯プレビュー", ko: "모든 조명 미리보기", es: "Vista de todas las luces", fr: "Apercu toutes lumieres", de: "Vorschau aller Lichter", pt: "Previa de todas as luzes"),
         "Horizontal dot size: Small": localized(zhHant: "圓點橫向尺寸：小", ja: "横向きドットサイズ: 小", ko: "가로 점 크기: 작게", es: "Tamano horizontal del punto: pequeno", fr: "Taille horizontale du point : petit", de: "Horizontale Punktgroesse: klein", pt: "Tamanho horizontal do ponto: pequeno"),
         "Vertical lamp size: Large": localized(zhHant: "燈牌直向尺寸：大", ja: "縦向きランプサイズ: 大", ko: "세로 램프 크기: 크게", es: "Tamano vertical de la lampara: grande", fr: "Taille verticale du feu : grand", de: "Vertikale Lampengroesse: gross", pt: "Tamanho vertical da lampada: grande"),
         "Codex Desktop monitoring is on": localized(zhHant: "Codex Desktop 監控已開啟", ja: "Codex Desktop 監視はオン", ko: "Codex Desktop 모니터링 켜짐", es: "Supervision de Codex Desktop activa", fr: "Surveillance Codex Desktop active", de: "Codex Desktop Ueberwachung ist an", pt: "Monitoramento do Codex Desktop ativo"),

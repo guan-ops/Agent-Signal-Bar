@@ -4,6 +4,7 @@ import Foundation
 public enum SignalStateStoreError: Error, LocalizedError {
     case cannotCreateStateDirectory(URL, Error)
     case cannotOpenLock(String)
+    case cannotAcquireLock(String, Int32)
 
     public var errorDescription: String? {
         switch self {
@@ -11,6 +12,8 @@ public enum SignalStateStoreError: Error, LocalizedError {
             return "Cannot create state directory at \(url.path): \(error.localizedDescription)"
         case .cannotOpenLock(let path):
             return "Cannot open state lock at \(path)."
+        case .cannotAcquireLock(let path, let errorCode):
+            return "Cannot acquire state lock at \(path): errno \(errorCode)."
         }
     }
 }
@@ -20,6 +23,7 @@ public final class SignalStateStore: @unchecked Sendable {
     public let sessionTTLSeconds: Double
     public let completedTTLSeconds: Double
     public let eventLimit: Int
+    private static let duplicateEventWindow: TimeInterval = 4
 
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
@@ -35,7 +39,7 @@ public final class SignalStateStore: @unchecked Sendable {
         self.completedTTLSeconds = completedTTLSeconds
         self.eventLimit = eventLimit
         decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom(Self.decodeDate)
         encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -44,12 +48,12 @@ public final class SignalStateStore: @unchecked Sendable {
     public static func defaultStateFileURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
-        if let explicit = environment["AGENT_SIGNAL_LIGHT_STATE_FILE"], !explicit.isEmpty {
+        if let explicit = nonEmptyEnvironmentValue("AGENT_SIGNAL_LIGHT_STATE_FILE", in: environment) {
             return URL(fileURLWithPath: explicit.expandingTildeInPath)
         }
 
-        let stateDirectory = environment["AGENT_SIGNAL_LIGHT_STATE_DIR"]
-            ?? environment["SIGNAL_LIGHT_STATE_DIR"]
+        let stateDirectory = nonEmptyEnvironmentValue("AGENT_SIGNAL_LIGHT_STATE_DIR", in: environment)
+            ?? nonEmptyEnvironmentValue("SIGNAL_LIGHT_STATE_DIR", in: environment)
             ?? "/tmp/agent-signal"
         return URL(fileURLWithPath: stateDirectory.expandingTildeInPath, isDirectory: true)
             .appendingPathComponent("status.json")
@@ -75,7 +79,7 @@ public final class SignalStateStore: @unchecked Sendable {
               let value = Double(rawValue),
               value > 0
         else {
-            return 8
+            return 90
         }
         return value
     }
@@ -90,6 +94,53 @@ public final class SignalStateStore: @unchecked Sendable {
             return 30
         }
         return value
+    }
+
+    private static func nonEmptyEnvironmentValue(
+        _ key: String,
+        in environment: [String: String]
+    ) -> String? {
+        guard let value = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty
+        else {
+            return nil
+        }
+        return value
+    }
+
+    private static func decodeDate(from decoder: Decoder) throws -> Date {
+        let container = try decoder.singleValueContainer()
+
+        if let string = try? container.decode(String.self) {
+            if let date = date(fromISO8601String: string) {
+                return date
+            }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid ISO8601 date: \(string)"
+            )
+        }
+
+        if let timestamp = try? container.decode(Double.self) {
+            return Date(timeIntervalSince1970: timestamp)
+        }
+
+        throw DecodingError.dataCorruptedError(
+            in: container,
+            debugDescription: "Expected ISO8601 date string or UNIX timestamp"
+        )
+    }
+
+    private static func date(fromISO8601String value: String) -> Date? {
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractionalFormatter.date(from: value) {
+            return date
+        }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
     }
 
     public func readSnapshot() -> SignalSnapshot {
@@ -145,61 +196,6 @@ public final class SignalStateStore: @unchecked Sendable {
         }
     }
 
-    public func setSignalTestSignal(_ signal: AgentSignal) throws -> SignalSnapshot {
-        try withStateLock {
-            let now = Date()
-            var resolvedSignal = signal
-
-            if signal == .sessionStart || signal == .sessionEnd || signal == .turnEnd {
-                resolvedSignal = .idle
-            }
-
-            var document = readDocument()
-            _ = pruneRuntimeSessions(in: &document, now: now)
-            document.sessions["manual"] = SessionRecord(
-                agent: "manual",
-                signal: resolvedSignal,
-                lastEvent: "SignalTest",
-                updatedAt: now
-            )
-            document.aggregate = document.aggregateSignal()
-
-            appendEvent(
-                to: &document,
-                sessionID: "manual",
-                agent: "manual",
-                signal: resolvedSignal,
-                event: "SignalTest",
-                updatedAt: now
-            )
-            document.updatedAt = now
-            try writeDocument(document)
-            return document.snapshot(stateFileURL: stateFileURL)
-        }
-    }
-
-    public func clearSignalTestSignal() throws -> SignalSnapshot {
-        try withStateLock {
-            let now = Date()
-            var document = readDocument()
-            _ = pruneRuntimeSessions(in: &document, now: now)
-            document.sessions.removeValue(forKey: "manual")
-            document.aggregate = document.sessions.isEmpty ? .idle : document.aggregateSignal()
-
-            appendEvent(
-                to: &document,
-                sessionID: "manual",
-                agent: "manual",
-                signal: document.aggregate ?? .idle,
-                event: "SignalTestOff",
-                updatedAt: now
-            )
-            document.updatedAt = now
-            try writeDocument(document)
-            return document.snapshot(stateFileURL: stateFileURL)
-        }
-    }
-
     public func clearSessions() throws -> SignalSnapshot {
         try setManualSignal(.idle)
     }
@@ -239,12 +235,28 @@ public final class SignalStateStore: @unchecked Sendable {
         _ signal: AgentSignal,
         sessionID: String,
         agent: String? = nil,
-        lastEvent: String? = nil
+        lastEvent: String? = nil,
+        updatedAt: Date = Date()
     ) throws -> SignalSnapshot {
         try withStateLock {
             let now = Date()
+            let eventDate = updatedAt
             var document = readDocument()
-            _ = pruneRuntimeSessions(in: &document, now: now)
+            let originalDocument = document
+            let pruneResult = pruneRuntimeSessions(in: &document, now: now)
+
+            if shouldIgnoreOutOfOrderEvent(
+                existing: document.sessions[sessionID],
+                updatedAt: eventDate
+            ) {
+                updateAggregateAfterPruning(in: &document, pruneResult: pruneResult)
+                compactEventHistory(in: &document)
+                if document != originalDocument {
+                    document.updatedAt = now
+                    try writeDocument(document)
+                }
+                return document.snapshot(stateFileURL: stateFileURL)
+            }
 
             switch signal {
             case .off, .pause, .paused:
@@ -255,7 +267,7 @@ public final class SignalStateStore: @unchecked Sendable {
                 if currentSignal == nil || currentSignal?.preserveAgainstSessionEndSignal == false {
                     document.sessions.removeValue(forKey: sessionID)
                 }
-                if document.sessions.isEmpty {
+                if document.sessions.isEmpty && document.aggregate?.displayState != .paused {
                     document.aggregate = .idle
                 }
             case .turnEnd:
@@ -271,7 +283,7 @@ public final class SignalStateStore: @unchecked Sendable {
                     agent: agent,
                     signal: .idle,
                     lastEvent: lastEvent,
-                    updatedAt: now
+                    updatedAt: eventDate
                 )
             case .done:
                 if document.sessions[sessionID]?.signal.preserveAgainstCompletedSignal != true {
@@ -279,7 +291,7 @@ public final class SignalStateStore: @unchecked Sendable {
                         agent: agent,
                         signal: signal,
                         lastEvent: lastEvent,
-                        updatedAt: now
+                        updatedAt: eventDate
                     )
                 }
             default:
@@ -287,7 +299,7 @@ public final class SignalStateStore: @unchecked Sendable {
                     agent: agent,
                     signal: signal,
                     lastEvent: lastEvent,
-                    updatedAt: now
+                    updatedAt: eventDate
                 )
             }
 
@@ -300,9 +312,9 @@ public final class SignalStateStore: @unchecked Sendable {
                 agent: agent,
                 signal: signal,
                 event: lastEvent,
-                updatedAt: now
+                updatedAt: eventDate
             )
-            document.updatedAt = now
+            document.updatedAt = eventDate
             try writeDocument(document)
             return document.snapshot(stateFileURL: stateFileURL)
         }
@@ -400,11 +412,27 @@ private extension SignalStateStore {
 
     func prepareSnapshotDocument(_ document: inout SignalStateDocument, now: Date) {
         let pruneResult = pruneRuntimeSessions(in: &document, now: now)
+        compactEventHistory(in: &document)
+        updateAggregateAfterPruning(in: &document, pruneResult: pruneResult)
+    }
+
+    func updateAggregateAfterPruning(
+        in document: inout SignalStateDocument,
+        pruneResult: RuntimePruneResult
+    ) {
         if pruneResult.hadSessionsBeforePrune && document.sessions.isEmpty && document.aggregate?.displayState != .paused {
             document.aggregate = pruneResult.removedNonCompletedSession ? .stale : .idle
         } else if !document.sessions.isEmpty {
             document.aggregate = document.aggregateSignal()
         }
+    }
+
+    func shouldIgnoreOutOfOrderEvent(
+        existing: SessionRecord?,
+        updatedAt eventDate: Date
+    ) -> Bool {
+        guard let existing else { return false }
+        return existing.updatedAt > eventDate
     }
 
     func appendEvent(
@@ -422,13 +450,71 @@ private extension SignalStateStore {
             event: event,
             updatedAt: updatedAt
         )
+
+        removeDuplicateEvent(record, from: &document.events)
         document.events.append(
             record
         )
 
-        if document.events.count > eventLimit {
-            document.events = Array(document.events.suffix(eventLimit))
+        compactEventHistory(in: &document)
+    }
+
+    func eventDeduplicationKey(
+        sessionID: String,
+        agent: String?,
+        signal: AgentSignal,
+        event: String?
+    ) -> String {
+        let normalizedAgent = agent?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: " ", with: "-")
+            ?? ""
+        let normalizedEvent = event?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: " ", with: "-")
+        ?? signal.rawValue
+
+        return "\(sessionID)|\(normalizedAgent)|\(signal.rawValue)|\(normalizedEvent)"
+    }
+
+    func removeDuplicateEvent(_ event: SignalEventRecord, from events: inout [SignalEventRecord]) {
+        let duplicateKey = eventDeduplicationKey(
+            sessionID: event.sessionID,
+            agent: event.agent,
+            signal: event.signal,
+            event: event.event
+        )
+        guard let duplicateIndex = events.lastIndex(where: { existing in
+            eventDeduplicationKey(
+                sessionID: existing.sessionID,
+                agent: existing.agent,
+                signal: existing.signal,
+                event: existing.event
+            ) == duplicateKey
+                && abs(existing.updatedAt.timeIntervalSince(event.updatedAt)) <= Self.duplicateEventWindow
+        }) else {
+            return
         }
+
+        events.remove(at: duplicateIndex)
+    }
+
+    func compactEventHistory(in document: inout SignalStateDocument) {
+        var compactedEvents: [SignalEventRecord] = []
+        for event in document.events {
+            removeDuplicateEvent(event, from: &compactedEvents)
+            compactedEvents.append(event)
+        }
+
+        if compactedEvents.count > eventLimit {
+            compactedEvents = Array(compactedEvents.suffix(eventLimit))
+        }
+
+        document.events = compactedEvents
     }
 
     func readDocument() -> SignalStateDocument {
@@ -478,7 +564,15 @@ private extension SignalStateStore {
         var lock = flock()
         lock.l_type = Int16(F_WRLCK)
         lock.l_whence = Int16(SEEK_SET)
-        _ = fcntl(fileDescriptor, F_SETLKW, &lock)
+        while fcntl(fileDescriptor, F_SETLKW, &lock) != 0 {
+            let errorCode = errno
+            if errorCode == EINTR {
+                continue
+            }
+
+            Darwin.close(fileDescriptor)
+            throw SignalStateStoreError.cannotAcquireLock(lockURL.path, errorCode)
+        }
         defer {
             var unlock = flock()
             unlock.l_type = Int16(F_UNLCK)

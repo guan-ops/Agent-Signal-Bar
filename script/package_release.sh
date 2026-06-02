@@ -70,6 +70,11 @@ cp "$ROOT_DIR/dist/bin/agent-signal-icon-preview" "$PAYLOAD_DIR/dist/bin/agent-s
 cp -R "$ROOT_DIR/dist/status-icon-preview" "$PAYLOAD_DIR/dist/status-icon-preview"
 printf "packaged-release\n" >"$PAYLOAD_DIR/dist/.packaged-release"
 
+find "$PAYLOAD_DIR" -type d -name __pycache__ -prune -exec rm -rf {} +
+find "$PAYLOAD_DIR" -type f \( -name '*.pyc' -o -name '.DS_Store' \) -delete
+rm -rf "$PAYLOAD_DIR/marketing"
+rm -f "$PAYLOAD_DIR/.codex/hooks.json" "$PAYLOAD_DIR/.codex"/hooks.json.*
+
 chmod +x "$PAYLOAD_DIR/dist/bin/agent-signal" \
   "$PAYLOAD_DIR/dist/bin/agent-signal-icon-preview" \
   "$PAYLOAD_DIR/scripts/agent-signal" \
@@ -159,13 +164,13 @@ manifest = {
     },
     "signing": {
         "mode": "developer_id" if signing_identity else "ad_hoc",
-        "identity": signing_identity,
+        "identity_configured": bool(signing_identity),
         "developer_id_identities_available": developer_id_count(),
         "hardened_runtime_requested": bool(signing_identity),
         "timestamp_requested": bool(signing_identity),
     },
     "notarization": {
-        "profile": notary_profile,
+        "profile_configured": bool(notary_profile),
         "ready_to_submit": bool(signing_identity and notary_profile),
         "status": "not_submitted",
     },

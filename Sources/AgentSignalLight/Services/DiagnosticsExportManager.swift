@@ -1,6 +1,8 @@
 import Foundation
 
 struct DiagnosticsExportManager: Sendable {
+    private static let commandTimeout: TimeInterval = 60
+
     func export(full: Bool = false) throws -> DiagnosticsExportResult {
         let rootURL = try diagnosticsRootURL()
         let scriptURL = rootURL.appendingPathComponent("script/export_diagnostics.sh")
@@ -13,20 +15,30 @@ struct DiagnosticsExportManager: Sendable {
         process.arguments = ["bash", scriptURL.path] + (full ? ["--full"] : [])
         process.currentDirectoryURL = rootURL
 
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
+        let outputURL = temporaryCaptureURL(suffix: "out")
+        let errorURL = temporaryCaptureURL(suffix: "err")
+        try Data().write(to: outputURL)
+        try Data().write(to: errorURL)
+        let outputHandle = try FileHandle(forWritingTo: outputURL)
+        let errorHandle = try FileHandle(forWritingTo: errorURL)
+        defer {
+            try? outputHandle.close()
+            try? errorHandle.close()
+            try? FileManager.default.removeItem(at: outputURL)
+            try? FileManager.default.removeItem(at: errorURL)
+        }
+        process.standardOutput = outputHandle
+        process.standardError = errorHandle
 
         try process.run()
-        process.waitUntilExit()
+        try waitForProcess(process, timeout: Self.commandTimeout)
 
         let output = String(
-            data: outputPipe.fileHandleForReading.readDataToEndOfFile(),
+            data: (try? Data(contentsOf: outputURL)) ?? Data(),
             encoding: .utf8
         ) ?? ""
         let error = String(
-            data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
+            data: (try? Data(contentsOf: errorURL)) ?? Data(),
             encoding: .utf8
         ) ?? ""
 
@@ -41,6 +53,24 @@ struct DiagnosticsExportManager: Sendable {
         }
 
         return result
+    }
+
+    private func temporaryCaptureURL(suffix: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("agent-signal-diagnostics-\(UUID().uuidString).\(suffix)")
+    }
+
+    private func waitForProcess(_ process: Process, timeout: TimeInterval) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        if process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+            throw DiagnosticsExportError.commandTimedOut(timeout)
+        }
     }
 
     private func diagnosticsRootURL() throws -> URL {
@@ -101,6 +131,7 @@ enum DiagnosticsExportError: Error, LocalizedError {
     case cannotLocateDiagnosticsRoot(String)
     case missingScript(String)
     case commandFailed(DiagnosticsExportResult)
+    case commandTimedOut(TimeInterval)
 
     var errorDescription: String? {
         switch self {
@@ -111,6 +142,8 @@ enum DiagnosticsExportError: Error, LocalizedError {
         case .commandFailed(let result):
             let detail = result.displayText
             return detail.isEmpty ? "诊断导出失败，退出码 \(result.exitCode)" : detail
+        case .commandTimedOut(let timeout):
+            return "诊断导出超过 \(Int(timeout)) 秒仍未结束，已停止。"
         }
     }
 }

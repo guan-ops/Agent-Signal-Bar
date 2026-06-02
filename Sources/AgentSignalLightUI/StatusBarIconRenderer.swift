@@ -11,6 +11,7 @@ public enum StatusBarIconRenderer {
         macOSHorizontalUsesTrafficLightSize: Bool = false,
         trafficLightVerticalUsesMacOSSize: Bool = false,
         allLightsOn: Bool,
+        usesSystemGrayLights: Bool = false,
         effectCustomization: SignalEffectCustomization = .default
     ) -> NSImage {
         let metrics = SignalIconGeometry.metrics(
@@ -55,7 +56,8 @@ public enum StatusBarIconRenderer {
                     effectCustomization: effectCustomization
                 ),
                 displayState: displayState,
-                style: style
+                style: style,
+                usesSystemGrayLights: usesSystemGrayLights
             )
         }
 
@@ -149,7 +151,8 @@ public enum StatusBarIconRenderer {
         intensity: Double,
         scale: Double,
         displayState: DisplayState,
-        style: TrafficSignalStyle
+        style: TrafficSignalStyle,
+        usesSystemGrayLights: Bool
     ) {
         let path = NSBezierPath(ovalIn: pixelAligned(rect))
         inactiveFillColor(displayState: displayState, style: style).setFill()
@@ -163,10 +166,18 @@ public enum StatusBarIconRenderer {
 
         let activeRect = pixelAligned(scaled(rect, by: scale))
         let activePath = NSBezierPath(ovalIn: activeRect)
-        let lampColor = activeFillColor(color, intensity: intensity, style: style)
+        let lampColor = activeFillColor(
+            color,
+            intensity: intensity,
+            style: style,
+            usesSystemGrayLights: usesSystemGrayLights
+        )
         NSGraphicsContext.saveGraphicsState()
         let shadow = NSShadow()
-        shadow.shadowColor = baseLampColor(color).withAlphaComponent(intensity * 0.35)
+        shadow.shadowColor = baseLampColor(
+            color,
+            usesSystemGrayLights: usesSystemGrayLights
+        ).withAlphaComponent(usesSystemGrayLights ? 0 : intensity * 0.35)
         shadow.shadowBlurRadius = style == .macOS ? 1.8 : 1.5
         shadow.set()
         lampColor.setFill()
@@ -240,12 +251,17 @@ public enum StatusBarIconRenderer {
     private static func activeFillColor(
         _ color: SignalLampColor,
         intensity: Double,
-        style: TrafficSignalStyle
+        style: TrafficSignalStyle,
+        usesSystemGrayLights: Bool
     ) -> NSColor {
-        baseLampColor(color).withAlphaComponent(intensity)
+        baseLampColor(color, usesSystemGrayLights: usesSystemGrayLights).withAlphaComponent(intensity)
     }
 
-    private static func baseLampColor(_ color: SignalLampColor) -> NSColor {
+    private static func baseLampColor(_ color: SignalLampColor, usesSystemGrayLights: Bool = false) -> NSColor {
+        if usesSystemGrayLights {
+            return NSColor.systemGray
+        }
+
         switch color {
         case .green:
             return NSColor(calibratedRed: 0.16, green: 0.78, blue: 0.34, alpha: 1)

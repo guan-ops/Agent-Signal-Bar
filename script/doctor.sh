@@ -20,6 +20,10 @@ XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 
 FAILED=0
 WARNED=0
+DOCTOR_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-signal-doctor.XXXXXX")"
+DOCTOR_OUT="$DOCTOR_TMP_DIR/out"
+DOCTOR_ERR="$DOCTOR_TMP_DIR/err"
+trap 'rm -rf "$DOCTOR_TMP_DIR"' EXIT
 
 pass() {
   printf "[ok] %s\n" "$1"
@@ -38,11 +42,11 @@ fail() {
 run_check() {
   local label="$1"
   shift
-  if "$@" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  if "$@" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     pass "$label"
   else
     fail "$label"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 }
 
@@ -96,7 +100,7 @@ if [[ "$MODE" == "full" ]]; then
   run_check "macOS status bar breathing is visibly rendered" swift_tool test --filter macOSStatusBarBreathingChangesRenderedActiveArea
   run_check "macOS horizontal status bar can use traffic-light sizing" swift_tool test --filter macOSHorizontalStatusBarCanUseTrafficLightSizingWithoutTrafficLightHousing
   run_check "traffic-light vertical status bar uses compact large sizing" swift_tool test --filter trafficLightVerticalStatusBarCanUseCompactLargeSizingWithTrafficLightHousing
-  if swift_tool run agent-signal-icon-preview "$ROOT_DIR/dist/status-icon-preview" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  if swift_tool run agent-signal-icon-preview "$ROOT_DIR/dist/status-icon-preview" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     if /usr/bin/python3 - "$ROOT_DIR/dist/status-icon-preview" <<'PY'
 import json
 import sys
@@ -124,12 +128,12 @@ PY
     fi
   else
     fail "status bar preview artifact generation failed"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 
   TMP_DIAGNOSTICS_DIR="$(mktemp -d)"
-  if "$ROOT_DIR/script/export_diagnostics.sh" --output "$TMP_DIAGNOSTICS_DIR" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
-    if /usr/bin/python3 - /tmp/agent-signal-doctor.out <<'PY'
+  if "$ROOT_DIR/script/export_diagnostics.sh" --output "$TMP_DIAGNOSTICS_DIR" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
+    if /usr/bin/python3 - "$DOCTOR_OUT" <<'PY'
 import sys
 import zipfile
 from pathlib import Path
@@ -164,18 +168,18 @@ PY
     fi
   else
     fail "diagnostics archive export failed"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 
-  if "$ROOT_DIR/script/notarize_release.sh" --readiness >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
-    if grep -q "Agent Signal Bar notarization readiness" /tmp/agent-signal-doctor.out; then
+  if "$ROOT_DIR/script/notarize_release.sh" --readiness >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
+    if grep -q "Agent Signal Bar notarization readiness" "$DOCTOR_OUT"; then
       pass "notarization readiness report generates"
     else
       fail "notarization readiness report missing header"
     fi
   else
     fail "notarization readiness report failed"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 fi
 
@@ -260,7 +264,7 @@ else
 fi
 
 TMP_STATE="$(mktemp -d)/status.json"
-if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STATE" "$ROOT_DIR/scripts/agent-signal" permission --session doctor --agent doctor --event PermissionRequest >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STATE" "$ROOT_DIR/scripts/agent-signal" permission --session doctor --agent doctor --event PermissionRequest >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   if /usr/bin/python3 - "$TMP_STATE" <<'PY'
 import json
 import sys
@@ -279,12 +283,12 @@ PY
   fi
 else
   fail "agent-signal CLI failed"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
 TMP_JSON_STATE="$(mktemp -d)/status.json"
-if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_JSON_STATE" "$ROOT_DIR/scripts/agent-signal" working --session doctor-json --agent doctor --event JSONStatus --json >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
-  if /usr/bin/python3 - /tmp/agent-signal-doctor.out <<'PY'
+if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_JSON_STATE" "$ROOT_DIR/scripts/agent-signal" working --session doctor-json --agent doctor --event JSONStatus --json >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
+  if /usr/bin/python3 - "$DOCTOR_OUT" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -309,13 +313,13 @@ PY
   fi
 else
   fail "agent-signal --json output failed"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
 TMP_PRIORITY_STATE="$(mktemp -d)/status.json"
-if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_PRIORITY_STATE" "$ROOT_DIR/scripts/agent-signal" permission --session doctor-permission --agent doctor --event PermissionRequest >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err \
-  && AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_PRIORITY_STATE" "$ROOT_DIR/scripts/agent-signal" working --json >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
-  if /usr/bin/python3 - /tmp/agent-signal-doctor.out <<'PY'
+if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_PRIORITY_STATE" "$ROOT_DIR/scripts/agent-signal" permission --session doctor-permission --agent doctor --event PermissionRequest >"$DOCTOR_OUT" 2>"$DOCTOR_ERR" \
+  && AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_PRIORITY_STATE" "$ROOT_DIR/scripts/agent-signal" working --json >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
+  if /usr/bin/python3 - "$DOCTOR_OUT" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -337,13 +341,13 @@ PY
   fi
 else
   fail "wrapper bare command priority scenario failed"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
 TMP_RESUME_STATE="$(mktemp -d)/status.json"
-if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_RESUME_STATE" "$ROOT_DIR/scripts/agent-signal" off --session doctor-off --agent doctor --event Pause >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err \
-  && AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_RESUME_STATE" "$ROOT_DIR/scripts/agent-signal" working --session doctor-resume --agent doctor --event Resume --json >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
-  if /usr/bin/python3 - /tmp/agent-signal-doctor.out <<'PY'
+if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_RESUME_STATE" "$ROOT_DIR/scripts/agent-signal" off --session doctor-off --agent doctor --event Pause >"$DOCTOR_OUT" 2>"$DOCTOR_ERR" \
+  && AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_RESUME_STATE" "$ROOT_DIR/scripts/agent-signal" working --session doctor-resume --agent doctor --event Resume --json >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
+  if /usr/bin/python3 - "$DOCTOR_OUT" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -362,13 +366,13 @@ PY
   fi
 else
   fail "resume from off scenario failed"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
 TMP_SIGNAL_STATE="$(mktemp -d)/status.json"
 SIGNAL_SMOKE_FAILED=0
 for signal in idle thinking working tool_done subagent_start subagent_stop attention notification done permission permission_request blocked failure error exception max_tokens stale session_start session_end turn_end off pause paused; do
-  if ! AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_SIGNAL_STATE" "$ROOT_DIR/scripts/agent-signal" "$signal" --session "doctor-$signal" --agent doctor --event "$signal" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  if ! AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_SIGNAL_STATE" "$ROOT_DIR/scripts/agent-signal" "$signal" --session "doctor-$signal" --agent doctor --event "$signal" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     SIGNAL_SMOKE_FAILED=1
     break
   fi
@@ -392,14 +396,14 @@ if [[ "$SIGNAL_SMOKE_FAILED" -eq 0 ]]; then
   pass "all signal commands write schema-compatible JSON"
 else
   fail "signal command schema smoke test failed"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
 TMP_COMPLETED_STATE="$(mktemp -d)/status.json"
-if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_COMPLETED_STATE" AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS=0.01 "$ROOT_DIR/scripts/agent-signal" done --session doctor-done --agent doctor --event Done >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err \
+if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_COMPLETED_STATE" AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS=0.01 "$ROOT_DIR/scripts/agent-signal" done --session doctor-done --agent doctor --event Done >"$DOCTOR_OUT" 2>"$DOCTOR_ERR" \
   && sleep 0.03 \
-  && AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_COMPLETED_STATE" AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS=0.01 "$ROOT_DIR/scripts/agent-signal" status --json >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
-  if /usr/bin/python3 - /tmp/agent-signal-doctor.out "$TMP_COMPLETED_STATE" <<'PY'
+  && AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_COMPLETED_STATE" AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS=0.01 "$ROOT_DIR/scripts/agent-signal" status --json >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
+  if /usr/bin/python3 - "$DOCTOR_OUT" "$TMP_COMPLETED_STATE" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -419,24 +423,24 @@ PY
   fi
 else
   fail "completed TTL scenario failed"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
-if AGENT_SIGNAL_LIGHT_STATE_FILE="$(mktemp -d)/status.json" "$ROOT_DIR/scripts/agent-signal" definitely_unknown_signal >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+if AGENT_SIGNAL_LIGHT_STATE_FILE="$(mktemp -d)/status.json" "$ROOT_DIR/scripts/agent-signal" definitely_unknown_signal >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   fail "unknown signal command should be rejected"
 else
   pass "unknown signal command is rejected"
 fi
 
 TMP_BAD_ARGS_STATE="$(mktemp -d)/status.json"
-if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_BAD_ARGS_STATE" "$ROOT_DIR/scripts/agent-signal" working --session >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_BAD_ARGS_STATE" "$ROOT_DIR/scripts/agent-signal" working --session >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   fail "missing option values should be rejected"
 else
   pass "missing option values are rejected"
 fi
 
 TMP_UNKNOWN_OPTION_STATE="$(mktemp -d)/status.json"
-if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_UNKNOWN_OPTION_STATE" "$ROOT_DIR/scripts/agent-signal" working --sesion typo >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_UNKNOWN_OPTION_STATE" "$ROOT_DIR/scripts/agent-signal" working --sesion typo >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   fail "unknown CLI options should be rejected"
 else
   pass "unknown CLI options are rejected"
@@ -444,7 +448,7 @@ fi
 
 TMP_CODEX_STATE="$(mktemp -d)/status.json"
 if printf '{"event":"PermissionRequest","session_id":"doctor-codex"}' \
-  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_CODEX_STATE" "$ROOT_DIR/scripts/codex-signal-hook" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_CODEX_STATE" "$ROOT_DIR/scripts/codex-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   pass "Codex hook wrapper writes state"
 else
   fail "Codex hook wrapper failed"
@@ -452,7 +456,7 @@ fi
 
 TMP_CLAUDE_STATE="$(mktemp -d)/status.json"
 if printf '{"event":"Notification","session_id":"doctor-claude"}' \
-  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_CLAUDE_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_CLAUDE_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   pass "Claude hook wrapper writes state"
 else
   fail "Claude hook wrapper failed"
@@ -460,9 +464,9 @@ fi
 
 TMP_NORMALIZED_EVENT_STATE="$(mktemp -d)/status.json"
 if printf '{"event":"post_tool_use_failure","sessionId":"doctor-normalized-claude"}' \
-  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_NORMALIZED_EVENT_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err \
+  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_NORMALIZED_EVENT_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR" \
   && printf '{"sessionId":"doctor-normalized-codex"}' \
-  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_NORMALIZED_EVENT_STATE" "$ROOT_DIR/scripts/codex-signal-hook" " pre_tool_use " >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_NORMALIZED_EVENT_STATE" "$ROOT_DIR/scripts/codex-signal-hook" " pre_tool_use " >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   if /usr/bin/python3 - "$TMP_NORMALIZED_EVENT_STATE" <<'PY'
 import json
 import sys
@@ -480,14 +484,14 @@ PY
   fi
 else
   fail "normalized hook event scenario failed"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
 TMP_STOP_STATE="$(mktemp -d)/status.json"
 if printf '{"event":"Stop","session_id":"doctor-codex-stop"}' \
-  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STOP_STATE" "$ROOT_DIR/scripts/codex-signal-hook" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err \
+  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STOP_STATE" "$ROOT_DIR/scripts/codex-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR" \
   && printf '{"event":"Stop","session_id":"doctor-claude-stop"}' \
-  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STOP_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STOP_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   if /usr/bin/python3 - "$TMP_STOP_STATE" <<'PY'
 import json
 import sys
@@ -505,14 +509,14 @@ PY
   fi
 else
   fail "Stop hook completed scenario failed"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
 TMP_STOP_SESSION_END_STATE="$(mktemp -d)/status.json"
 if printf '{"event":"Stop","session_id":"doctor-stop-end"}' \
-  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STOP_SESSION_END_STATE" "$ROOT_DIR/scripts/codex-signal-hook" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err \
+  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STOP_SESSION_END_STATE" "$ROOT_DIR/scripts/codex-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR" \
   && printf '{"event":"SessionEnd","session_id":"doctor-stop-end"}' \
-  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STOP_SESSION_END_STATE" "$ROOT_DIR/scripts/codex-signal-hook" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STOP_SESSION_END_STATE" "$ROOT_DIR/scripts/codex-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   if /usr/bin/python3 - "$TMP_STOP_SESSION_END_STATE" <<'PY'
 import json
 import sys
@@ -530,13 +534,13 @@ PY
   fi
 else
   fail "SessionEnd completed preservation scenario failed"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
 TMP_STOP_PRESERVE_STATE="$(mktemp -d)/status.json"
-if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STOP_PRESERVE_STATE" "$ROOT_DIR/scripts/agent-signal" permission --session doctor-stop-preserve --agent doctor --event PermissionRequest >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err \
+if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STOP_PRESERVE_STATE" "$ROOT_DIR/scripts/agent-signal" permission --session doctor-stop-preserve --agent doctor --event PermissionRequest >"$DOCTOR_OUT" 2>"$DOCTOR_ERR" \
   && printf '{"event":"Stop","session_id":"doctor-stop-preserve"}' \
-  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STOP_PRESERVE_STATE" "$ROOT_DIR/scripts/codex-signal-hook" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_STOP_PRESERVE_STATE" "$ROOT_DIR/scripts/codex-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   if /usr/bin/python3 - "$TMP_STOP_PRESERVE_STATE" <<'PY'
 import json
 import sys
@@ -554,12 +558,12 @@ PY
   fi
 else
   fail "Stop preserve priority scenario failed"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
 TMP_CLAUDE_FAILURE_STATE="$(mktemp -d)/status.json"
 if printf '{"event":"PostToolUse","sessionId":"doctor-claude-fail","exitStatus":1}' \
-  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_CLAUDE_FAILURE_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_CLAUDE_FAILURE_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   if /usr/bin/python3 - "$TMP_CLAUDE_FAILURE_STATE" <<'PY'
 import json
 import sys
@@ -576,14 +580,14 @@ PY
   fi
 else
   fail "Claude failure payload hook failed"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
 TMP_CLAUDE_STOP_REASON_STATE="$(mktemp -d)/status.json"
 if printf '{"event":" stop ","sessionId":"doctor-claude-max-tokens","stopReason":" max-tokens "}' \
-  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_CLAUDE_STOP_REASON_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err \
+  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_CLAUDE_STOP_REASON_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR" \
   && printf '{"event":"Stop","sessionId":"doctor-claude-stop-error","stopReason":" tool error "}' \
-  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_CLAUDE_STOP_REASON_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_CLAUDE_STOP_REASON_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   if /usr/bin/python3 - "$TMP_CLAUDE_STOP_REASON_STATE" <<'PY'
 import json
 import sys
@@ -601,11 +605,11 @@ PY
   fi
 else
   fail "Claude Stop reason scenario failed"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
 TMP_RUNNER_STATE="$(mktemp -d)/status.json"
-if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_RUNNER_STATE" "$ROOT_DIR/scripts/agent-signal-run" --session runner-ok --agent script -- /bin/sh -c "exit 0" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_RUNNER_STATE" "$ROOT_DIR/scripts/agent-signal-run" --session runner-ok --agent script -- /bin/sh -c "exit 0" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   if /usr/bin/python3 - "$TMP_RUNNER_STATE" <<'PY'
 import json
 import sys
@@ -624,11 +628,11 @@ PY
   fi
 else
   fail "agent-signal-run failed for successful command"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
 TMP_RUNNER_FAIL_STATE="$(mktemp -d)/status.json"
-AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_RUNNER_FAIL_STATE" "$ROOT_DIR/scripts/agent-signal-run" --session runner-fail --agent script -- /bin/sh -c "exit 7" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err
+AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_RUNNER_FAIL_STATE" "$ROOT_DIR/scripts/agent-signal-run" --session runner-fail --agent script -- /bin/sh -c "exit 7" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"
 RUNNER_FAIL_STATUS=$?
 if [[ "$RUNNER_FAIL_STATUS" -eq 7 ]]; then
   if /usr/bin/python3 - "$TMP_RUNNER_FAIL_STATE" <<'PY'
@@ -649,14 +653,14 @@ PY
   fi
 else
   fail "agent-signal-run did not preserve failure exit code"
-  sed -n '1,5p' /tmp/agent-signal-doctor.err
+  sed -n '1,5p' "$DOCTOR_ERR"
 fi
 
-if "$ROOT_DIR/script/verify_local_integrations.sh" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+if "$ROOT_DIR/script/verify_local_integrations.sh" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   pass "local script integrations verify"
 else
   fail "local script integration verification failed"
-  sed -n '1,8p' /tmp/agent-signal-doctor.err
+  sed -n '1,8p' "$DOCTOR_ERR"
 fi
 
 check_codex_hooks_file() {
@@ -706,9 +710,9 @@ else
 fi
 
 if [[ -f "$CODEX_HOOKS_FILE" ]]; then
-  if check_codex_hooks_file "$CODEX_HOOKS_FILE" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  if check_codex_hooks_file "$CODEX_HOOKS_FILE" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     pass "Codex user hooks configured for current checkout"
-  elif codex_hooks_file_mentions_agent_signal "$CODEX_HOOKS_FILE" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  elif codex_hooks_file_mentions_agent_signal "$CODEX_HOOKS_FILE" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     warn "Codex user hooks contain stale/incomplete Agent Signal Bar entries; run ./script/install_hooks.py --target codex --codex-scope user --remove --install"
   else
     pass "Codex user hooks not configured; project hooks are primary"
@@ -794,16 +798,16 @@ if [[ -x "$APP_BUNDLE/Contents/MacOS/$APP_NAME" ]]; then
   fi
 
   TMP_BUNDLE_STATE="$(mktemp -d)/status.json"
-  if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_BUNDLE_STATE" "$APP_RESOURCE_ROOT/scripts/agent-signal" working --session bundled-doctor --agent bundled --event BundledResource >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_BUNDLE_STATE" "$APP_RESOURCE_ROOT/scripts/agent-signal" working --session bundled-doctor --agent bundled --event BundledResource >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     pass "bundled agent-signal wrapper writes state"
   else
     fail "bundled agent-signal wrapper failed"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 
   TMP_BUNDLED_DIAGNOSTICS_DIR="$(mktemp -d)"
-  if "$APP_RESOURCE_ROOT/script/export_diagnostics.sh" --output "$TMP_BUNDLED_DIAGNOSTICS_DIR" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
-    if /usr/bin/python3 - /tmp/agent-signal-doctor.out <<'PY'
+  if "$APP_RESOURCE_ROOT/script/export_diagnostics.sh" --output "$TMP_BUNDLED_DIAGNOSTICS_DIR" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
+    if /usr/bin/python3 - "$DOCTOR_OUT" <<'PY'
 import sys
 from pathlib import Path
 
@@ -823,13 +827,13 @@ PY
     fi
   else
     fail "bundled diagnostics exporter failed"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 
   TMP_BUNDLE_PRIORITY_STATE="$(mktemp -d)/status.json"
-  if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_BUNDLE_PRIORITY_STATE" "$APP_RESOURCE_ROOT/scripts/agent-signal" blocked --session bundled-red --agent bundled --event Failure >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err \
-    && AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_BUNDLE_PRIORITY_STATE" "$APP_RESOURCE_ROOT/scripts/agent-signal" working --json >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
-    if /usr/bin/python3 - /tmp/agent-signal-doctor.out <<'PY'
+  if AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_BUNDLE_PRIORITY_STATE" "$APP_RESOURCE_ROOT/scripts/agent-signal" blocked --session bundled-red --agent bundled --event Failure >"$DOCTOR_OUT" 2>"$DOCTOR_ERR" \
+    && AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_BUNDLE_PRIORITY_STATE" "$APP_RESOURCE_ROOT/scripts/agent-signal" working --json >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
+    if /usr/bin/python3 - "$DOCTOR_OUT" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -848,11 +852,11 @@ PY
     fi
   else
     fail "bundled wrapper priority scenario failed"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 
   TMP_BUNDLE_RUNNER_STATE="$(mktemp -d)/status.json"
-  AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_BUNDLE_RUNNER_STATE" "$APP_RESOURCE_ROOT/scripts/agent-signal-run" --session bundled-runner-fail --agent bundled -- /bin/sh -c "exit 9" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err
+  AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_BUNDLE_RUNNER_STATE" "$APP_RESOURCE_ROOT/scripts/agent-signal-run" --session bundled-runner-fail --agent bundled -- /bin/sh -c "exit 9" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"
   BUNDLE_RUNNER_STATUS=$?
   if [[ "$BUNDLE_RUNNER_STATUS" -eq 9 ]]; then
     if /usr/bin/python3 - "$TMP_BUNDLE_RUNNER_STATE" <<'PY'
@@ -873,12 +877,12 @@ PY
     fi
   else
     fail "bundled agent-signal-run did not preserve failure exit code"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 
   TMP_HOOK_HOME="$(mktemp -d)"
-  if /usr/bin/python3 "$APP_RESOURCE_ROOT/script/install_hooks.py" --target all --home "$TMP_HOOK_HOME" --dry-run >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
-    if /usr/bin/python3 - /tmp/agent-signal-doctor.out "$APP_RESOURCE_ROOT/scripts/codex-signal-hook" "$APP_RESOURCE_ROOT/scripts/claude-code-signal-hook" <<'PY'
+  if /usr/bin/python3 "$APP_RESOURCE_ROOT/script/install_hooks.py" --target all --home "$TMP_HOOK_HOME" --dry-run >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
+    if /usr/bin/python3 - "$DOCTOR_OUT" "$APP_RESOURCE_ROOT/scripts/codex-signal-hook" "$APP_RESOURCE_ROOT/scripts/claude-code-signal-hook" <<'PY'
 import sys
 from pathlib import Path
 
@@ -895,7 +899,7 @@ PY
     fi
   else
     fail "bundled hook installer dry-run failed"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 
   TMP_MIGRATION_HOME="$(mktemp -d)"
@@ -946,7 +950,7 @@ JSON
   }
 }
 JSON
-  if /usr/bin/python3 "$APP_RESOURCE_ROOT/script/install_hooks.py" --target all --home "$TMP_MIGRATION_HOME" --install >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  if /usr/bin/python3 "$APP_RESOURCE_ROOT/script/install_hooks.py" --target all --home "$TMP_MIGRATION_HOME" --install >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     if /usr/bin/python3 - "$TMP_MIGRATION_HOME" "$APP_RESOURCE_ROOT/scripts/codex-signal-hook" "$APP_RESOURCE_ROOT/scripts/claude-code-signal-hook" <<'PY'
 import sys
 from pathlib import Path
@@ -976,7 +980,7 @@ PY
     fi
   else
     fail "bundled hook installer migration install failed"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 
   TMP_REMOVE_HOME="$(mktemp -d)"
@@ -1027,7 +1031,7 @@ JSON
   }
 }
 JSON
-  if /usr/bin/python3 "$APP_RESOURCE_ROOT/script/install_hooks.py" --target all --home "$TMP_REMOVE_HOME" --remove --install >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  if /usr/bin/python3 "$APP_RESOURCE_ROOT/script/install_hooks.py" --target all --home "$TMP_REMOVE_HOME" --remove --install >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     if /usr/bin/python3 - "$TMP_REMOVE_HOME" <<'PY'
 import sys
 from pathlib import Path
@@ -1053,31 +1057,31 @@ PY
     fi
   else
     fail "bundled hook installer removal failed"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 
   VERIFY_APP="$(mktemp -d)/$APP_NAME.app"
   ditto --norsrc "$APP_BUNDLE" "$VERIFY_APP"
-  if codesign --verify --deep --strict --verbose=2 "$VERIFY_APP" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  if codesign --verify --deep --strict --verbose=2 "$VERIFY_APP" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     pass "packaged app code signature verifies on a clean copy"
   else
     fail "packaged app code signature does not verify; run ./script/package_app.sh --release"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 
   TMP_INSTALL_ROOT="$(mktemp -d)"
-  if AGENT_SIGNAL_APP_INSTALL_DIR="$TMP_INSTALL_ROOT/Applications" "$ROOT_DIR/script/install_app.sh" --source-app "$APP_BUNDLE" --no-open >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  if AGENT_SIGNAL_APP_INSTALL_DIR="$TMP_INSTALL_ROOT/Applications" "$ROOT_DIR/script/install_app.sh" --source-app "$APP_BUNDLE" --no-open >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     INSTALLED_TEST_APP="$TMP_INSTALL_ROOT/Applications/$APP_NAME.app"
     if [[ -x "$INSTALLED_TEST_APP/Contents/MacOS/$APP_NAME" ]] \
-      && codesign --verify --deep --strict --verbose=2 "$INSTALLED_TEST_APP" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+      && codesign --verify --deep --strict --verbose=2 "$INSTALLED_TEST_APP" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
       pass "install script installs existing app without rebuilding"
     else
       fail "install script copied app does not verify"
-      sed -n '1,5p' /tmp/agent-signal-doctor.err
+      sed -n '1,5p' "$DOCTOR_ERR"
     fi
   else
     fail "install script failed with existing app source"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
   rm -rf "$TMP_INSTALL_ROOT"
 else
@@ -1087,30 +1091,30 @@ fi
 if [[ -f "$ROOT_DIR/dist/.packaged-release" ]]; then
   pass "running from packaged release payload"
 elif [[ -f "$ROOT_DIR/dist/$APP_NAME-local.zip" && -f "$ROOT_DIR/dist/$APP_NAME-SHA256SUMS.txt" ]]; then
-  if (cd "$ROOT_DIR" && shasum -a 256 -c "dist/$APP_NAME-SHA256SUMS.txt" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err); then
+  if (cd "$ROOT_DIR" && shasum -a 256 -c "dist/$APP_NAME-SHA256SUMS.txt" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"); then
     pass "release artifact checksums verify"
   else
     fail "release artifact checksum failed"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 else
   warn "release archive missing; run ./script/package_release.sh"
 fi
 
 if [[ "$MODE" == "full" ]]; then
-  if "$ROOT_DIR/script/verify_uninstall.sh" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  if "$ROOT_DIR/script/verify_uninstall.sh" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     pass "uninstall flow verifies"
   else
     fail "uninstall flow verification failed"
-    sed -n '1,8p' /tmp/agent-signal-doctor.err
+    sed -n '1,8p' "$DOCTOR_ERR"
   fi
 
   if [[ -f "$ROOT_DIR/dist/$APP_NAME-local.zip" ]]; then
-    if "$ROOT_DIR/script/verify_release_zip.sh" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+    if "$ROOT_DIR/script/verify_release_zip.sh" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
       pass "release zip install verifies"
     else
       fail "release zip install verification failed"
-      sed -n '1,8p' /tmp/agent-signal-doctor.err
+      sed -n '1,8p' "$DOCTOR_ERR"
     fi
   else
     warn "release zip missing; run ./script/package_release.sh"
@@ -1157,16 +1161,16 @@ else
 fi
 
 if [[ -f "$DMG" ]]; then
-  if hdiutil verify "$DMG" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  if hdiutil verify "$DMG" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     pass "release DMG verifies"
   else
     fail "release DMG verification failed"
-    sed -n '1,5p' /tmp/agent-signal-doctor.err
+    sed -n '1,5p' "$DOCTOR_ERR"
   fi
 
   if [[ "$MODE" == "full" ]]; then
     DMG_MOUNT="$(mktemp -d)"
-    if hdiutil attach -readonly -nobrowse -mountpoint "$DMG_MOUNT" "$DMG" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+    if hdiutil attach -readonly -nobrowse -mountpoint "$DMG_MOUNT" "$DMG" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
       if [[ -x "$DMG_MOUNT/$APP_NAME.app/Contents/MacOS/$APP_NAME" \
         && -L "$DMG_MOUNT/Applications" \
         && -f "$DMG_MOUNT/Read Me.txt" \
@@ -1197,33 +1201,33 @@ PY
           fail "release DMG app release info does not match manifest"
         fi
       fi
-      hdiutil detach "$DMG_MOUNT" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err || true
+      hdiutil detach "$DMG_MOUNT" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR" || true
     else
       fail "release DMG could not be mounted"
-      sed -n '1,5p' /tmp/agent-signal-doctor.err
+      sed -n '1,5p' "$DOCTOR_ERR"
     fi
     rmdir "$DMG_MOUNT" >/dev/null 2>&1 || true
 
-    if "$ROOT_DIR/script/verify_release_install.sh" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+    if "$ROOT_DIR/script/verify_release_install.sh" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
       pass "release DMG install verifies"
     else
       fail "release DMG install verification failed"
-      sed -n '1,8p' /tmp/agent-signal-doctor.err
+      sed -n '1,8p' "$DOCTOR_ERR"
     fi
 
     TMP_DMG_INSTALL_ROOT="$(mktemp -d)"
-    if AGENT_SIGNAL_APP_INSTALL_DIR="$TMP_DMG_INSTALL_ROOT/Applications" "$ROOT_DIR/script/install_app.sh" --dmg "$DMG" --no-open >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+    if AGENT_SIGNAL_APP_INSTALL_DIR="$TMP_DMG_INSTALL_ROOT/Applications" "$ROOT_DIR/script/install_app.sh" --dmg "$DMG" --no-open >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
       INSTALLED_DMG_APP="$TMP_DMG_INSTALL_ROOT/Applications/$APP_NAME.app"
       if [[ -x "$INSTALLED_DMG_APP/Contents/MacOS/$APP_NAME" ]] \
-        && codesign --verify --deep --strict --verbose=2 "$INSTALLED_DMG_APP" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+        && codesign --verify --deep --strict --verbose=2 "$INSTALLED_DMG_APP" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
         pass "install script installs from DMG"
       else
         fail "install script DMG install app does not verify"
-        sed -n '1,5p' /tmp/agent-signal-doctor.err
+        sed -n '1,5p' "$DOCTOR_ERR"
       fi
     else
       fail "install script failed with DMG source"
-      sed -n '1,5p' /tmp/agent-signal-doctor.err
+      sed -n '1,5p' "$DOCTOR_ERR"
     fi
     rm -rf "$TMP_DMG_INSTALL_ROOT"
   fi
@@ -1238,7 +1242,7 @@ else
 fi
 
 if [[ -f "$LAUNCH_AGENT_PLIST" ]]; then
-  if plutil -lint "$LAUNCH_AGENT_PLIST" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+  if plutil -lint "$LAUNCH_AGENT_PLIST" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     pass "launch-at-login plist is valid"
     if /usr/bin/python3 - "$LAUNCH_AGENT_PLIST" "$APP_NAME" <<'PY'
 import os
@@ -1268,7 +1272,7 @@ PY
     else
       warn "launch-at-login plist does not point to a usable $APP_NAME.app"
     fi
-    if launchctl print "gui/$(id -u)/$BUNDLE_ID" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
+    if launchctl print "gui/$(id -u)/$BUNDLE_ID" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
       pass "launch-at-login job is loaded"
     else
       warn "launch-at-login plist exists but launchctl does not report a loaded job"

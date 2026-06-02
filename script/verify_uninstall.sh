@@ -58,7 +58,7 @@ done
 TMP_ROOT="$(mktemp -d)"
 TMP_HOME="$TMP_ROOT/home"
 INSTALL_DIR="$TMP_ROOT/Applications"
-STATE_DIR="$TMP_ROOT/state"
+STATE_DIR="$TMP_ROOT/agent-signal-state"
 LAUNCH_AGENT_DIR="$TMP_HOME/Library/LaunchAgents"
 LAUNCH_AGENT_PLIST="$LAUNCH_AGENT_DIR/$BUNDLE_ID.plist"
 mkdir -p "$TMP_HOME/.codex" "$TMP_HOME/.claude" "$LAUNCH_AGENT_DIR" "$STATE_DIR"

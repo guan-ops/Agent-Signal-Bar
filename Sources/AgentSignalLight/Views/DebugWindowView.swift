@@ -3,17 +3,13 @@ import AgentSignalLightUI
 import AppKit
 import Foundation
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct DebugWindowView: View {
     @ObservedObject var model: MenuBarStatusModel
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedSettingsTab: SettingsTab = .activity
-    @State private var settingsTabOrder: [SettingsTab] = SettingsTab.savedOrder
-    @State private var draggedSettingsTab: SettingsTab?
-    @State private var showsAdvancedSignals = false
     @State private var expandedSettingsDropdown: SettingsDropdownID?
-    private let activityRecentEventLimit = 15
+    private let activityRecentEventLimit = 50
 
     var body: some View {
         ZStack {
@@ -31,7 +27,7 @@ struct DebugWindowView: View {
                 Divider()
 
                 settingsMenu
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, 22)
                     .padding(.vertical, 10)
                     .fixedSize(horizontal: false, vertical: true)
                     .layoutPriority(2)
@@ -41,13 +37,13 @@ struct DebugWindowView: View {
                 settingsContentArea
             }
         }
-        .frame(width: 768, height: 900)
+        .frame(width: 600, height: 840)
         .preferredColorScheme(model.appTheme.colorScheme)
     }
 
     private var settingsMenu: some View {
         HStack(spacing: 4) {
-            ForEach(settingsTabOrder) { tab in
+            ForEach(SettingsTab.displayOrder) { tab in
                 Button {
                     withAnimation(.easeInOut(duration: 0.14)) {
                         closeSettingsDropdown()
@@ -65,75 +61,102 @@ struct DebugWindowView: View {
                             .minimumScaleFactor(0.85)
                             .frame(height: 14)
                     }
-                    .foregroundStyle(selectedSettingsTab == tab ? Color.accentColor : Color.primary)
+                    .foregroundStyle(selectedSettingsTab == tab ? Color.accentColor : Color.secondary)
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
                     .contentShape(Rectangle())
                     .background {
                         if selectedSettingsTab == tab {
-                            glassControlBackground(cornerRadius: 7)
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                        .fill(selectedMenuItemTint)
-                                }
+                            glassSelectedMenuItemBackground(cornerRadius: 7)
                         }
                     }
                 }
                 .buttonStyle(.plain)
-                .opacity(draggedSettingsTab == tab ? 0.55 : 1)
-                .onDrag {
-                    draggedSettingsTab = tab
-                    return NSItemProvider(object: tab.rawValue as NSString)
-                }
-                .onDrop(
-                    of: [.plainText],
-                    delegate: SettingsTabDropDelegate(
-                        destination: tab,
-                        order: $settingsTabOrder,
-                        draggedTab: $draggedSettingsTab
-                    )
-                )
-                .help("\(menuTitle(for: tab)) · \(model.text("按住并拖动可调整位置", "Hold and drag to reorder"))")
+                .help(menuTitle(for: tab))
             }
         }
-        .frame(height: 48)
+        .padding(4)
+        .frame(height: 56)
+        .background {
+            glassMenuBarBackground(cornerRadius: 12)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(glassMenuBarStroke, lineWidth: 0.6)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var settingsContentArea: some View {
         GeometryReader { proxy in
-            ScrollView {
-                ZStack(alignment: .topLeading) {
-                    if expandedSettingsDropdown != nil {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                closeSettingsDropdown()
-                            }
-                            .zIndex(0)
-                    }
-
-                    VStack(alignment: .leading, spacing: 16) {
-                        selectedSettingsContent
-
-                        if let lastError = model.lastError {
-                            Divider()
-
-                            Text(lastError)
-                                .font(settingsBodyFont)
-                                .foregroundStyle(.red)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    .zIndex(1)
-                }
-                .padding(22)
-                .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .topLeading)
+            if selectedSettingsTab == .activity {
+                fixedSettingsContentArea(proxy: proxy)
+            } else {
+                scrollingSettingsContentArea(proxy: proxy)
             }
-            .scrollIndicators(.hidden)
-            .scrollContentBackground(.hidden)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func fixedSettingsContentArea(proxy: GeometryProxy) -> some View {
+        ZStack(alignment: .topLeading) {
+            dropdownDismissLayer
+
+            VStack(alignment: .leading, spacing: 16) {
+                selectedSettingsContent
+
+                if let lastError = model.lastError {
+                    Divider()
+
+                    Text(lastError)
+                        .font(settingsBodyFont)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .zIndex(1)
+        }
+        .padding(22)
+        .frame(maxWidth: .infinity, maxHeight: proxy.size.height, alignment: .topLeading)
+    }
+
+    private func scrollingSettingsContentArea(proxy: GeometryProxy) -> some View {
+        ScrollView {
+            ZStack(alignment: .topLeading) {
+                dropdownDismissLayer
+
+                VStack(alignment: .leading, spacing: 16) {
+                    selectedSettingsContent
+
+                    if let lastError = model.lastError {
+                        Divider()
+
+                        Text(lastError)
+                            .font(settingsBodyFont)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .zIndex(1)
+            }
+            .padding(22)
+            .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .topLeading)
+        }
+        .scrollIndicators(.hidden)
+        .scrollContentBackground(.hidden)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var dropdownDismissLayer: some View {
+        if expandedSettingsDropdown != nil {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    closeSettingsDropdown()
+                }
+                .zIndex(0)
+        }
     }
 
     @ViewBuilder
@@ -143,12 +166,10 @@ struct DebugWindowView: View {
             generalSettings
         case .activity:
             activitySettings
-        case .appearance:
-            appearanceSettings
-        case .signals:
-            manualSignalSettings
         case .connections:
             connectionSettings
+        case .advanced:
+            advancedSettings
         case .about:
             developerInfoSettings
         }
@@ -160,12 +181,10 @@ struct DebugWindowView: View {
             return model.text("通用", "General")
         case .activity:
             return model.text("运行", "Activity")
-        case .appearance:
-            return model.text("样式", "Style")
-        case .signals:
-            return model.text("灯效", "Effects")
         case .connections:
             return model.text("连接", "Connect")
+        case .advanced:
+            return model.text("高级", "Advanced")
         case .about:
             return model.text("关于", "About")
         }
@@ -174,38 +193,17 @@ struct DebugWindowView: View {
     fileprivate enum SettingsTab: String, CaseIterable, Identifiable {
         case activity
         case general
-        case appearance
-        case signals
         case connections
+        case advanced
         case about
 
         var id: String { rawValue }
 
-        static var savedOrder: [SettingsTab] {
-            guard let rawValues = UserDefaults.standard.stringArray(forKey: orderDefaultsKey) else {
-                return defaultOrder
-            }
-
-            let restored = rawValues.compactMap(SettingsTab.init(rawValue:))
-            guard Set(restored) == Set(allCases), restored.count == allCases.count else {
-                return defaultOrder
-            }
-
-            return restored
-        }
-
-        static func saveOrder(_ tabs: [SettingsTab]) {
-            UserDefaults.standard.set(tabs.map(\.rawValue), forKey: orderDefaultsKey)
-        }
-
-        private static let orderDefaultsKey = "settingsTabOrder"
-
-        private static let defaultOrder: [SettingsTab] = [
+        static let displayOrder: [SettingsTab] = [
             .activity,
-            .appearance,
-            .signals,
-            .connections,
             .general,
+            .connections,
+            .advanced,
             .about
         ]
 
@@ -215,12 +213,10 @@ struct DebugWindowView: View {
                 return "gearshape"
             case .activity:
                 return "waveform.path.ecg"
-            case .appearance:
-                return "paintpalette"
-            case .signals:
-                return "lightbulb"
             case .connections:
                 return "link"
+            case .advanced:
+                return "slider.horizontal.3"
             case .about:
                 return "info.circle"
             }
@@ -238,10 +234,8 @@ struct DebugWindowView: View {
     }
 
     private enum SettingsDropdownID: Hashable {
-        case openAgent
         case language
         case theme
-        case signalLightAgentScope
         case thinkingEffect
         case workingEffect
         case doneEffect
@@ -325,18 +319,6 @@ struct DebugWindowView: View {
                     .font(settingsHeaderTitleFont)
             }
             .frame(maxWidth: .infinity)
-
-            HStack {
-                Spacer()
-
-                Button {
-                    model.reload()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.borderless)
-                .help(model.text("刷新", "Refresh"))
-            }
         }
         .frame(maxWidth: .infinity)
     }
@@ -354,9 +336,9 @@ struct DebugWindowView: View {
                 }
                 .zIndex(expandedSettingsDropdown == .theme ? 1000 : 0)
 
-                Toggle(model.text("液态玻璃效果", "Liquid glass"), isOn: settingsGlassEnabledBinding)
-                    .font(settingsRowTitleFont)
-                    .toggleStyle(.switch)
+                settingRow(model.text("液态玻璃效果", "Liquid glass")) {
+                    settingsSwitch(settingsGlassEnabledBinding)
+                }
 
                 if model.isSettingsGlassEnabled {
                     settingRow(model.text("液态玻璃强度", "Liquid glass strength")) {
@@ -369,27 +351,19 @@ struct DebugWindowView: View {
                     }
                 }
 
-                Toggle(model.text("开机自启动", "Start at login"), isOn: launchAtLoginBinding)
-                    .font(settingsRowTitleFont)
-                    .toggleStyle(.switch)
-                    .disabled(model.isLaunchAtLoginChangeRunning)
-                    .help(model.text("登录 macOS 后自动打开 Agent Signal Bar", "Open Agent Signal Bar automatically after macOS login"))
-
-                HStack(alignment: .top, spacing: 8) {
-                    settingsOpenAgentDropdown
-
-                    Button {
-                        model.clearWarnings()
-                    } label: {
-                        settingsActionSurface(
-                            model.text("清除提醒", "Clear Warning"),
-                            systemImage: "xmark.circle"
-                        )
-                    }
-                    .buttonStyle(.plain)
+                settingRow(model.text("开机自启动", "Start at login")) {
+                    settingsSwitch(launchAtLoginBinding)
+                        .disabled(model.isLaunchAtLoginChangeRunning)
+                        .help(model.text("登录 macOS 后自动打开 Agent Signal Bar", "Open Agent Signal Bar automatically after macOS login"))
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .zIndex(expandedSettingsDropdown == .openAgent ? 1000 : 0)
+
+                settingRow(model.text("暂停监控", "Pause Monitoring")) {
+                    settingsSwitch(monitoringPausedBinding)
+                        .help(model.text(
+                            "暂停后状态栏灯会熄灭，Agent 事件暂不刷新。",
+                            "When paused, the status bar light turns off and agent events stop refreshing."
+                        ))
+                }
             }
             .zIndex(isGeneralDropdownExpanded ? 10 : 1)
 
@@ -403,29 +377,10 @@ struct DebugWindowView: View {
 
     private var isGeneralDropdownExpanded: Bool {
         switch expandedSettingsDropdown {
-        case .language, .theme, .openAgent, .signalLightAgentScope:
+        case .language, .theme:
             return true
         default:
             return false
-        }
-    }
-
-    private var settingsOpenAgentDropdown: some View {
-        inlineDropdown(
-            id: .openAgent,
-            title: model.text("打开 Agent", "Open Agent"),
-            systemImage: "app",
-            width: settingsActionButtonWidth
-        ) {
-            dropdownOptions(width: settingsActionButtonWidth) {
-                dropdownOption("Codex", systemImage: "terminal", width: settingsActionButtonWidth) {
-                    model.openCodex()
-                }
-
-                dropdownOption("Claude", systemImage: "sparkles", width: settingsActionButtonWidth) {
-                    model.openClaude()
-                }
-            }
         }
     }
 
@@ -463,26 +418,6 @@ struct DebugWindowView: View {
                         width: settingsPickerWidth
                     ) {
                         model.setAppTheme(theme)
-                    }
-                }
-            }
-        }
-    }
-
-    private var signalLightAgentScopeMenu: some View {
-        inlineDropdown(
-            id: .signalLightAgentScope,
-            title: model.displayName(for: model.signalLightAgentScope),
-            width: settingsPickerWidth
-        ) {
-            dropdownOptions(width: settingsPickerWidth) {
-                ForEach(SignalLightAgentScope.allCases, id: \.self) { scope in
-                    dropdownOption(
-                        model.displayName(for: scope),
-                        isSelected: model.signalLightAgentScope == scope,
-                        width: settingsPickerWidth
-                    ) {
-                        model.setSignalLightAgentScope(scope)
                     }
                 }
             }
@@ -570,23 +505,32 @@ struct DebugWindowView: View {
                 Divider()
 
                 activityEvents
+                    .layoutPriority(1)
             }
+            .frame(maxHeight: .infinity, alignment: .topLeading)
         }
+        .frame(maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var activitySummaryCard: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ActivitySignalLampView(model: model)
+        let lightSnapshot = model.lightSnapshot
+        let selectedSignal = lightSnapshot.aggregate
+
+        return HStack(alignment: .top, spacing: 12) {
+            ActivitySignalLampView(
+                model: model,
+                signalOverride: selectedSignal
+            )
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(model.displayName(for: model.displaySnapshot.aggregate))
+                Text(model.displayName(for: selectedSignal))
                     .font(settingsSubsectionTitleFont)
-                Text(model.summary(for: model.displaySnapshot.aggregate))
+                Text(model.summary(for: selectedSignal))
                     .font(settingsBodyFont)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text(activityUpdatedText(model.displaySnapshot.updatedAt))
+                Text(lightSnapshot.updatedAt.map(activityUpdatedText) ?? model.text("等待运行", "Waiting to launch"))
                     .font(settingsDetailFont)
                     .foregroundStyle(.tertiary)
             }
@@ -601,13 +545,12 @@ struct DebugWindowView: View {
                 .font(settingsDetailStrongFont)
                 .foregroundStyle(model.isMonitoringPaused ? .orange : .secondary)
 
-                Text("\(model.displaySnapshot.sessions.count) \(model.text("个会话", "sessions"))")
+                Text("\(lightSnapshot.sessions.count) \(model.text("个会话", "sessions"))")
                     .font(settingsDetailFont)
                     .foregroundStyle(.tertiary)
             }
         }
         .padding(10)
-        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var activitySessions: some View {
@@ -620,7 +563,7 @@ struct DebugWindowView: View {
                 emptyActivityRow(
                     icon: "checkmark.circle",
                     title: model.text("暂无运行中的 Agent", "No active agent sessions"),
-                    subtitle: model.text("状态栏会在收到 Agent 事件后自动更新。", "The status bar updates automatically when an agent reports activity.")
+                    subtitle: model.text("启动 Agent 后，这里会显示所有 Agent 的实时状态。", "Launch an agent to show live status from all agents here.")
                 )
             } else {
                 VStack(alignment: .leading, spacing: 8) {
@@ -633,18 +576,19 @@ struct DebugWindowView: View {
     }
 
     private var visibleActivitySessions: [SessionStatus] {
+        Array(allVisibleActivitySessions.prefix(4))
+    }
+
+    private var allVisibleActivitySessions: [SessionStatus] {
         var seenAgents: Set<String> = []
         var sessions: [SessionStatus] = []
 
-        for session in model.displaySnapshot.sessions {
+        for session in model.activitySnapshot.sessions {
             guard isVisibleActivitySession(session) else { continue }
             let agentKey = normalizedActivityAgentKey(session.agent, fallback: session.sessionID)
             guard !seenAgents.contains(agentKey) else { continue }
             seenAgents.insert(agentKey)
             sessions.append(session)
-            if sessions.count == 4 {
-                break
-            }
         }
 
         return sessions
@@ -655,8 +599,14 @@ struct DebugWindowView: View {
             return true
         }
 
-        guard session.signal.displayState == .active else { return false }
-        return Date().timeIntervalSince(session.updatedAt) <= liveActivitySessionWindow
+        switch session.signal.displayState {
+        case .active:
+            return Date().timeIntervalSince(session.updatedAt) <= liveActivitySessionWindow
+        case .completed, .needsReview, .permission, .blocked, .stale:
+            return true
+        case .ready, .paused:
+            return false
+        }
     }
 
     private func isDesktopPresenceSession(_ session: SessionStatus) -> Bool {
@@ -689,48 +639,91 @@ struct DebugWindowView: View {
     }
 
     private var activityEvents: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let recentEvents = activityRecentEvents
+
+        return VStack(alignment: .leading, spacing: 8) {
             Text(model.text("最近事件", "Recent Events"))
                 .font(settingsBodyStrongFont)
                 .foregroundStyle(.secondary)
 
-            if model.displaySnapshot.recentEvents.isEmpty {
+            if recentEvents.isEmpty {
                 emptyActivityRow(
                     icon: "clock",
-                    title: model.text("还没有最近事件", "No recent events yet"),
-                    subtitle: model.text("安装连接后，Codex、Claude Code 或其他 Agent 的事件会显示在这里。", "After connection, events from Codex, Claude Code, or other agents appear here.")
+                    title: model.text("还没有最近事件", "No recent events yet")
                 )
             } else {
-                VStack(alignment: .leading, spacing: 7) {
-                    ForEach(model.displaySnapshot.recentEvents.prefix(activityRecentEventLimit)) { event in
-                        activityEventRow(event)
+                GeometryReader { proxy in
+                    let horizontalInset: CGFloat = 10
+                    let rowWidth = max(0, proxy.size.width - horizontalInset * 2)
+
+                    ScrollView(.vertical, showsIndicators: false) {
+                        RecentEventsScrollConfigurator()
+                            .frame(width: 0, height: 0)
+
+                        LazyVStack(alignment: .leading, spacing: 7) {
+                            ForEach(recentEvents.prefix(activityRecentEventLimit)) { event in
+                                activityEventRow(event, width: rowWidth)
+                            }
+                        }
+                        .frame(width: rowWidth, alignment: .topLeading)
+                        .padding(.horizontal, horizontalInset)
                     }
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .scrollContentBackground(.hidden)
+                    .clipped()
                 }
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var activityRecentEvents: [RecentSignalEvent] {
+        let currentSessionKeys = Set(
+            visibleActivitySessions.map { session in
+                "\(session.sessionID)|\(session.signal.rawValue)|\(session.lastEvent ?? "")"
+            }
+        )
+
+        return model.activitySnapshot.recentEvents.filter { event in
+            let eventKey = "\(event.sessionID)|\(event.signal.rawValue)|\(event.event ?? "")"
+            return !currentSessionKeys.contains(eventKey)
         }
     }
 
     private var statusBarSettings: some View {
         settingsSection(model.text("状态栏", "Status Bar")) {
-            Toggle(model.text("显示状态栏信号", "Show status bar signal"), isOn: statusBarEnabledBinding)
-                .font(settingsRowTitleFont)
-                .toggleStyle(.switch)
-
-            settingRow(model.text("灯效 Agent", "Light Agent")) {
-                signalLightAgentScopeMenu
+            settingRow(model.text("显示状态栏信号", "Show status bar signal")) {
+                settingsSwitch(statusBarEnabledBinding)
             }
-            .zIndex(expandedSettingsDropdown == .signalLightAgentScope ? 1000 : 0)
 
-            Label {
-                Text(model.text(
-                    "按住 ⌘ 并拖动状态栏信号灯，可以调整它在状态栏中的位置。",
-                    "Hold Command and drag the status bar signal to move its position."
-                ))
-            } icon: {
-                Image(systemName: "command")
+            settingRow(model.text("状态栏菜单", "Status bar menu")) {
+                compactSegmentedControl(
+                    options: StatusMenuMode.allCases,
+                    selection: statusMenuModeBinding
+                ) { mode in
+                    model.displayName(for: mode)
+                }
             }
+
+            Text(model.text(
+                "按住 ⌘ 并拖动状态栏信号灯，可以调整它在状态栏中的位置。",
+                "Hold Command and drag the status bar signal to move its position."
+            ))
             .font(settingsBodyFont)
             .foregroundStyle(.secondary)
+        }
+    }
+
+    private var advancedSettings: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(model.text("高级设置", "Advanced Settings"))
+                .font(settingsSectionTitleFont)
+
+            appearanceSettings
+
+            Divider()
+
+            manualSignalSettings
         }
     }
 
@@ -738,7 +731,7 @@ struct DebugWindowView: View {
         settingsSection(model.text("样式", "Style")) {
             settingRow(model.text("状态栏风格", "Status bar style")) {
                 compactSegmentedControl(
-                    options: TrafficSignalStyle.allCases,
+                    options: statusBarStyleOptions,
                     selection: statusBarStyleBinding
                 ) { style in
                     model.displayName(for: style)
@@ -830,66 +823,6 @@ struct DebugWindowView: View {
                         }
                     }
                 }
-
-                Divider()
-
-                settingsSubsection(model.text("灯效测试", "Signal Test")) {
-                    Toggle(model.text("启用灯效测试", "Enable signal test"), isOn: signalTestModeBinding)
-                        .font(settingsRowTitleFont)
-                        .toggleStyle(.switch)
-                        .help(model.text("关闭后会退出手动测试，并恢复真实 Agent 状态。", "Turn this off to leave manual testing and return to live agent status."))
-
-                    Toggle(model.text("状态栏全亮", "All lights preview"), isOn: statusBarAllLightsBinding)
-                        .font(settingsRowTitleFont)
-                        .toggleStyle(.switch)
-                        .disabled(!model.isSignalTestModeEnabled)
-
-                    Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
-                        GridRow {
-                            actionButton(model.text("空闲", "Idle"), systemImage: "checkmark.circle", signal: .idle)
-                            actionButton(model.text("工作中", "Working"), systemImage: "hammer", signal: .working)
-                        }
-                        GridRow {
-                            actionButton(model.text("需要查看", "Needs Review"), systemImage: "exclamationmark.bubble", signal: .attention)
-                            actionButton(model.text("已完成", "Done"), systemImage: "checkmark.seal", signal: .done)
-                        }
-                        GridRow {
-                            actionButton(model.text("请求授权", "Permission"), systemImage: "hand.raised", signal: .permission)
-                            actionButton(model.text("阻塞", "Blocked"), systemImage: "exclamationmark.octagon", signal: .blocked)
-                        }
-                        GridRow {
-                            actionButton(model.text("关闭灯", "Off"), systemImage: "power", signal: .off)
-                            Button {
-                                model.clearSignalTestState()
-                            } label: {
-                                Label(model.text("重置", "Reset"), systemImage: "arrow.counterclockwise")
-                                    .font(settingsControlFont)
-                                    .frame(width: signalTestButtonWidth, alignment: .leading)
-                            }
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!model.isSignalTestModeEnabled)
-                    .opacity(model.isSignalTestModeEnabled ? 1 : 0.45)
-
-                    expandableSection(model.text("高级信号", "Advanced Signals"), isExpanded: $showsAdvancedSignals) {
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 8) {
-                            advancedSignalButton("thinking", .thinking)
-                            advancedSignalButton("tool_done", .toolDone)
-                            advancedSignalButton("subagent_start", .subagentStart)
-                            advancedSignalButton("subagent_stop", .subagentStop)
-                            advancedSignalButton("notification", .notification)
-                            advancedSignalButton("permission_request", .permissionRequest)
-                            advancedSignalButton("stale", .stale)
-                            advancedSignalButton("pause", .pause)
-                            advancedSignalButton("session_start", .sessionStart)
-                            advancedSignalButton("session_end", .sessionEnd)
-                            advancedSignalButton("turn_end", .turnEnd)
-                        }
-                    }
-                    .disabled(!model.isSignalTestModeEnabled)
-                    .opacity(model.isSignalTestModeEnabled ? 1 : 0.45)
-                }
             }
         }
     }
@@ -897,41 +830,7 @@ struct DebugWindowView: View {
     private var connectionSettings: some View {
         settingsSection(model.text("连接", "Connections")) {
             VStack(alignment: .leading, spacing: 14) {
-                connectionItem(
-                    title: model.text("自动接入", "Automatic setup"),
-                    subtitle: model.text("Codex Desktop 自动识别；Claude 运行状态来自 Claude Code Hook", "Codex Desktop is detected automatically; Claude running state comes from Claude Code hooks"),
-                    systemImage: "link.badge.plus"
-                ) {
-                    VStack(alignment: .trailing, spacing: 7) {
-                        Toggle(model.text("监控 Codex Desktop", "Monitor Codex Desktop"), isOn: codexDesktopMonitoringBinding)
-                            .toggleStyle(.switch)
-                            .labelsHidden()
-                            .help(model.text("自动识别本机 Codex Desktop 活动", "Automatically detect local Codex Desktop activity"))
-
-                        HStack(spacing: 8) {
-                            connectionActionButton(
-                                model.text("检查", "Check"),
-                                systemImage: "checkmark.circle",
-                                disabled: model.isHookInstallRunning
-                            ) {
-                                model.previewHookInstall()
-                            }
-
-                            connectionActionButton(
-                                model.text("安装", "Install"),
-                                systemImage: "wrench.and.screwdriver",
-                                disabled: model.isHookInstallRunning
-                            ) {
-                                model.installHooks()
-                            }
-
-                            if model.isHookInstallRunning {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                        }
-                    }
-                }
+                automaticConnectionSettings
 
                 Divider()
 
@@ -943,7 +842,7 @@ struct DebugWindowView: View {
                     connectionActionButton(
                         model.text("复制接入命令", "Copy command"),
                         systemImage: "doc.on.doc",
-                        width: settingsActionButtonWidth
+                        width: connectionActionButtonWidth
                     ) {
                         model.copyGenericAgentHookCommand()
                     }
@@ -1021,7 +920,93 @@ struct DebugWindowView: View {
                     .help(model.text("复制版本信息", "Copy release info"))
                 }
             }
-            .buttonStyle(.bordered)
+        }
+    }
+
+    private var automaticConnectionSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            connectionItem(
+                title: model.text("Codex Desktop", "Codex Desktop"),
+                subtitle: model.text(
+                    "默认读取本机 Codex Desktop 日志；无需安装 Hook",
+                    "Reads local Codex Desktop logs by default; no hook required"
+                ),
+                systemImage: "desktopcomputer"
+            ) {
+                HStack(spacing: 8) {
+                    Text(model.text("自动监控", "Auto monitor"))
+                        .font(settingsDetailStrongFont)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    settingsSwitch(codexDesktopMonitoringBinding)
+                        .help(model.text("自动识别本机 Codex Desktop 活动", "Automatically detect local Codex Desktop activity"))
+                }
+            }
+
+            Divider()
+
+            connectionItem(
+                title: model.text("Codex CLI / IDE Hook", "Codex CLI / IDE Hook"),
+                subtitle: model.text(
+                    "可选增强：用于 CLI / IDE、权限请求和更低延迟",
+                    "Optional enhancement for CLI / IDE, permission requests, and lower latency"
+                ),
+                systemImage: "terminal"
+            ) {
+                HStack(spacing: 8) {
+                    connectionActionButton(
+                        model.text("检查", "Check"),
+                        systemImage: "checkmark.circle",
+                        disabled: model.isHookInstallRunning
+                    ) {
+                        model.previewCodexHookInstall()
+                    }
+
+                    connectionActionButton(
+                        model.text("安装", "Install"),
+                        systemImage: "wrench.and.screwdriver",
+                        disabled: model.isHookInstallRunning
+                    ) {
+                        model.installCodexHooks()
+                    }
+                }
+            }
+
+            Divider()
+
+            connectionItem(
+                title: model.text("Claude Code", "Claude Code"),
+                subtitle: model.text(
+                    "Claude Code 全局 Hook 可单独检查或安装",
+                    "Claude Code global hooks can be checked or installed separately"
+                ),
+                systemImage: "sparkles"
+            ) {
+                HStack(spacing: 8) {
+                    connectionActionButton(
+                        model.text("检查", "Check"),
+                        systemImage: "checkmark.circle",
+                        disabled: model.isHookInstallRunning
+                    ) {
+                        model.previewClaudeHookInstall()
+                    }
+
+                    connectionActionButton(
+                        model.text("安装", "Install"),
+                        systemImage: "wrench.and.screwdriver",
+                        disabled: model.isHookInstallRunning
+                    ) {
+                        model.installClaudeHooks()
+                    }
+                }
+            }
+
+            if model.isHookInstallRunning {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
     }
 
@@ -1094,6 +1079,13 @@ struct DebugWindowView: View {
             Spacer()
             content()
         }
+    }
+
+    private func settingsSwitch(_ isOn: Binding<Bool>) -> some View {
+        Toggle("", isOn: isOn)
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .fixedSize()
     }
 
     private func closeSettingsDropdown() {
@@ -1275,7 +1267,7 @@ struct DebugWindowView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            settingsActionSurface(title, systemImage: systemImage, width: width ?? diagnosticActionButtonWidth)
+            settingsActionSurface(title, systemImage: systemImage, width: width ?? connectionActionButtonWidth)
         }
         .buttonStyle(.plain)
         .disabled(disabled)
@@ -1370,6 +1362,28 @@ struct DebugWindowView: View {
         }
     }
 
+    private func glassMenuBarBackground(cornerRadius: CGFloat) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(settingsPanelFill)
+        }
+    }
+
+    private func glassSelectedMenuItemBackground(cornerRadius: CGFloat) -> some View {
+        ZStack {
+            if model.isSettingsGlassEnabled {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+            } else {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color.clear)
+            }
+
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .stroke(selectedMenuItemStroke, lineWidth: 0.7)
+        }
+    }
+
     private var settingsWindowBackground: some View {
         ZStack {
             if model.isSettingsGlassEnabled {
@@ -1388,14 +1402,10 @@ struct DebugWindowView: View {
             return Color.white.opacity(0.10)
         case (.dark, .standard):
             return Color.white.opacity(0.075)
-        case (.dark, .enhanced):
-            return Color.white.opacity(0.055)
         case (_, .reduced):
             return Color.white.opacity(0.34)
         case (_, .standard):
             return Color.white.opacity(0.24)
-        case (_, .enhanced):
-            return Color.white.opacity(0.16)
         }
     }
 
@@ -1405,14 +1415,10 @@ struct DebugWindowView: View {
             return Color.white.opacity(0.09)
         case (.dark, .standard):
             return Color.white.opacity(0.065)
-        case (.dark, .enhanced):
-            return Color.white.opacity(0.045)
         case (_, .reduced):
             return Color.white.opacity(0.26)
         case (_, .standard):
             return Color.white.opacity(0.18)
-        case (_, .enhanced):
-            return Color.white.opacity(0.12)
         }
     }
 
@@ -1422,19 +1428,27 @@ struct DebugWindowView: View {
             return Color.black.opacity(0.24)
         case (.dark, .standard):
             return Color.black.opacity(0.14)
-        case (.dark, .enhanced):
-            return Color.black.opacity(0.07)
         case (_, .reduced):
             return Color.white.opacity(0.28)
         case (_, .standard):
             return Color.white.opacity(0.14)
-        case (_, .enhanced):
-            return Color.white.opacity(0.05)
         }
     }
 
-    private var selectedMenuItemTint: Color {
-        Color.accentColor.opacity(colorScheme == .dark ? 0.24 : 0.16)
+    private var glassMenuBarStroke: Color {
+        model.isSettingsGlassEnabled
+            ? Color.white.opacity(colorScheme == .dark ? 0.12 : 0.42)
+            : solidControlStroke
+    }
+
+    private var settingsPanelFill: some ShapeStyle {
+        .tertiary.opacity(0.08)
+    }
+
+    private var selectedMenuItemStroke: Color {
+        model.isSettingsGlassEnabled
+            ? Color.white.opacity(colorScheme == .dark ? 0.18 : 0.46)
+            : solidControlStroke
     }
 
     private var solidControlFill: Color {
@@ -1464,7 +1478,15 @@ struct DebugWindowView: View {
     }
 
     private var diagnosticActionButtonWidth: CGFloat {
-        settingsControlWidth
+        compactConnectionActionButtonWidth
+    }
+
+    private var connectionActionButtonWidth: CGFloat {
+        compactConnectionActionButtonWidth
+    }
+
+    private var compactConnectionActionButtonWidth: CGFloat {
+        usesCompactLatinLayout ? 146 : 126
     }
 
     private var effectMenuWidth: CGFloat {
@@ -1479,16 +1501,17 @@ struct DebugWindowView: View {
         usesCompactLatinLayout ? 162 : 150
     }
 
-    private var signalTestButtonWidth: CGFloat {
-        150
+    private var statusBarStyleOptions: [TrafficSignalStyle] {
+        [.macOS, .trafficLight]
     }
 
     private func activitySessionRow(_ session: SessionStatus) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Circle()
-                .fill(debugSignalColor(session.signal))
-                .frame(width: 8, height: 8)
-                .padding(.top, 6)
+        HStack(alignment: .top, spacing: 12) {
+            activityIndicatorDot(
+                color: debugSignalColor(session.signal),
+                size: 8,
+                topPadding: 6
+            )
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -1496,7 +1519,7 @@ struct DebugWindowView: View {
                         .font(settingsSubsectionTitleFont)
                         .lineLimit(1)
 
-                    Text(model.displayName(for: session.signal))
+                    Text(activitySessionRuntimeLabel(session))
                         .font(settingsDetailStrongFont)
                         .foregroundStyle(debugSignalColor(session.signal))
                         .padding(.horizontal, 6)
@@ -1504,34 +1527,81 @@ struct DebugWindowView: View {
                         .background(debugSignalColor(session.signal).opacity(0.12), in: Capsule())
                 }
 
-                Text(activitySessionSubtitle(session))
-                    .font(settingsBodyFont)
+                Text(activitySessionStatusSubtitle(session))
+                    .font(settingsDetailFont)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
-
-                Text("\(model.text("会话", "Session")) \(debugCompactIdentifier(session.sessionID))")
-                    .font(settingsDetailFont)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .textSelection(.enabled)
             }
 
             Spacer(minLength: 10)
-
-            Text(session.updatedAt.formatted(date: .omitted, time: .shortened))
-                .font(settingsDetailFont)
-                .foregroundStyle(.tertiary)
         }
+        .padding(.leading, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func activityEventRow(_ event: RecentSignalEvent) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Circle()
-                .fill(debugSignalColor(event.signal))
-                .frame(width: 7, height: 7)
-                .padding(.top, 5)
+    private func activitySessionStatusSubtitle(_ session: SessionStatus) -> String {
+        let status = model.displayName(for: session.signal)
+        guard let rawEvent = session.lastEvent?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawEvent.isEmpty
+        else {
+            return status
+        }
+
+        let event = rawEvent.lowercased()
+        guard !event.hasPrefix("desktop") else {
+            return status
+        }
+
+        let eventName = model.friendlyEventName(rawEvent)
+        guard eventName != status else {
+            return status
+        }
+
+        return "\(status) · \(eventName)"
+    }
+
+    private func activitySessionRuntimeLabel(_ session: SessionStatus) -> String {
+        let agent = normalizedActivityAgentName(session.agent)
+        let sessionID = session.sessionID.lowercased()
+        let event = (session.lastEvent ?? "").lowercased()
+
+        if sessionID.hasPrefix("desktop-app:")
+            || sessionID.hasPrefix("codex-desktop:")
+            || agent == "codex-desktop"
+            || agent == "claude-desktop"
+            || event.hasPrefix("desktop") {
+            return model.text("桌面版运行中", "Desktop running")
+        }
+
+        if agent == "claude-code" || agent == "claude"
+            || agent == "codex-cli" || agent == "codex-ide" || agent == "codex" {
+            return model.text("CLI 运行中", "CLI running")
+        }
+
+        return model.text("本地运行中", "Local running")
+    }
+
+    private func normalizedActivityAgentName(_ agent: String?) -> String {
+        guard let agent else { return "" }
+        return agent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: " ", with: "-")
+    }
+
+    private func activityEventRow(_ event: RecentSignalEvent, width: CGFloat) -> some View {
+        let recentEventDotSize: CGFloat = 7
+        let indicatorColumnWidth: CGFloat = 20
+        let timeTrailingInset = (indicatorColumnWidth - recentEventDotSize) / 2
+
+        return HStack(alignment: .top, spacing: 12) {
+            activityIndicatorDot(
+                color: debugSignalColor(event.signal),
+                size: recentEventDotSize,
+                topPadding: 5
+            )
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(activityEventTitle(event))
@@ -1539,22 +1609,32 @@ struct DebugWindowView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
 
-                Text("\(model.displayName(for: event.signal)) · \(model.text("会话", "Session")) \(debugCompactIdentifier(event.sessionID))")
+                Text(model.displayName(for: event.signal))
                     .font(settingsDetailFont)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-
-            Spacer(minLength: 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Text(event.updatedAt.formatted(date: .omitted, time: .shortened))
                 .font(settingsDetailFont)
                 .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .frame(width: 72, alignment: .trailing)
+                .padding(.trailing, timeTrailingInset)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(width: width, alignment: .leading)
     }
 
-    private func emptyActivityRow(icon: String, title: String, subtitle: String) -> some View {
+    private func activityIndicatorDot(color: Color, size: CGFloat, topPadding: CGFloat) -> some View {
+        Circle()
+            .fill(color)
+            .frame(width: size, height: size)
+            .padding(.top, topPadding)
+            .frame(width: 20, alignment: .center)
+    }
+
+    private func emptyActivityRow(icon: String, title: String, subtitle: String? = nil) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: icon)
                 .font(settingsTabIconFont)
@@ -1564,21 +1644,15 @@ struct DebugWindowView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(settingsBodyStrongFont)
-                Text(subtitle)
-                    .font(settingsBodyFont)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(settingsBodyFont)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func activitySessionSubtitle(_ session: SessionStatus) -> String {
-        if let lastEvent = session.lastEvent, !lastEvent.isEmpty {
-            return "\(model.text("最近事件", "Recent Event")) \(model.friendlyEventName(lastEvent))"
-        }
-
-        return model.humanAction(for: session.signal)
     }
 
     private func activityEventTitle(_ event: RecentSignalEvent) -> String {
@@ -1604,7 +1678,7 @@ struct DebugWindowView: View {
         systemImage: String,
         @ViewBuilder actions: () -> Actions
     ) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             Image(systemName: systemImage)
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(.secondary)
@@ -1773,58 +1847,17 @@ struct DebugWindowView: View {
         path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
 
-    private func expandableSection<Content: View>(
-        _ title: String,
-        isExpanded: Binding<Bool>,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.16)) {
-                    isExpanded.wrappedValue.toggle()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(settingsBodyStrongFont)
-                        .rotationEffect(.degrees(isExpanded.wrappedValue ? 90 : 0))
-                    Text(title)
-                        .font(settingsBodyStrongFont)
-                    Spacer()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if isExpanded.wrappedValue {
-                content()
-                    .padding(.top, 8)
-            }
-        }
-    }
-
-    private func actionButton(_ title: String, systemImage: String, signal: AgentSignal) -> some View {
-        Button {
-            model.setSignalTestSignal(signal)
-        } label: {
-            Label(title, systemImage: systemImage)
-                .font(settingsControlFont)
-                .frame(width: signalTestButtonWidth, alignment: .leading)
-        }
-    }
-
-    private func advancedSignalButton(_ title: String, _ signal: AgentSignal) -> some View {
-        Button(title) {
-            model.setSignalTestSignal(signal)
-        }
-        .font(settingsControlFont)
-        .frame(width: signalTestButtonWidth, alignment: .leading)
-    }
-
     private var statusBarEnabledBinding: Binding<Bool> {
         Binding(
             get: { model.isStatusBarIconEnabled },
             set: { model.setStatusBarIconEnabled($0) }
+        )
+    }
+
+    private var statusMenuModeBinding: Binding<StatusMenuMode> {
+        Binding(
+            get: { model.statusMenuMode },
+            set: { model.setStatusMenuMode($0) }
         )
     }
 
@@ -1835,17 +1868,10 @@ struct DebugWindowView: View {
         )
     }
 
-    private var statusBarAllLightsBinding: Binding<Bool> {
+    private var monitoringPausedBinding: Binding<Bool> {
         Binding(
-            get: { model.isStatusBarAllLightsOn },
-            set: { model.setStatusBarAllLightsOn($0) }
-        )
-    }
-
-    private var signalTestModeBinding: Binding<Bool> {
-        Binding(
-            get: { model.isSignalTestModeEnabled },
-            set: { model.setSignalTestModeEnabled($0) }
+            get: { model.isMonitoringPaused },
+            set: { model.setMonitoringPaused($0) }
         )
     }
 
@@ -1990,45 +2016,73 @@ private struct SettingsGlassBackdropView: NSViewRepresentable {
             return .sidebar
         case .standard:
             return .popover
-        case .enhanced:
-            return .hudWindow
         }
     }
 }
 
-private struct SettingsTabDropDelegate: DropDelegate {
-    let destination: DebugWindowView.SettingsTab
-    @Binding var order: [DebugWindowView.SettingsTab]
-    @Binding var draggedTab: DebugWindowView.SettingsTab?
+private struct RecentEventsScrollConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> ConfiguratorView {
+        ConfiguratorView()
+    }
 
-    func dropEntered(info: DropInfo) {
-        guard let draggedTab, draggedTab != destination else { return }
-        guard let fromIndex = order.firstIndex(of: draggedTab),
-              let toIndex = order.firstIndex(of: destination)
-        else {
-            return
+    func updateNSView(_ nsView: ConfiguratorView, context: Context) {
+        nsView.scheduleConfiguration()
+    }
+
+    final class ConfiguratorView: NSView {
+        private var hasConfiguredScrollView = false
+
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            scheduleConfiguration()
         }
 
-        withAnimation(.easeInOut(duration: 0.16)) {
-            order.move(
-                fromOffsets: IndexSet(integer: fromIndex),
-                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
-            )
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            scheduleConfiguration()
         }
-    }
 
-    func performDrop(info: DropInfo) -> Bool {
-        DebugWindowView.SettingsTab.saveOrder(order)
-        draggedTab = nil
-        return true
-    }
+        func scheduleConfiguration() {
+            guard !hasConfiguredScrollView else { return }
+            for delay in [0.0, 0.05, 0.15, 0.35, 0.75] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.configureScrollView()
+                }
+            }
+        }
 
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
-    }
+        private func configureScrollView() {
+            guard !hasConfiguredScrollView else { return }
+            guard let scrollView = nearestScrollView() else { return }
+            scrollView.hasVerticalScroller = false
+            scrollView.hasHorizontalScroller = false
+            scrollView.autohidesScrollers = true
+            scrollView.scrollerStyle = .overlay
+            scrollView.verticalScroller = nil
+            scrollView.horizontalScroller = nil
+            scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+            scrollView.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            hasConfiguredScrollView = true
+        }
 
-    func dropExited(info: DropInfo) {
-        DebugWindowView.SettingsTab.saveOrder(order)
+        private func nearestScrollView() -> NSScrollView? {
+            var view: NSView? = self
+
+            while let current = view {
+                if let scrollView = current as? NSScrollView {
+                    return scrollView
+                }
+
+                if let scrollView = current.enclosingScrollView {
+                    return scrollView
+                }
+
+                view = current.superview
+            }
+
+            return nil
+        }
     }
 }
 
@@ -2146,18 +2200,20 @@ private struct HookConnectionSummary {
 private struct ActivitySignalLampView: View {
     @ObservedObject var model: MenuBarStatusModel
     @ObservedObject private var animationClock: SignalAnimationClock
+    private let signalOverride: AgentSignal?
 
-    init(model: MenuBarStatusModel) {
+    init(model: MenuBarStatusModel, signalOverride: AgentSignal? = nil) {
         self.model = model
+        self.signalOverride = signalOverride
         _animationClock = ObservedObject(wrappedValue: model.animationClock)
     }
 
     var body: some View {
         PureActivitySignalLampView(
-            signal: model.displaySnapshot.aggregate,
-            tick: animationClock.tick,
-            allLightsOn: model.isStatusBarAllLightsOn,
-            effectCustomization: model.signalEffectCustomization
+            signal: signalOverride ?? model.lightSnapshot.aggregate,
+            tick: model.lightTick,
+            allLightsOn: model.lightAllLightsOn,
+            effectCustomization: model.lightEffectCustomization
         )
     }
 }

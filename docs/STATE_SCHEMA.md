@@ -74,7 +74,7 @@ Event fields:
 export AGENT_SIGNAL_LIGHT_STATE_FILE=/path/to/status.json
 export AGENT_SIGNAL_LIGHT_STATE_DIR=/tmp/agent-signal
 export AGENT_SIGNAL_LIGHT_EVENT_LIMIT=30
-export AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS=8
+export AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS=90
 export SIGNAL_LIGHT_SESSION_TTL_SECONDS=1800
 ```
 
@@ -82,7 +82,7 @@ If the JSON is missing, the app falls back to `ready` / `idle`. If the JSON is d
 
 `aggregate` is a fallback when there are no active sessions. A stale or paused aggregate does not lock the state forever; once a new non-paused session is written, the aggregate is recomputed from sessions.
 
-Completed sessions use a shorter TTL than normal sessions. By default `done` stays visible for 8 seconds, then the runtime prunes that completed session and returns to `idle` / `ready` instead of `stale`. Snapshot reads persist TTL pruning back into the JSON so direct file readers, the CLI, and the menu bar converge on the same aggregate. When pruning changes the aggregate, `updated_at` is refreshed to the prune time so the menu and CLI do not show the old event time as the current status update time.
+Completed sessions use a shorter TTL than normal sessions. By default `done` stays visible for 90 seconds, then the runtime prunes that completed session and returns to `idle` / `ready` instead of `stale`. Snapshot reads persist TTL pruning back into the JSON so direct file readers, the CLI, and the menu bar converge on the same aggregate. When pruning changes the aggregate, `updated_at` is refreshed to the prune time so the menu and CLI do not show the old event time as the current status update time.
 
 ## CLI Status Output
 

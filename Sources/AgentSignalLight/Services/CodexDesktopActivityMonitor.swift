@@ -1,7 +1,7 @@
 import AgentSignalLightCore
 import Foundation
 
-final class CodexDesktopActivityMonitor {
+final class CodexDesktopActivityMonitor: @unchecked Sendable {
     private struct SessionFile {
         let url: URL
         let path: String
@@ -17,6 +17,7 @@ final class CodexDesktopActivityMonitor {
     private let maxInitialTailBytes: UInt64
     private let fullScanInterval: TimeInterval
     private let replaysInitialHistory: Bool
+    private let stateLock = NSLock()
     private var offsetsByPath: [String: UInt64] = [:]
     private var cachedRecentFiles: [SessionFile] = []
     private var lastFullScanAt: Date?
@@ -30,7 +31,7 @@ final class CodexDesktopActivityMonitor {
         initialLookbackSeconds: TimeInterval = 30 * 60,
         completedLookbackSeconds: TimeInterval = 15,
         maxInitialTailBytes: UInt64 = 512 * 1024,
-        fullScanInterval: TimeInterval = 6,
+        fullScanInterval: TimeInterval = 1.5,
         replaysInitialHistory: Bool = false
     ) {
         self.sessionsRootURL = sessionsRootURL
@@ -44,20 +45,24 @@ final class CodexDesktopActivityMonitor {
     }
 
     func reset() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         offsetsByPath.removeAll()
         cachedRecentFiles.removeAll()
         lastFullScanAt = nil
         hasPrimedExistingFiles = false
     }
 
-    func poll(now: Date = Date()) -> CodexDesktopActivity? {
+    func poll(now: Date = Date()) -> [CodexDesktopActivity] {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         let files = recentSessionFiles(now: now)
-        if shouldPrimeExistingFiles {
-            for file in files {
-                offsetsByPath[file.path] = file.size
-            }
+        if !hasPrimedExistingFiles {
             hasPrimedExistingFiles = true
-            return nil
+            let activities = primeExistingFiles(files, returningActivities: replaysInitialHistory)
+            guard replaysInitialHistory else { return [] }
+            return sortedAcceptedActivities(from: activities, now: now)
         }
 
         var activities: [CodexDesktopActivity] = []
@@ -77,13 +82,7 @@ final class CodexDesktopActivityMonitor {
             }
         }
 
-        return activities.max { lhs, rhs in
-            (lhs.timestamp ?? .distantPast) < (rhs.timestamp ?? .distantPast)
-        }
-    }
-
-    private var shouldPrimeExistingFiles: Bool {
-        !replaysInitialHistory && !hasPrimedExistingFiles
+        return sortedActivities(activities)
     }
 
     private func recentSessionFiles(now: Date) -> [SessionFile] {
@@ -149,14 +148,10 @@ final class CodexDesktopActivityMonitor {
     }
 
     private func sessionFile(for url: URL) -> SessionFile? {
-        guard let values = try? url.resourceValues(forKeys: [
-            .isRegularFileKey,
-            .contentModificationDateKey,
-            .fileSizeKey
-        ]),
-        values.isRegularFile == true,
-        let modifiedAt = values.contentModificationDate,
-        let size = values.fileSize
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              (attributes[.type] as? FileAttributeType) == .typeRegular,
+              let modifiedAt = attributes[.modificationDate] as? Date,
+              let size = attributes[.size] as? NSNumber
         else {
             return nil
         }
@@ -165,8 +160,34 @@ final class CodexDesktopActivityMonitor {
             url: url,
             path: url.path,
             modifiedAt: modifiedAt,
-            size: UInt64(size)
+            size: size.uint64Value
         )
+    }
+
+    private func primeExistingFiles(
+        _ files: [SessionFile],
+        returningActivities: Bool
+    ) -> [CodexDesktopActivity] {
+        var activities: [CodexDesktopActivity] = []
+
+        for file in files {
+            let defaultSessionID = sessionID(for: file.url)
+            let initialTail = readInitialTailLines(from: file)
+            offsetsByPath[file.path] = initialTail.nextOffset
+            guard returningActivities else { continue }
+
+            for line in initialTail.lines {
+                guard let activity = CodexDesktopSessionParser.activity(
+                    from: line,
+                    defaultSessionID: defaultSessionID
+                ) else {
+                    continue
+                }
+                activities.append(activity)
+            }
+        }
+
+        return activities
     }
 
     private func readNewLines(from file: SessionFile, now: Date) -> [String] {
@@ -193,22 +214,69 @@ final class CodexDesktopActivityMonitor {
         }
 
         guard let data = readData(from: file.url, offset: startOffset),
-              let text = String(data: data, encoding: .utf8),
-              !text.isEmpty
+              !data.isEmpty
         else {
             return []
         }
 
-        offsetsByPath[file.path] = file.size
-        var lines = text
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map(String.init)
+        let result = completeDecodedLines(
+            in: data,
+            startOffset: startOffset,
+            shouldDropLeadingPartialLine: shouldDropLeadingPartialLine
+        )
+        offsetsByPath[file.path] = result.nextOffset
+        return result.lines
+    }
 
-        if shouldDropLeadingPartialLine && !lines.isEmpty {
-            lines.removeFirst()
+    private func readInitialTailLines(from file: SessionFile) -> (lines: [String], nextOffset: UInt64) {
+        let startOffset = file.size > maxInitialTailBytes ? file.size - maxInitialTailBytes : 0
+        let shouldDropLeadingPartialLine = startOffset > 0
+
+        guard let data = readData(from: file.url, offset: startOffset),
+              !data.isEmpty
+        else {
+            return ([], startOffset)
         }
 
-        return lines
+        return completeDecodedLines(
+            in: data,
+            startOffset: startOffset,
+            shouldDropLeadingPartialLine: shouldDropLeadingPartialLine
+        )
+    }
+
+    private func completeDecodedLines(
+        in data: Data,
+        startOffset: UInt64,
+        shouldDropLeadingPartialLine: Bool
+    ) -> (lines: [String], nextOffset: UInt64) {
+        var result = completeLineData(in: data, startOffset: startOffset)
+        if shouldDropLeadingPartialLine, !result.lines.isEmpty {
+            result.lines.removeFirst()
+        }
+
+        return (
+            result.lines.compactMap { String(data: $0, encoding: .utf8) },
+            result.nextOffset
+        )
+    }
+
+    private func completeLineData(
+        in data: Data,
+        startOffset: UInt64
+    ) -> (lines: [Data], nextOffset: UInt64) {
+        guard let lastNewlineIndex = data.lastIndex(of: 0x0A) else {
+            return ([], startOffset)
+        }
+
+        let completedEnd = data.index(after: lastNewlineIndex)
+        let completedData = data[..<completedEnd]
+        let completedByteCount = data.distance(from: data.startIndex, to: completedEnd)
+        let lines = completedData
+            .split(separator: 0x0A, omittingEmptySubsequences: true)
+            .map { Data($0) }
+
+        return (lines, startOffset + UInt64(completedByteCount))
     }
 
     private func readData(from url: URL, offset: UInt64) -> Data? {
@@ -231,10 +299,32 @@ final class CodexDesktopActivityMonitor {
         }
 
         let age = now.timeIntervalSince(timestamp)
-        if activity.signal.displayState == .completed {
+        if isShortLivedReplaySignal(activity.signal) {
             return age <= completedLookbackSeconds
         }
         return age <= initialLookbackSeconds
+    }
+
+    private func sortedAcceptedActivities(
+        from activities: [CodexDesktopActivity],
+        now: Date
+    ) -> [CodexDesktopActivity] {
+        sortedActivities(activities.filter { shouldAccept($0, now: now) })
+    }
+
+    private func sortedActivities(_ activities: [CodexDesktopActivity]) -> [CodexDesktopActivity] {
+        activities.sorted { lhs, rhs in
+            (lhs.timestamp ?? .distantPast) < (rhs.timestamp ?? .distantPast)
+        }
+    }
+
+    private func isShortLivedReplaySignal(_ signal: AgentSignal) -> Bool {
+        switch signal {
+        case .done, .toolDone, .subagentStop:
+            return true
+        default:
+            return signal.displayState == .completed
+        }
     }
 
     private func sessionID(for url: URL) -> String {

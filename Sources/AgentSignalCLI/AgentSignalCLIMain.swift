@@ -86,7 +86,7 @@ struct AgentSignalCLI {
             case "codex-hook":
                 let parsed = try parse(Array(arguments.dropFirst()))
                 try requireAtMostOnePositional(parsed)
-                let payload = JSONPayload.object(from: FileHandle.standardInput.readDataToEndOfFile())
+                let payload = try JSONPayload.requiredObject(from: FileHandle.standardInput.readDataToEndOfFile())
                 let eventName = parsed.positionals.first
                     ?? stringValue(payload, keys: ["hook_event_name", "event_name", "event", "hook", "type"])
                 let signal = CodexHookAdapter.chooseSignal(eventName: eventName, payload: payload)
@@ -101,7 +101,7 @@ struct AgentSignalCLI {
             case "claude-hook":
                 let parsed = try parse(Array(arguments.dropFirst()))
                 try requireAtMostOnePositional(parsed)
-                let payload = JSONPayload.object(from: FileHandle.standardInput.readDataToEndOfFile())
+                let payload = try JSONPayload.requiredObject(from: FileHandle.standardInput.readDataToEndOfFile())
                 let eventName = parsed.positionals.first
                     ?? ClaudeHookAdapter.eventName(payload: payload)
                 let signal = ClaudeHookAdapter.chooseSignal(eventName: eventName, payload: payload)
@@ -116,7 +116,7 @@ struct AgentSignalCLI {
             case "agent-hook", "generic-hook", "hook":
                 let parsed = try parse(Array(arguments.dropFirst()))
                 try requireAtMostOnePositional(parsed)
-                let payload = JSONPayload.object(from: FileHandle.standardInput.readDataToEndOfFile())
+                let payload = try JSONPayload.requiredObject(from: FileHandle.standardInput.readDataToEndOfFile())
                 let eventName = parsed.positionals.first
                     ?? stringValue(payload, keys: ["hook_event_name", "event_name", "event", "hook", "type", "action", "name"])
                 let signal = GenericHookAdapter.chooseSignal(eventName: eventName, payload: payload)
@@ -239,12 +239,25 @@ private func requirePositionals(_ parsed: ParsedArguments, count: Int) throws {
 
 private func stringValue(_ payload: [String: Any], keys: [String]) -> String? {
     for key in keys {
-        if let value = payload[key] as? String,
+        if let value = scalarString(payload[key]),
            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return value
         }
     }
     return nil
+}
+
+private func scalarString(_ value: Any?) -> String? {
+    switch value {
+    case let value as String:
+        return value
+    case let value as Bool:
+        return value ? "true" : "false"
+    case let value as NSNumber:
+        return value.stringValue
+    default:
+        return nil
+    }
 }
 
 private func printUsage() {

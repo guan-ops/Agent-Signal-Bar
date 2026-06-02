@@ -103,6 +103,70 @@ print_readiness() {
   echo "Submit is available only after packaging with a Developer ID identity and configuring notarytool credentials."
 }
 
+refresh_release_metadata_after_staple() {
+  local manifest="$ROOT_DIR/dist/$APP_NAME-release-manifest.json"
+  local checksums="$ROOT_DIR/dist/$APP_NAME-SHA256SUMS.txt"
+
+  if [[ -f "$manifest" ]]; then
+    /usr/bin/python3 - "$ROOT_DIR" "$manifest" "$DMG_PATH" <<'PY'
+import hashlib
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+manifest_path = Path(sys.argv[2]).resolve()
+dmg_path = Path(sys.argv[3]).resolve()
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+manifest = json.loads(manifest_path.read_text())
+try:
+    relative_dmg = str(dmg_path.relative_to(root))
+except ValueError:
+    relative_dmg = None
+
+for artifact in manifest.get("artifacts", []):
+    if artifact.get("role") == "installer_dmg" or artifact.get("path") == relative_dmg:
+        artifact["bytes"] = dmg_path.stat().st_size
+        artifact["sha256"] = sha256(dmg_path)
+        if relative_dmg:
+            artifact["path"] = relative_dmg
+
+notarization = manifest.setdefault("notarization", {})
+notarization["status"] = "stapled"
+notarization["stapled_at"] = datetime.now(timezone.utc).isoformat()
+manifest["generated_at"] = datetime.now(timezone.utc).isoformat()
+manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+PY
+  fi
+
+  if [[ -f "$checksums" ]]; then
+    (
+      cd "$ROOT_DIR"
+      checksum_targets=()
+      for candidate in \
+        "dist/$APP_NAME-local.zip" \
+        "dist/$APP_NAME-local.dmg" \
+        "dist/$APP_NAME-release-manifest.json"; do
+        if [[ -f "$candidate" ]]; then
+          checksum_targets+=("$candidate")
+        fi
+      done
+      if [[ "${#checksum_targets[@]}" -gt 0 ]]; then
+        shasum -a 256 "${checksum_targets[@]}" >"$checksums"
+        shasum -a 256 -c "$checksums" >/dev/null
+      fi
+    )
+  fi
+}
+
 submit_notarization() {
   local developer_ids
   developer_ids="$(developer_id_count)"
@@ -124,6 +188,7 @@ submit_notarization() {
   xcrun notarytool submit "$DMG_PATH" --keychain-profile "$PROFILE" --wait
   xcrun stapler staple "$DMG_PATH"
   xcrun stapler validate "$DMG_PATH"
+  refresh_release_metadata_after_staple
   spctl --assess --type open --context context:primary-signature -v "$DMG_PATH"
   echo "Notarized DMG: $DMG_PATH"
 }
