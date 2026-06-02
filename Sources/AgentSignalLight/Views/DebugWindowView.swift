@@ -576,66 +576,10 @@ struct DebugWindowView: View {
     }
 
     private var visibleActivitySessions: [SessionStatus] {
-        Array(allVisibleActivitySessions.prefix(4))
-    }
-
-    private var allVisibleActivitySessions: [SessionStatus] {
-        var seenAgents: Set<String> = []
-        var sessions: [SessionStatus] = []
-
-        for session in model.activitySnapshot.sessions {
-            guard isVisibleActivitySession(session) else { continue }
-            let agentKey = normalizedActivityAgentKey(session.agent, fallback: session.sessionID)
-            guard !seenAgents.contains(agentKey) else { continue }
-            seenAgents.insert(agentKey)
-            sessions.append(session)
-        }
-
-        return sessions
-    }
-
-    private func isVisibleActivitySession(_ session: SessionStatus) -> Bool {
-        if isDesktopPresenceSession(session) {
-            return true
-        }
-
-        switch session.signal.displayState {
-        case .active:
-            return Date().timeIntervalSince(session.updatedAt) <= liveActivitySessionWindow
-        case .completed, .needsReview, .permission, .blocked, .stale:
-            return true
-        case .ready, .paused:
-            return false
-        }
-    }
-
-    private func isDesktopPresenceSession(_ session: SessionStatus) -> Bool {
-        session.sessionID.hasPrefix("desktop-app:") || session.lastEvent == "DesktopAppRunning"
-    }
-
-    private var liveActivitySessionWindow: TimeInterval {
-        5 * 60
-    }
-
-    private func normalizedActivityAgentKey(_ agent: String?, fallback: String) -> String {
-        guard let agent, !agent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return fallback
-        }
-
-        let normalized = agent
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-            .replacingOccurrences(of: " ", with: "-")
-
-        switch normalized {
-        case "codex", "codex-desktop", "codex-cli", "codex-ide":
-            return "codex"
-        case "claude", "claude-code", "claude-desktop":
-            return "claude"
-        default:
-            return normalized
-        }
+        ActivityPresentation.visibleSessions(
+            from: model.activitySnapshot,
+            limit: ActivityPresentation.currentSessionLimit
+        )
     }
 
     private var activityEvents: some View {
@@ -678,16 +622,10 @@ struct DebugWindowView: View {
     }
 
     private var activityRecentEvents: [RecentSignalEvent] {
-        let currentSessionKeys = Set(
-            visibleActivitySessions.map { session in
-                "\(session.sessionID)|\(session.signal.rawValue)|\(session.lastEvent ?? "")"
-            }
+        ActivityPresentation.recentEvents(
+            from: model.activitySnapshot,
+            excluding: visibleActivitySessions
         )
-
-        return model.activitySnapshot.recentEvents.filter { event in
-            let eventKey = "\(event.sessionID)|\(event.signal.rawValue)|\(event.event ?? "")"
-            return !currentSessionKeys.contains(eventKey)
-        }
     }
 
     private var statusBarSettings: some View {
@@ -1519,7 +1457,7 @@ struct DebugWindowView: View {
                         .font(settingsSubsectionTitleFont)
                         .lineLimit(1)
 
-                    Text(activitySessionRuntimeLabel(session))
+                    Text(model.activitySessionRuntimeLabel(for: session))
                         .font(settingsDetailStrongFont)
                         .foregroundStyle(debugSignalColor(session.signal))
                         .padding(.horizontal, 6)
@@ -1527,7 +1465,7 @@ struct DebugWindowView: View {
                         .background(debugSignalColor(session.signal).opacity(0.12), in: Capsule())
                 }
 
-                Text(activitySessionStatusSubtitle(session))
+                Text(model.activitySessionStatusSubtitle(for: session))
                     .font(settingsDetailFont)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -1538,57 +1476,6 @@ struct DebugWindowView: View {
         }
         .padding(.leading, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func activitySessionStatusSubtitle(_ session: SessionStatus) -> String {
-        let status = model.displayName(for: session.signal)
-        guard let rawEvent = session.lastEvent?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !rawEvent.isEmpty
-        else {
-            return status
-        }
-
-        let event = rawEvent.lowercased()
-        guard !event.hasPrefix("desktop") else {
-            return status
-        }
-
-        let eventName = model.friendlyEventName(rawEvent)
-        guard eventName != status else {
-            return status
-        }
-
-        return "\(status) · \(eventName)"
-    }
-
-    private func activitySessionRuntimeLabel(_ session: SessionStatus) -> String {
-        let agent = normalizedActivityAgentName(session.agent)
-        let sessionID = session.sessionID.lowercased()
-        let event = (session.lastEvent ?? "").lowercased()
-
-        if sessionID.hasPrefix("desktop-app:")
-            || sessionID.hasPrefix("codex-desktop:")
-            || agent == "codex-desktop"
-            || agent == "claude-desktop"
-            || event.hasPrefix("desktop") {
-            return model.text("桌面版运行中", "Desktop running")
-        }
-
-        if agent == "claude-code" || agent == "claude"
-            || agent == "codex-cli" || agent == "codex-ide" || agent == "codex" {
-            return model.text("CLI 运行中", "CLI running")
-        }
-
-        return model.text("本地运行中", "Local running")
-    }
-
-    private func normalizedActivityAgentName(_ agent: String?) -> String {
-        guard let agent else { return "" }
-        return agent
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-            .replacingOccurrences(of: " ", with: "-")
     }
 
     private func activityEventRow(_ event: RecentSignalEvent, width: CGFloat) -> some View {
@@ -1604,7 +1491,7 @@ struct DebugWindowView: View {
             )
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(activityEventTitle(event))
+                Text(model.activityEventTitle(for: event))
                     .font(settingsBodyStrongFont)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -1653,15 +1540,6 @@ struct DebugWindowView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func activityEventTitle(_ event: RecentSignalEvent) -> String {
-        let agent = model.friendlyAgentName(event.agent)
-        if let eventName = event.event, !eventName.isEmpty {
-            return "\(agent) · \(model.friendlyEventName(eventName))"
-        }
-
-        return "\(agent) · \(model.displayName(for: event.signal))"
     }
 
     private func activityUpdatedText(_ updatedAt: Date?) -> String {

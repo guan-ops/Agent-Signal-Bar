@@ -154,12 +154,15 @@ struct MenuBarPanelView: View {
     }
 
     private var visibleAgentSessions: [SessionStatus] {
-        Array(allVisibleAgentSessions.prefix(3))
+        ActivityPresentation.visibleSessions(
+            from: viewState.activitySnapshot,
+            limit: ActivityPresentation.currentSessionLimit
+        )
     }
 
     private var visibleOpenAgentSessions: [SessionStatus] {
         allVisibleAgentSessions.filter { session in
-            switch normalizedAgentKey(session.agent, fallback: session.sessionID) {
+            switch ActivityPresentation.normalizedAgentKey(session.agent, fallback: session.sessionID) {
             case "codex", "claude":
                 return true
             default:
@@ -169,83 +172,19 @@ struct MenuBarPanelView: View {
     }
 
     private var allVisibleAgentSessions: [SessionStatus] {
-        var seenAgents: Set<String> = []
-        var sessions: [SessionStatus] = []
-
-        for session in viewState.activitySnapshot.sessions {
-            guard isVisibleAgentSession(session) else { continue }
-            let agentKey = normalizedAgentKey(session.agent, fallback: session.sessionID)
-            guard !seenAgents.contains(agentKey) else { continue }
-            seenAgents.insert(agentKey)
-            sessions.append(session)
-        }
-
-        return sessions
-    }
-
-    private func isLiveAgentSession(_ session: SessionStatus) -> Bool {
-        Date().timeIntervalSince(session.updatedAt) <= liveAgentSessionWindow
-    }
-
-    private func isVisibleAgentSession(_ session: SessionStatus) -> Bool {
-        if isDesktopPresenceSession(session) {
-            return true
-        }
-
-        switch session.signal.displayState {
-        case .active:
-            return isLiveAgentSession(session)
-        case .completed, .needsReview, .permission, .blocked, .stale:
-            return true
-        case .ready, .paused:
-            return false
-        }
-    }
-
-    private func isDesktopPresenceSession(_ session: SessionStatus) -> Bool {
-        session.sessionID.hasPrefix("desktop-app:") || session.lastEvent == "DesktopAppRunning"
-    }
-
-    private var liveAgentSessionWindow: TimeInterval {
-        5 * 60
+        ActivityPresentation.visibleSessions(from: viewState.activitySnapshot)
     }
 
     private var menuRecentEvents: [RecentSignalEvent] {
-        let currentSessionKeys = Set(
-            visibleAgentSessions.map { session in
-                "\(session.sessionID)|\(session.signal.rawValue)|\(session.lastEvent ?? "")"
-            }
+        ActivityPresentation.recentEvents(
+            from: viewState.activitySnapshot,
+            excluding: visibleAgentSessions,
+            limit: menuRecentEventLimit
         )
-
-        return Array(viewState.activitySnapshot.recentEvents.lazy.filter { event in
-            let eventKey = "\(event.sessionID)|\(event.signal.rawValue)|\(event.event ?? "")"
-            return !currentSessionKeys.contains(eventKey)
-        }.prefix(menuRecentEventLimit))
     }
 
     private var menuRecentEventLimit: Int {
         visibleAgentSessions.count == 1 ? 2 : 1
-    }
-
-    private func normalizedAgentKey(_ agent: String?, fallback: String) -> String {
-        guard let agent, !agent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return fallback
-        }
-
-        let normalized = agent
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-            .replacingOccurrences(of: " ", with: "-")
-
-        switch normalized {
-        case "codex", "codex-desktop", "codex-cli", "codex-ide":
-            return "codex"
-        case "claude", "claude-code", "claude-desktop":
-            return "claude"
-        default:
-            return normalized
-        }
     }
 
     private var mainActions: some View {
@@ -486,7 +425,7 @@ struct MenuBarPanelView: View {
     }
 
     private func shortAgentName(for session: SessionStatus) -> String {
-        switch normalizedAgentKey(session.agent, fallback: session.sessionID) {
+        switch ActivityPresentation.normalizedAgentKey(session.agent, fallback: session.sessionID) {
         case "codex":
             return "Codex"
         case "claude":
@@ -497,7 +436,7 @@ struct MenuBarPanelView: View {
     }
 
     private func openAgent(for session: SessionStatus) {
-        switch normalizedAgentKey(session.agent, fallback: session.sessionID) {
+        switch ActivityPresentation.normalizedAgentKey(session.agent, fallback: session.sessionID) {
         case "codex":
             model.openCodex()
         case "claude":
@@ -508,7 +447,7 @@ struct MenuBarPanelView: View {
     }
 
     private func canOpenAgent(for session: SessionStatus) -> Bool {
-        switch normalizedAgentKey(session.agent, fallback: session.sessionID) {
+        switch ActivityPresentation.normalizedAgentKey(session.agent, fallback: session.sessionID) {
         case "codex", "claude":
             return true
         default:
@@ -715,9 +654,10 @@ private struct SessionRowView: View {
                 Text(displayTitle)
                     .font(.caption)
                     .lineLimit(1)
-                Text("\(model.displayName(for: session.signal)) · \(session.updatedAt.formatted(date: .omitted, time: .shortened))")
+                Text(displaySubtitle)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
             Spacer()
@@ -725,13 +665,12 @@ private struct SessionRowView: View {
     }
 
     private var displayTitle: String {
-        let agent = model.friendlyAgentName(session.agent)
-        if let event = session.lastEvent, !event.isEmpty {
-            return "\(agent) · \(model.friendlyEventName(event))"
-        }
-        return "\(agent) · \(compactIdentifier(session.sessionID))"
+        model.activitySessionTitle(for: session)
     }
 
+    private var displaySubtitle: String {
+        model.activitySessionStatusSubtitle(for: session)
+    }
 }
 
 private struct EventRowView: View {
@@ -761,17 +700,8 @@ private struct EventRowView: View {
     }
 
     private var title: String {
-        let agent = model.friendlyAgentName(event.agent)
-        if let eventName = event.event, !eventName.isEmpty {
-            return "\(agent) · \(model.friendlyEventName(eventName))"
-        }
-        return "\(agent) · \(model.displayName(for: event.signal))"
+        model.activityEventTitle(for: event)
     }
-}
-
-private func compactIdentifier(_ value: String) -> String {
-    guard value.count > 10 else { return value }
-    return String(value.prefix(8))
 }
 
 private func signalColor(_ signal: AgentSignal) -> Color {
