@@ -18,17 +18,24 @@
 
 <table>
   <tr>
+    <td align="center"><strong>布局</strong></td>
     <td align="center"><strong>极简圆点</strong></td>
     <td align="center"><strong>经典灯牌</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar 极简圆点真实 macOS 状态栏录屏转 GIF" width="360"></td>
-    <td><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar 经典灯牌真实 macOS 状态栏录屏转 GIF" width="360"></td>
+    <td align="center"><strong>横向</strong></td>
+    <td><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar 极简圆点横向真实 macOS 状态栏录屏转 GIF" width="330"></td>
+    <td><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar 经典灯牌横向真实 macOS 状态栏录屏转 GIF" width="330"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>竖向</strong></td>
+    <td><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar 极简圆点竖向真实 macOS 状态栏录屏转 GIF" width="330"></td>
+    <td><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar 经典灯牌竖向真实 macOS 状态栏录屏转 GIF" width="330"></td>
   </tr>
 </table>
 
 <p align="center">
-  <em>真实 macOS 状态栏录屏转 GIF。两种风格都使用红、黄、绿依次亮灯效。</em>
+  <em>真实 macOS 状态栏录屏转 GIF。所有风格都使用红、黄、绿依次亮灯效。</em>
 </p>
 
 Agent Signal Bar 是一个本地优先的 macOS 状态栏应用，用红、黄、绿三颗信号灯显示本机 AI Agent 的运行状态。它适合放在菜单栏常驻使用，让你不用切回终端或编辑器，也能快速判断 Codex、Claude Code 或本地脚本现在是否空闲、思考中、执行中、完成、需要授权或已经阻塞。

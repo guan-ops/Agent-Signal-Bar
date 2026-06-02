@@ -18,17 +18,24 @@
 
 <table>
   <tr>
+    <td align="center"><strong>Layout</strong></td>
     <td align="center"><strong>Minimal Dots</strong></td>
     <td align="center"><strong>Classic Lamp</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar Minimal Dots real macOS menu bar recording converted to GIF" width="360"></td>
-    <td><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar Classic Lamp real macOS menu bar recording converted to GIF" width="360"></td>
+    <td align="center"><strong>Horizontal</strong></td>
+    <td><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar Minimal Dots horizontal real macOS menu bar recording converted to GIF" width="330"></td>
+    <td><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar Classic Lamp horizontal real macOS menu bar recording converted to GIF" width="330"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Vertical</strong></td>
+    <td><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar Minimal Dots vertical real macOS menu bar recording converted to GIF" width="330"></td>
+    <td><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar Classic Lamp vertical real macOS menu bar recording converted to GIF" width="330"></td>
   </tr>
 </table>
 
 <p align="center">
-  <em>Real macOS menu bar recordings converted to GIF. Both styles use the red/yellow/green sequence effect.</em>
+  <em>Real macOS menu bar recordings converted to GIF. All styles use the red/yellow/green sequence effect.</em>
 </p>
 
 Agent Signal Bar is a local-first macOS menu bar app that uses three red, yellow, and green signal lights to show the current state of local AI agents. It helps you see whether Codex, Claude Code, or a local script is idle, thinking, working, done, waiting for approval, or blocked without switching back to a terminal or editor.
