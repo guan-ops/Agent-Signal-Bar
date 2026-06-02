@@ -470,7 +470,7 @@ struct AgentSignalIconPreview {
     }
 
     private static func renderEffectGallery(language: EffectGalleryLanguage, to outputURL: URL) throws {
-        let gallerySize = NSSize(width: 1000, height: 1400)
+        let gallerySize = NSSize(width: 1000, height: 1840)
         let renderScale: CGFloat = 1.6
         let bitmapSize = NSSize(width: gallerySize.width * renderScale, height: gallerySize.height * renderScale)
         let frameCount = 16
@@ -555,7 +555,7 @@ struct AgentSignalIconPreview {
 
         let columns = 2
         let cardWidth: CGFloat = 440
-        let cardHeight: CGFloat = 138
+        let cardHeight: CGFloat = 190
         let gapX: CGFloat = 40
         let gapY: CGFloat = 14
         let startX: CGFloat = 40
@@ -596,7 +596,7 @@ struct AgentSignalIconPreview {
 
         drawText(
             item.title(for: language),
-            in: NSRect(x: rect.minX + 20, y: rect.maxY - 44, width: rect.width - 40, height: 26),
+            in: NSRect(x: rect.minX + 20, y: rect.maxY - 42, width: rect.width - 40, height: 26),
             font: .systemFont(ofSize: language == .english ? 20 : 21, weight: .bold),
             color: NSColor.white.withAlphaComponent(0.96)
         )
@@ -607,61 +607,216 @@ struct AgentSignalIconPreview {
             color: NSColor.white.withAlphaComponent(0.58)
         )
 
+        let rowHeight: CGFloat = 36
+        let iconAreaWidth: CGFloat = 260
+        let iconAreaX = rect.midX - iconAreaWidth / 2
+        let rowGap: CGFloat = 10
+        let groupHeight = rowHeight * 2 + rowGap
+        let groupMinY = rect.midY - groupHeight / 2 - 2
+        let minimalRect = NSRect(x: iconAreaX, y: groupMinY, width: iconAreaWidth, height: rowHeight)
+        let classicRect = NSRect(x: iconAreaX, y: groupMinY + rowHeight + rowGap, width: iconAreaWidth, height: rowHeight)
+
         drawText(
             language.classicLabel,
-            in: NSRect(x: rect.minX + 20, y: rect.minY + 48, width: 64, height: 18),
+            in: NSRect(x: rect.minX + 20, y: classicRect.minY - 18, width: 64, height: 18),
             font: .systemFont(ofSize: 10, weight: .semibold),
             color: NSColor.white.withAlphaComponent(0.48)
         )
-        drawAnimatedIcon(item, style: .trafficLight, frameIndex: frameIndex, in: NSRect(x: rect.minX + 104, y: rect.minY + 38, width: 260, height: 42))
+        drawAnimatedPreviewIcon(item, style: .trafficLight, frameIndex: frameIndex, in: classicRect)
 
         drawText(
             language.minimalLabel,
-            in: NSRect(x: rect.minX + 20, y: rect.minY + 14, width: 64, height: 18),
+            in: NSRect(x: rect.minX + 20, y: minimalRect.minY - 18, width: 64, height: 18),
             font: .systemFont(ofSize: 10, weight: .semibold),
             color: NSColor.white.withAlphaComponent(0.48)
         )
-        drawAnimatedIcon(item, style: .macOS, frameIndex: frameIndex, in: NSRect(x: rect.minX + 104, y: rect.minY + 4, width: 260, height: 42))
+        drawAnimatedPreviewIcon(item, style: .macOS, frameIndex: frameIndex, in: minimalRect)
     }
 
-    private static func drawAnimatedIcon(
+    private static func drawAnimatedPreviewIcon(
         _ item: EffectGalleryItem,
         style: TrafficSignalStyle,
         frameIndex: Int,
         in rect: NSRect
     ) {
-        let snapshot = SignalSnapshot(
-            aggregate: item.signal,
-            sessions: [],
-            stateFileURL: URL(fileURLWithPath: "/tmp/agent-signal/status.json")
-        )
         let tick = item.tick(at: frameIndex)
-        let image = StatusBarIconRenderer.image(
-            snapshot: snapshot,
-            tick: tick,
-            layout: .horizontal,
-            style: style,
-            macOSBreathingStrength: .maximum,
-            macOSHorizontalUsesTrafficLightSize: true,
-            allLightsOn: item.allLightsOn,
-            effectCustomization: item.customization,
-            outputScale: 5
-        )
-        let sourceScale: CGFloat = 5
-        let baseSize = NSSize(width: image.size.width / sourceScale, height: image.size.height / sourceScale)
-        let previewScale: CGFloat = 2.35
-        let drawSize = NSSize(width: baseSize.width * previewScale, height: baseSize.height * previewScale)
-        let drawRect = NSRect(
-            x: rect.minX + (rect.width - drawSize.width) / 2,
-            y: rect.midY - drawSize.height / 2,
-            width: drawSize.width,
-            height: drawSize.height
-        )
+        let lampDiameter: CGFloat = 20
+        let lampSpacing: CGFloat = 8
+        let lampSpan = lampDiameter * 3 + lampSpacing * 2
+        let housingPaddingX: CGFloat = 9
+        let housingPaddingY: CGFloat = 5
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+
+        if style == .trafficLight {
+            let housingRect = NSRect(
+                x: center.x - (lampSpan + housingPaddingX * 2) / 2,
+                y: center.y - (lampDiameter + housingPaddingY * 2) / 2,
+                width: lampSpan + housingPaddingX * 2,
+                height: lampDiameter + housingPaddingY * 2
+            )
+            drawPreviewHousing(in: housingRect)
+        }
+
+        let lampStartX = center.x - lampSpan / 2
+        let lampY = center.y - lampDiameter / 2
+        let colors: [SignalLampColor] = [.red, .yellow, .green]
+
+        for (index, color) in colors.enumerated() {
+            let lampRect = NSRect(
+                x: lampStartX + CGFloat(index) * (lampDiameter + lampSpacing),
+                y: lampY,
+                width: lampDiameter,
+                height: lampDiameter
+            )
+            let intensity = SignalLampAnimation.intensity(
+                color,
+                signal: item.signal,
+                tick: tick,
+                allLightsOn: item.allLightsOn,
+                customization: item.customization
+            )
+            let baseScale = SignalLampAnimation.scale(
+                color,
+                signal: item.signal,
+                tick: tick,
+                allLightsOn: item.allLightsOn,
+                customization: item.customization
+            )
+            let scale = SignalVisualScale.lampScale(
+                baseScale: baseScale,
+                intensity: intensity,
+                style: style == .trafficLight ? .trafficLight : .macOS,
+                macOSStrength: .maximum
+            )
+            drawPreviewLamp(
+                color,
+                in: lampRect,
+                intensity: intensity,
+                scale: scale,
+                style: style,
+                displayState: item.signal.displayState
+            )
+        }
+    }
+
+    private static func drawPreviewHousing(in rect: NSRect) {
+        let path = NSBezierPath(roundedRect: pixelAligned(rect), xRadius: rect.height / 2, yRadius: rect.height / 2)
+        NSColor.black.withAlphaComponent(0.88).setFill()
+        path.fill()
+        NSColor.white.withAlphaComponent(0.16).setStroke()
+        path.lineWidth = 1.2
+        path.stroke()
+    }
+
+    private static func drawPreviewLamp(
+        _ color: SignalLampColor,
+        in rect: NSRect,
+        intensity: Double,
+        scale: Double,
+        style: TrafficSignalStyle,
+        displayState: DisplayState
+    ) {
+        let baseRect = pixelAligned(rect)
+        let basePath = NSBezierPath(ovalIn: baseRect)
+        inactivePreviewFillColor(displayState: displayState, style: style).setFill()
+        basePath.fill()
+        previewBaseStrokeColor(displayState: displayState, style: style).setStroke()
+        basePath.lineWidth = style == .macOS ? 2.2 : 0.85
+        basePath.stroke()
+
+        guard intensity > 0 else {
+            return
+        }
+
+        let activeRect = pixelAligned(scaled(baseRect, by: scale))
+        let activePath = NSBezierPath(ovalIn: activeRect)
+        let lampColor = previewLampColor(color).withAlphaComponent(intensity)
 
         NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current?.imageInterpolation = .high
-        image.draw(in: drawRect)
+        let shadow = NSShadow()
+        shadow.shadowColor = previewLampColor(color).withAlphaComponent(intensity * 0.38)
+        shadow.shadowBlurRadius = style == .macOS ? 5 : 4
+        shadow.set()
+        lampColor.setFill()
+        activePath.fill()
         NSGraphicsContext.restoreGraphicsState()
+
+        lampColor.withAlphaComponent(min(1, 0.82 + intensity * 0.18)).setStroke()
+        activePath.lineWidth = style == .macOS ? 2.2 : 0.85
+        activePath.stroke()
+
+        guard style == .trafficLight, intensity > 0.7 else {
+            return
+        }
+
+        let highlight = NSBezierPath(
+            ovalIn: NSRect(
+                x: activeRect.minX + activeRect.width * 0.18,
+                y: activeRect.maxY - activeRect.height * 0.48,
+                width: max(activeRect.width * 0.34, 1.5),
+                height: max(activeRect.height * 0.34, 1.5)
+            )
+        )
+        NSColor.white.withAlphaComponent(0.34).setFill()
+        highlight.fill()
+    }
+
+    private static func inactivePreviewFillColor(displayState: DisplayState, style: TrafficSignalStyle) -> NSColor {
+        if displayState == .paused {
+            return NSColor.secondaryLabelColor.withAlphaComponent(style == .macOS ? 0.62 : 0.28)
+        }
+        if displayState == .stale {
+            return NSColor.secondaryLabelColor.withAlphaComponent(style == .macOS ? 0.40 : 0.24)
+        }
+
+        switch style {
+        case .trafficLight:
+            return NSColor.secondaryLabelColor.withAlphaComponent(0.28)
+        case .macOS:
+            return NSColor.clear
+        }
+    }
+
+    private static func previewBaseStrokeColor(displayState: DisplayState, style: TrafficSignalStyle) -> NSColor {
+        if style == .trafficLight {
+            return NSColor.white.withAlphaComponent(0.08)
+        }
+        if displayState == .paused || displayState == .stale {
+            return NSColor.secondaryLabelColor.withAlphaComponent(0.70)
+        }
+        return NSColor.white.withAlphaComponent(0.86)
+    }
+
+    private static func previewLampColor(_ color: SignalLampColor) -> NSColor {
+        switch color {
+        case .green:
+            return NSColor(calibratedRed: 0.16, green: 0.78, blue: 0.34, alpha: 1)
+        case .yellow:
+            return NSColor(calibratedRed: 0.97, green: 0.72, blue: 0.16, alpha: 1)
+        case .red:
+            return NSColor(calibratedRed: 0.94, green: 0.20, blue: 0.18, alpha: 1)
+        }
+    }
+
+    private static func pixelAligned(_ rect: NSRect) -> NSRect {
+        NSRect(
+            x: (rect.origin.x * 2).rounded() / 2,
+            y: (rect.origin.y * 2).rounded() / 2,
+            width: (rect.size.width * 2).rounded() / 2,
+            height: (rect.size.height * 2).rounded() / 2
+        )
+    }
+
+    private static func scaled(_ rect: NSRect, by scale: Double) -> NSRect {
+        let scale = max(0, min(scale, 1))
+        let width = rect.width * scale
+        let height = rect.height * scale
+        return NSRect(
+            x: rect.midX - width / 2,
+            y: rect.midY - height / 2,
+            width: width,
+            height: height
+        )
     }
 
     private static func writeManifest(records: [PreviewRecord], to outputURL: URL) throws {
@@ -821,9 +976,9 @@ private enum EffectGalleryLanguage {
     var subtitle: String {
         switch self {
         case .english:
-            return "Animated preview rendered from the real status bar icon renderer"
+            return "Animated preview rendered from the same light animation engine"
         case .simplifiedChinese:
-            return "由真实状态栏图标渲染器生成的效果预览图"
+            return "由同一套灯效动画引擎生成的效果预览图"
         }
     }
 
