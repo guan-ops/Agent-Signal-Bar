@@ -979,7 +979,21 @@ struct DebugWindowView: View {
             Divider()
 
             settingRow(model.text("开发者", "Developer")) {
-                Text("Hemi Guan")
+                Text("XiongYang Guan")
+                    .font(settingsBodyFont)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            settingRow(model.text("许可证", "License")) {
+                Text("MIT License")
+                    .font(settingsBodyFont)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            settingRow(model.text("版权", "Copyright")) {
+                Text("© 2026 XiongYang Guan")
                     .font(settingsBodyFont)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)

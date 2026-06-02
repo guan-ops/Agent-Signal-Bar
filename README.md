@@ -331,4 +331,4 @@ Tests/                     Swift tests
 
 ## Developer
 
-Hemi Guan
+XiongYang Guan

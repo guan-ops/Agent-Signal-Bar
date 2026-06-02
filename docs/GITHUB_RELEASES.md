@@ -96,7 +96,7 @@ Before tagging a new version, confirm:
 Use the GitHub noreply identity so commits are attributed to the `guan-ops` account while keeping the real email private:
 
 ```bash
-git config --global user.name "Hemi Guan"
+git config --global user.name "XiongYang Guan"
 git config --global user.email "202207961+guan-ops@users.noreply.github.com"
 ```
 
