@@ -5,10 +5,6 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/app-icon.png" alt="Agent Signal Bar app icon" width="104">
-</p>
-
-<p align="center">
   <strong>Local status lights for AI agents on macOS.</strong>
 </p>
 

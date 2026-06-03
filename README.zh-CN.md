@@ -5,10 +5,6 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/app-icon.png" alt="Agent Signal Bar 应用图标" width="104">
-</p>
-
-<p align="center">
   <strong>本地 AI Agent 的 macOS 状态栏信号灯。</strong>
 </p>
 
