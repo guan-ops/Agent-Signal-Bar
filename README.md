@@ -25,6 +25,12 @@
   <a href="https://agentsignalbar.app"><img src="https://img.shields.io/badge/site-agentsignalbar.app-14b8a6.svg" alt="Website: agentsignalbar.app"></a>
 </p>
 
+<p align="center">
+  <a href="https://agentsignalbar.app">
+    <img src="docs/assets/readme-hero-en.svg" alt="Agent Signal Bar website hero preview" width="100%">
+  </a>
+</p>
+
 <table width="100%">
   <tr>
     <td align="center" width="18%"><strong>Layout</strong></td>

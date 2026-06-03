@@ -25,6 +25,12 @@
   <a href="https://agentsignalbar.app"><img src="https://img.shields.io/badge/site-agentsignalbar.app-14b8a6.svg" alt="官网：agentsignalbar.app"></a>
 </p>
 
+<p align="center">
+  <a href="https://agentsignalbar.app">
+    <img src="docs/assets/readme-hero-zh-CN.svg" alt="Agent Signal Bar 官网横幅预览图" width="100%">
+  </a>
+</p>
+
 <table width="100%">
   <tr>
     <td align="center" width="18%"><strong>布局</strong></td>

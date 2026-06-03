@@ -1,0 +1,172 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="840" viewBox="0 0 1600 840" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Signal Bar 官网横幅预览图</title>
+  <desc id="desc">Agent Signal Bar 的 README 宣传横幅，展示状态栏信号灯、功能卡片和官网入口。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111827"/>
+      <stop offset="0.34" stop-color="#0b1018"/>
+      <stop offset="0.7" stop-color="#0d3f42"/>
+      <stop offset="1" stop-color="#101026"/>
+    </linearGradient>
+    <radialGradient id="warm" cx="0.08" cy="0.16" r="0.64">
+      <stop offset="0" stop-color="#f97316" stop-opacity="0.56"/>
+      <stop offset="0.5" stop-color="#f97316" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#f97316" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="violet" cx="0.92" cy="0.18" r="0.64">
+      <stop offset="0" stop-color="#7c3aed" stop-opacity="0.6"/>
+      <stop offset="0.46" stop-color="#7c3aed" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#7c3aed" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="teal" cx="0.56" cy="0.86" r="0.58">
+      <stop offset="0" stop-color="#14b8a6" stop-opacity="0.46"/>
+      <stop offset="0.52" stop-color="#14b8a6" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#14b8a6" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="1"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000000" flood-opacity="0.42"/>
+    </filter>
+    <filter id="softGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="18" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <style>
+      .font { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; }
+      .muted { fill: #cbd5e1; opacity: 0.82; }
+      .label { fill: #f8fafc; font-weight: 760; }
+      .small { fill: #cbd5e1; font-weight: 650; opacity: 0.9; }
+      .card { fill: #101826; fill-opacity: 0.72; stroke: #ffffff; stroke-opacity: 0.12; }
+      .avatarText { fill: white; font-size: 25px; font-weight: 860; text-anchor: middle; dominant-baseline: central; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="840" rx="0" fill="url(#bg)"/>
+  <rect width="1600" height="840" fill="url(#warm)"/>
+  <rect width="1600" height="840" fill="url(#violet)"/>
+  <rect width="1600" height="840" fill="url(#teal)"/>
+  <rect width="1600" height="840" fill="url(#grid)" opacity="0.58"/>
+
+  <g class="font" filter="url(#shadow)">
+    <g transform="translate(76 82)">
+      <rect x="0" y="0" width="58" height="58" rx="15" fill="#0b0f14" stroke="#ffffff" stroke-opacity="0.18"/>
+      <rect x="10" y="16" width="38" height="26" rx="13" fill="#020617"/>
+      <circle cx="22" cy="29" r="7" fill="#ef4444"/>
+      <circle cx="30" cy="29" r="7" fill="#facc15"/>
+      <circle cx="38" cy="29" r="7" fill="#22c55e"/>
+      <text x="76" y="38" fill="#f8fafc" font-size="28" font-weight="820">Agent Signal Bar</text>
+    </g>
+
+    <g transform="translate(1282 88)">
+      <rect x="0" y="0" width="200" height="44" rx="22" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.18"/>
+      <text x="100" y="29" fill="#d7f8f3" font-size="21" font-weight="760" text-anchor="middle">agentsignalbar.app</text>
+    </g>
+
+    <text x="78" y="230" fill="#ffffff" font-size="72" font-weight="900" letter-spacing="0">
+      一眼看懂 AI Agent
+    </text>
+    <text x="78" y="318" fill="#ffffff" font-size="72" font-weight="900" letter-spacing="0">
+      正在做什么，<tspan fill="#fb7185">就在</tspan>
+    </text>
+    <text x="78" y="406" fill="#38bdf8" font-size="72" font-weight="900" letter-spacing="0">
+      状态栏。
+    </text>
+
+    <text x="80" y="462" class="muted" font-size="25" font-weight="650">
+      Codex Desktop 自动监控 · Claude Code Hook · 本地脚本 · 一个信号灯汇总所有工作流
+    </text>
+
+    <g transform="translate(80 520)">
+      <g transform="translate(0 0)">
+        <rect class="card" width="196" height="78" rx="12"/>
+        <rect x="18" y="18" width="42" height="42" rx="9" fill="#2563eb"/>
+        <text class="avatarText" x="39" y="39">C</text>
+        <text class="label" x="76" y="38" font-size="21">Codex 桌面端</text>
+        <text class="small" x="76" y="60" font-size="15">自动监控</text>
+      </g>
+      <g transform="translate(214 0)">
+        <rect class="card" width="166" height="78" rx="12"/>
+        <rect x="18" y="18" width="42" height="42" rx="9" fill="#111827"/>
+        <text class="avatarText" x="39" y="39">C</text>
+        <text class="label" x="76" y="38" font-size="21">Codex CLI</text>
+        <text class="small" x="76" y="60" font-size="15">Hook 模式</text>
+      </g>
+      <g transform="translate(398 0)">
+        <rect class="card" width="172" height="78" rx="12"/>
+        <rect x="18" y="18" width="42" height="42" rx="9" fill="#a855f7"/>
+        <text class="avatarText" x="39" y="39">C</text>
+        <text class="label" x="76" y="38" font-size="21">Claude</text>
+        <text class="small" x="76" y="60" font-size="15">Code Hook</text>
+      </g>
+      <g transform="translate(588 0)">
+        <rect class="card" width="188" height="78" rx="12"/>
+        <rect x="18" y="18" width="42" height="42" rx="9" fill="#14b8a6"/>
+        <text class="avatarText" x="39" y="39">S</text>
+        <text class="label" x="76" y="38" font-size="21">本地脚本</text>
+        <text class="small" x="76" y="60" font-size="15">JSON 事件</text>
+      </g>
+      <g transform="translate(794 0)">
+        <rect class="card" width="186" height="78" rx="12"/>
+        <rect x="18" y="18" width="42" height="42" rx="9" fill="#f59e0b"/>
+        <text class="avatarText" x="39" y="39">L</text>
+        <text class="label" x="76" y="38" font-size="21">液态玻璃</text>
+        <text class="small" x="76" y="60" font-size="15">原生质感</text>
+      </g>
+      <g transform="translate(998 0)">
+        <rect class="card" width="186" height="78" rx="12"/>
+        <rect x="18" y="18" width="42" height="42" rx="9" fill="#22c55e"/>
+        <text class="avatarText" x="39" y="39">E</text>
+        <text class="label" x="76" y="38" font-size="21">灯效</text>
+        <text class="small" x="76" y="60" font-size="15">可自定义</text>
+      </g>
+    </g>
+
+    <g transform="translate(80 628)">
+      <g transform="translate(0 0)">
+        <rect class="card" width="190" height="72" rx="12"/>
+        <text x="24" y="45" fill="#22c55e" font-size="32" font-weight="900">●</text>
+        <text class="label" x="62" y="33" font-size="20">空闲</text>
+        <text class="small" x="62" y="55" font-size="15">绿灯常亮</text>
+      </g>
+      <g transform="translate(208 0)">
+        <rect class="card" width="212" height="72" rx="12"/>
+        <text x="24" y="45" fill="#facc15" font-size="32" font-weight="900">●</text>
+        <text class="label" x="62" y="33" font-size="20">需要查看</text>
+        <text class="small" x="62" y="55" font-size="15">黄灯闪烁</text>
+      </g>
+      <g transform="translate(438 0)">
+        <rect class="card" width="210" height="72" rx="12"/>
+        <text x="24" y="45" fill="#ef4444" font-size="32" font-weight="900">●</text>
+        <text class="label" x="62" y="33" font-size="20">请求授权</text>
+        <text class="small" x="62" y="55" font-size="15">红灯闪烁</text>
+      </g>
+      <g transform="translate(666 0)">
+        <rect class="card" width="224" height="72" rx="12"/>
+        <text x="24" y="45" fill="#38bdf8" font-size="32" font-weight="900">●</text>
+        <text class="label" x="62" y="33" font-size="20">多语言</text>
+        <text class="small" x="62" y="55" font-size="15">跟随系统</text>
+      </g>
+      <g transform="translate(908 0)">
+        <rect class="card" width="184" height="72" rx="12"/>
+        <text x="24" y="45" fill="#cbd5e1" font-size="32" font-weight="900">●</text>
+        <text class="label" x="62" y="33" font-size="20">本地优先</text>
+        <text class="small" x="62" y="55" font-size="15">无云服务</text>
+      </g>
+    </g>
+  </g>
+
+  <g transform="translate(1118 242)" filter="url(#softGlow)">
+    <rect x="0" y="0" width="300" height="90" rx="45" fill="#030712" stroke="#ffffff" stroke-opacity="0.14" stroke-width="2"/>
+    <circle cx="72" cy="45" r="23" fill="#ef4444"/>
+    <circle cx="150" cy="45" r="23" fill="#facc15"/>
+    <circle cx="228" cy="45" r="23" fill="#22c55e"/>
+    <circle cx="64" cy="36" r="7" fill="#ffffff" opacity="0.45"/>
+    <circle cx="142" cy="36" r="7" fill="#ffffff" opacity="0.45"/>
+    <circle cx="220" cy="36" r="7" fill="#ffffff" opacity="0.45"/>
+  </g>
+</svg>
