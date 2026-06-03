@@ -242,21 +242,15 @@ public final class SignalStateStore: @unchecked Sendable {
             let now = Date()
             let eventDate = updatedAt
             var document = readDocument()
-            let originalDocument = document
-            let pruneResult = pruneRuntimeSessions(in: &document, now: now)
 
             if shouldIgnoreOutOfOrderEvent(
                 existing: document.sessions[sessionID],
                 updatedAt: eventDate
             ) {
-                updateAggregateAfterPruning(in: &document, pruneResult: pruneResult)
-                compactEventHistory(in: &document)
-                if document != originalDocument {
-                    document.updatedAt = now
-                    try writeDocument(document)
-                }
                 return document.snapshot(stateFileURL: stateFileURL)
             }
+
+            _ = pruneRuntimeSessions(in: &document, now: now)
 
             switch signal {
             case .off, .pause, .paused:
