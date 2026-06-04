@@ -21,8 +21,17 @@ jobs:
 
       - name: Select Xcode
         run: |
+          DEVELOPER_DIR_PATH=""
           if [ -d /Applications/Xcode.app/Contents/Developer ]; then
-            sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+            DEVELOPER_DIR_PATH="/Applications/Xcode.app/Contents/Developer"
+          else
+            DEVELOPER_DIR_PATH="$(ls -d /Applications/Xcode_*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
+          fi
+          if [ -n "$DEVELOPER_DIR_PATH" ]; then
+            sudo xcode-select -s "$DEVELOPER_DIR_PATH"
+            echo "Selected Xcode at $DEVELOPER_DIR_PATH"
+          else
+            echo "No Xcode.app bundle found; using current developer directory."
           fi
 
       - name: Show toolchain
