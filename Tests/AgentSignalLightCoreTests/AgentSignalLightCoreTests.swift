@@ -2185,6 +2185,33 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testFreshInstallEnablesAutomaticMonitoringByDefault() {
+        let defaults = UserDefaults.standard
+        let keys = [
+            "isCodexDesktopMonitoringEnabled",
+            "isClaudeDesktopMonitoringEnabled"
+        ]
+        let previousValues = keys.map { defaults.object(forKey: $0) }
+        for key in keys {
+            defaults.removeObject(forKey: key)
+        }
+        defer {
+            for (key, value) in zip(keys, previousValues) {
+                if let value {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let model = MenuBarStatusModel()
+
+        XCTAssertTrue(model.isCodexDesktopMonitoringEnabled)
+        XCTAssertTrue(model.isClaudeDesktopMonitoringEnabled)
+    }
+
+    @MainActor
     func testActivitySessionSubtitleUsesSameRealEventTextAsRecentEvents() {
         let model = MenuBarStatusModel()
         model.appLanguage = .zhHans
