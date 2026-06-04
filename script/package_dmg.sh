@@ -2,11 +2,12 @@
 set -euo pipefail
 
 APP_NAME="AgentSignalLight"
+RELEASE_BASENAME="AgentSignalBar"
 VOLUME_NAME="Agent Signal Bar"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
-DMG_PATH="$DIST_DIR/$APP_NAME-local.dmg"
+DMG_PATH="$DIST_DIR/$RELEASE_BASENAME.dmg"
 USE_EXISTING_APP=0
 
 while [[ $# -gt 0 ]]; do

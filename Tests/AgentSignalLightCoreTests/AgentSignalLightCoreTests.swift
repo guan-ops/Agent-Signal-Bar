@@ -80,7 +80,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
     }
 
-    func testCodexDesktopSessionParserMapsHeartbeatAndCompactionToThinking() {
+    func testCodexDesktopSessionParserIgnoresTokenCountAndMapsCompactionToThinking() {
         let heartbeatLine = """
         {"timestamp":"2026-06-01T15:37:11.108Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400}}}
         """
@@ -97,10 +97,61 @@ final class AgentSignalLightCoreTests: XCTestCase {
             defaultSessionID: "codex-desktop:thread"
         )
 
-        XCTAssert(heartbeatActivity?.signal == .thinking)
-        XCTAssert(heartbeatActivity?.event == "DesktopActivityHeartbeat")
+        XCTAssertNil(heartbeatActivity)
         XCTAssert(compactedActivity?.signal == .thinking)
         XCTAssert(compactedActivity?.event == "DesktopContextCompacted")
+    }
+
+    func testCodexDesktopSessionParserMapsExecSourceToCliAgent() {
+        let metaLine = """
+        {"timestamp":"2026-06-04T10:44:32.263Z","type":"session_meta","payload":{"id":"thread","originator":"Codex Desktop","source":"exec"}}
+        """
+        let activityLine = """
+        {"timestamp":"2026-06-04T10:44:38.891Z","type":"response_item","payload":{"type":"reasoning"}}
+        """
+
+        let agent = CodexDesktopSessionParser.agentName(fromSessionMetaLine: metaLine)
+        let activity = CodexDesktopSessionParser.activity(
+            from: activityLine,
+            defaultSessionID: "codex-cli:thread",
+            defaultAgent: agent ?? "codex-desktop"
+        )
+
+        XCTAssertEqual(agent, "codex-cli")
+        XCTAssertEqual(activity?.agent, "codex-cli")
+        XCTAssertEqual(activity?.sessionID, "codex-cli:thread")
+    }
+
+    func testCodexDesktopSessionParserMapsIDEASourceToIDEAgent() {
+        let metaLine = """
+        {"timestamp":"2026-06-04T10:44:32.263Z","type":"session_meta","payload":{"id":"thread","originator":"IntelliJ IDEA","source":"ide"}}
+        """
+
+        XCTAssertEqual(CodexDesktopSessionParser.agentName(fromSessionMetaLine: metaLine), "codex-idea")
+    }
+
+    func testCodexDesktopSessionParserMapsEditorSourcesToSpecificIDEAgents() {
+        let vscodeMetaLine = """
+        {"timestamp":"2026-06-04T10:44:32.263Z","type":"session_meta","payload":{"id":"thread","originator":"VS Code","source":"vscode"}}
+        """
+        let xcodeMetaLine = """
+        {"timestamp":"2026-06-04T10:44:32.263Z","type":"session_meta","payload":{"id":"thread","originator":"Xcode","source":"xcode"}}
+        """
+        let realXcodeMetaLine = """
+        {"timestamp":"2026-06-04T12:12:15.954Z","type":"session_meta","payload":{"id":"thread","originator":"Xcode","source":"vscode"}}
+        """
+
+        XCTAssertEqual(CodexDesktopSessionParser.agentName(fromSessionMetaLine: vscodeMetaLine), "codex-vscode")
+        XCTAssertEqual(CodexDesktopSessionParser.agentName(fromSessionMetaLine: xcodeMetaLine), "codex-xcode")
+        XCTAssertEqual(CodexDesktopSessionParser.agentName(fromSessionMetaLine: realXcodeMetaLine), "codex-xcode")
+    }
+
+    func testCodexDesktopSessionParserKeepsCodexDesktopWhenSourceLooksLikeEditor() {
+        let metaLine = """
+        {"timestamp":"2026-06-04T10:44:32.263Z","type":"session_meta","payload":{"id":"thread","originator":"Codex Desktop","source":"vscode"}}
+        """
+
+        XCTAssertEqual(CodexDesktopSessionParser.agentName(fromSessionMetaLine: metaLine), "codex-desktop")
     }
 
     func testCodexDesktopActivityMonitorReturnsAllNewActivitiesInOrder() throws {
@@ -132,6 +183,179 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssertEqual(activities.map(\.signal), [.thinking, .working])
         XCTAssertEqual(activities.map(\.event), ["DesktopThinking", "DesktopToolCall:exec_command"])
+    }
+
+    func testCodexDesktopActivityMonitorKeepsSessionMetaSourceForFileActivities() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let timestamp = isoTimestamp(now.addingTimeInterval(-1))
+
+        let sessionFile = fixture.sessionsRoot
+            .appendingPathComponent("2026/06/04", isDirectory: true)
+            .appendingPathComponent("rollout-2026-06-04T22-44-31-019e923c-1358-77e3-b5d2-d9ab0a9d4036.jsonl")
+        try FileManager.default.createDirectory(
+            at: sessionFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try [
+            #"{"timestamp":"\#(timestamp)","type":"session_meta","payload":{"id":"019e923c-1358-77e3-b5d2-d9ab0a9d4036","originator":"Codex Desktop","source":"exec"}}"#,
+            #"{"timestamp":"\#(timestamp)","type":"response_item","payload":{"type":"reasoning"}}"#
+        ].joined(separator: "\n")
+            .appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: fixture.sessionsRoot,
+            replaysInitialHistory: true
+        )
+        let activities = monitor.poll(now: now)
+
+        XCTAssertEqual(activities.map(\.agent), ["codex-cli"])
+        XCTAssertEqual(activities.map(\.sessionID), ["codex-cli:019e923c-1358-77e3-b5d2-d9ab0a9d4036"])
+    }
+
+    func testCodexDesktopActivityMonitorLetsTaskCompleteOverrideCLIHeartbeat() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let messageTimestamp = isoTimestamp(now.addingTimeInterval(-3))
+        let heartbeatTimestamp = isoTimestamp(now.addingTimeInterval(-2))
+        let completeTimestamp = isoTimestamp(now.addingTimeInterval(-1))
+
+        let sessionFile = fixture.sessionsRoot
+            .appendingPathComponent("2026/06/05", isDirectory: true)
+            .appendingPathComponent("rollout-2026-06-05T01-13-52-019e92c4-d204-7ce2-b7c2-63b01e7789b9.jsonl")
+        try FileManager.default.createDirectory(
+            at: sessionFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try [
+            #"{"timestamp":"\#(messageTimestamp)","type":"session_meta","payload":{"id":"019e92c4-d204-7ce2-b7c2-63b01e7789b9","originator":"codex-tui","source":"cli"}}"#,
+            #"{"timestamp":"\#(messageTimestamp)","type":"event_msg","payload":{"type":"agent_message","message":"DONE"}}"#,
+            #"{"timestamp":"\#(heartbeatTimestamp)","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400}}}"#,
+            #"{"timestamp":"\#(completeTimestamp)","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}"#
+        ].joined(separator: "\n")
+            .appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: fixture.sessionsRoot,
+            replaysInitialHistory: true
+        )
+        let activities = monitor.poll(now: now)
+
+        XCTAssertEqual(activities.map(\.agent), ["codex-cli"])
+        XCTAssertEqual(activities.map(\.signal), [.done])
+        XCTAssertEqual(activities.map(\.event), ["DesktopTaskComplete"])
+    }
+
+    func testCodexDesktopActivityMonitorDoesNotReviveCompletedCLIWithOldHeartbeat() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let messageTimestamp = isoTimestamp(now.addingTimeInterval(-33))
+        let heartbeatTimestamp = isoTimestamp(now.addingTimeInterval(-32))
+        let completeTimestamp = isoTimestamp(now.addingTimeInterval(-31))
+
+        let sessionFile = fixture.sessionsRoot
+            .appendingPathComponent("2026/06/05", isDirectory: true)
+            .appendingPathComponent("rollout-2026-06-05T01-13-52-019e92c4-d204-7ce2-b7c2-63b01e7789b9.jsonl")
+        try FileManager.default.createDirectory(
+            at: sessionFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try [
+            #"{"timestamp":"\#(messageTimestamp)","type":"session_meta","payload":{"id":"019e92c4-d204-7ce2-b7c2-63b01e7789b9","originator":"codex-tui","source":"cli"}}"#,
+            #"{"timestamp":"\#(messageTimestamp)","type":"event_msg","payload":{"type":"agent_message","message":"DONE"}}"#,
+            #"{"timestamp":"\#(heartbeatTimestamp)","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400}}}"#,
+            #"{"timestamp":"\#(completeTimestamp)","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}"#
+        ].joined(separator: "\n")
+            .appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: fixture.sessionsRoot,
+            replaysInitialHistory: true
+        )
+
+        XCTAssertEqual(monitor.poll(now: now), [])
+    }
+
+    func testCodexDesktopActivityMonitorTreatsJetBrainsSessionRootAsIDEActivity() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let timestamp = isoTimestamp(now.addingTimeInterval(-1))
+        let jetBrainsRoot = fixture.directory
+            .appendingPathComponent("Library/Caches/JetBrains/IntelliJIdea2026.1/aia/codex/sessions", isDirectory: true)
+        let sessionFile = jetBrainsRoot
+            .appendingPathComponent("2026/06/04", isDirectory: true)
+            .appendingPathComponent("rollout-2026-06-04T23-24-43-019e9260-e08e-78f2-9153-71bdec75e968.jsonl")
+        try FileManager.default.createDirectory(
+            at: sessionFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try [
+            #"{"timestamp":"\#(timestamp)","type":"session_meta","payload":{"id":"019e9260-e08e-78f2-9153-71bdec75e968","originator":"Codex Desktop","source":"vscode"}}"#,
+            #"{"timestamp":"\#(timestamp)","type":"response_item","payload":{"type":"function_call","name":"exec_command"}}"#
+        ].joined(separator: "\n")
+            .appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let monitor = CodexDesktopActivityMonitor(
+            sessionRootURLs: [jetBrainsRoot],
+            forcedAgentsByRootPath: [jetBrainsRoot.path: "codex-idea"],
+            replaysInitialHistory: true
+        )
+        let activities = monitor.poll(now: now)
+
+        XCTAssertEqual(activities.map(\.agent), ["codex-idea"])
+        XCTAssertEqual(activities.map(\.sessionID), ["codex-idea:019e9260-e08e-78f2-9153-71bdec75e968"])
+        XCTAssertEqual(activities.map(\.event), ["DesktopToolCall:exec_command"])
+    }
+
+    func testCodexDesktopActivityMonitorUsesVSCodeLogHintsForGlobalSessions() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let timestamp = isoTimestamp(now.addingTimeInterval(-1))
+        let sessionID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
+        let sessionFile = fixture.sessionsRoot
+            .appendingPathComponent("2026/02/22", isDirectory: true)
+            .appendingPathComponent("rollout-2026-02-22T21-15-12-\(sessionID).jsonl")
+        try FileManager.default.createDirectory(
+            at: sessionFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try [
+            #"{"timestamp":"\#(timestamp)","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop","source":"vscode"}}"#,
+            #"{"timestamp":"\#(timestamp)","type":"response_item","payload":{"type":"function_call","name":"exec_command"}}"#
+        ].joined(separator: "\n")
+            .appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let logRoot = fixture.directory
+            .appendingPathComponent("Library/Application Support/Code/logs/20260604T234236/window1/exthost/openai.chatgpt", isDirectory: true)
+        try FileManager.default.createDirectory(at: logRoot, withIntermediateDirectories: true)
+        try """
+        2026-06-04 23:42:48.663 [info] maybe_resume_success conversationId=\(sessionID) latestTurnStatus=completed
+        """.write(
+            to: logRoot.appendingPathComponent("Codex.log"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let monitor = CodexDesktopActivityMonitor(
+            sessionRootURLs: [fixture.sessionsRoot],
+            vsCodeLogRootURL: fixture.directory.appendingPathComponent("Library/Application Support/Code/logs", isDirectory: true),
+            replaysInitialHistory: true
+        )
+        let activities = monitor.poll(now: now)
+
+        XCTAssertEqual(activities.map(\.agent), ["codex-vscode"])
+        XCTAssertEqual(activities.map(\.sessionID), ["codex-vscode:\(sessionID)"])
+        XCTAssertEqual(activities.map(\.event), ["DesktopToolCall:exec_command"])
     }
 
     func testCodexDesktopActivityMonitorKeepsPartialJSONLUntilComplete() throws {
@@ -187,6 +411,83 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssertEqual(activities.map(\.signal), [.working])
         XCTAssertEqual(activities.map(\.event), ["DesktopToolCall:exec_command"])
+    }
+
+    func testCodexDesktopActivityMonitorPrimesCompletionStateWithoutReplayingHistory() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date(timeIntervalSince1970: 1_000)
+        let sessionID = "019e92c4-d204-7ce2-b7c2-63b01e7789b9"
+        let sessionFile = fixture.sessionsRoot
+            .appendingPathComponent("rollout-2026-06-05T01-13-52-\(sessionID).jsonl")
+        let metaTimestamp = isoTimestamp(now.addingTimeInterval(-4))
+        let completeTimestamp = isoTimestamp(now.addingTimeInterval(-3))
+        try [
+            #"{"timestamp":"\#(metaTimestamp)","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"codex-tui","source":"cli"}}"#,
+            #"{"timestamp":"\#(completeTimestamp)","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}"#
+        ].joined(separator: "\n")
+            .appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let monitor = CodexDesktopActivityMonitor(sessionsRootURL: fixture.sessionsRoot)
+        XCTAssertEqual(monitor.poll(now: now), [])
+
+        let staleThinkingTimestamp = isoTimestamp(now.addingTimeInterval(1))
+        try FileHandle(forWritingTo: sessionFile).appendString(
+            #"{"timestamp":"\#(staleThinkingTimestamp)","type":"response_item","payload":{"type":"reasoning"}}"# + "\n"
+        )
+
+        XCTAssertEqual(monitor.poll(now: now.addingTimeInterval(2)), [])
+
+        let newTurnTimestamp = isoTimestamp(now.addingTimeInterval(3))
+        try FileHandle(forWritingTo: sessionFile).appendString(
+            #"{"timestamp":"\#(newTurnTimestamp)","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}"# + "\n"
+        )
+        let newTurnActivities = monitor.poll(now: now.addingTimeInterval(4))
+
+        XCTAssertEqual(newTurnActivities.map(\.signal), [.thinking])
+        XCTAssertEqual(newTurnActivities.map(\.event), ["DesktopTaskStarted"])
+        XCTAssertEqual(newTurnActivities.map(\.agent), ["codex-cli"])
+    }
+
+    func testCodexDesktopActivityMonitorDoesNotReviveCompletedSessionWithHeartbeat() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date(timeIntervalSince1970: 1_000)
+        let sessionFile = fixture.sessionsRoot
+            .appendingPathComponent("rollout-2026-06-02T00-00-00-019e83ed-3f20-7000-9000-000000000004.jsonl")
+        let completedTimestamp = isoTimestamp(now)
+        try #"{"timestamp":"\#(completedTimestamp)","type":"event_msg","payload":{"type":"task_complete"}}"#
+            .appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: fixture.sessionsRoot,
+            replaysInitialHistory: true
+        )
+        let completedActivities = monitor.poll(now: now)
+
+        XCTAssertEqual(completedActivities.map(\.signal), [.done])
+        XCTAssertEqual(completedActivities.map(\.event), ["DesktopTaskComplete"])
+
+        let heartbeatTimestamp = isoTimestamp(now.addingTimeInterval(2))
+        try FileHandle(forWritingTo: sessionFile).appendString(
+            #"{"timestamp":"\#(heartbeatTimestamp)","type":"event_msg","payload":{"type":"token_count"}}"# + "\n"
+        )
+        try FileHandle(forWritingTo: sessionFile).appendString(
+            #"{"timestamp":"\#(heartbeatTimestamp)","type":"response_item","payload":{"type":"reasoning"}}"# + "\n"
+        )
+
+        XCTAssertEqual(monitor.poll(now: now.addingTimeInterval(3)), [])
+
+        let newTurnTimestamp = isoTimestamp(now.addingTimeInterval(4))
+        try FileHandle(forWritingTo: sessionFile).appendString(
+            #"{"timestamp":"\#(newTurnTimestamp)","type":"event_msg","payload":{"type":"task_started"}}"# + "\n"
+        )
+        let newTurnActivities = monitor.poll(now: now.addingTimeInterval(5))
+
+        XCTAssertEqual(newTurnActivities.map(\.signal), [.thinking])
+        XCTAssertEqual(newTurnActivities.map(\.event), ["DesktopTaskStarted"])
     }
 
     func testCodexDesktopSessionParserIgnoresUserMessagesAndStartsNewTasks() {
@@ -367,6 +668,17 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssert(completedSnapshot.aggregate == .done)
         XCTAssert(completedSnapshot.sessions.first?.signal == .done)
 
+        let replaySnapshot = try activeFixture.store.applySessionSignal(
+            .thinking,
+            sessionID: "codex-main",
+            agent: "codex",
+            lastEvent: "DesktopActivityHeartbeat",
+            updatedAt: Date().addingTimeInterval(1)
+        )
+
+        XCTAssert(replaySnapshot.aggregate == .done)
+        XCTAssert(replaySnapshot.sessions.first?.signal == .done)
+
         let alertFixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: alertFixture.directory) }
 
@@ -455,6 +767,9 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssert(snapshot.aggregate == .working)
         XCTAssert(snapshot.sessions.map(\.sessionID) == ["worker"])
+        XCTAssertEqual(snapshot.recentEvents.first?.sessionID, "manual")
+        XCTAssertEqual(snapshot.recentEvents.first?.event, "ClearWarning")
+        XCTAssertEqual(snapshot.recentEvents.first?.signal, .idle)
     }
 
     func testManualSignalsParticipateInSessionAggregation() throws {
@@ -543,6 +858,14 @@ final class AgentSignalLightCoreTests: XCTestCase {
         let snapshot = try fixture.store.applySessionSignal(.working, sessionID: "three", lastEvent: "three")
 
         XCTAssert(snapshot.recentEvents.map(\.event) == ["three", "two"])
+    }
+
+    func testDefaultEventLimitSupportsFiftyRecentEvents() {
+        XCTAssertEqual(SignalStateStore.defaultEventLimit(environment: [:]), 50)
+        XCTAssertEqual(
+            SignalStateStore.defaultEventLimit(environment: ["AGENT_SIGNAL_LIGHT_EVENT_LIMIT": "12"]),
+            12
+        )
     }
 
     func testApplySessionSignalPreservesProvidedEventTimestamp() throws {
@@ -654,6 +977,72 @@ final class AgentSignalLightCoreTests: XCTestCase {
                 payload: ["sessionId": "camel-session"],
                 environment: ["CODEX_SESSION_ID": "env-session"]
             ) == "camel-session"
+        )
+    }
+
+    func testHookAdaptersIgnoreToolPayloadMetadataLookalikes() {
+        let payload: [String: Any] = [
+            "toolInput": [
+                "sessionId": "user-supplied-session",
+                "source": "xcode",
+                "error": "example text from a tool argument"
+            ]
+        ]
+
+        XCTAssertEqual(
+            CodexHookAdapter.sessionKey(
+                payload: payload,
+                environment: ["CODEX_SESSION_ID": "real-session"]
+            ),
+            "real-session"
+        )
+        XCTAssertEqual(
+            CodexHookAdapter.agentName(
+                payload: payload,
+                environment: ["TERM_PROGRAM": "Apple_Terminal"]
+            ),
+            "codex-cli"
+        )
+        XCTAssertEqual(
+            CodexHookAdapter.chooseSignal(eventName: "PreToolUse", payload: payload),
+            .working
+        )
+    }
+
+    func testHookAdaptersStillReadTrustedNestedMetadata() {
+        let payload: [String: Any] = [
+            "payload": [
+                "metadata": [
+                    "sessionId": "trusted-session",
+                    "source": "VS Code"
+                ],
+                "result": [
+                    "error": true
+                ]
+            ]
+        ]
+
+        XCTAssertEqual(
+            CodexHookAdapter.sessionKey(payload: payload, environment: [:]),
+            "trusted-session"
+        )
+        XCTAssertEqual(
+            CodexHookAdapter.agentName(payload: payload, environment: [:]),
+            "codex-vscode"
+        )
+        XCTAssertEqual(
+            CodexHookAdapter.chooseSignal(eventName: "PostToolUse", payload: payload),
+            .blocked
+        )
+    }
+
+    func testCodexHookAgentNameRecognizesJetBrainsTerminalEnvironment() {
+        XCTAssertEqual(
+            CodexHookAdapter.agentName(
+                payload: [:],
+                environment: ["TERMINAL_EMULATOR": "JetBrains-JediTerm"]
+            ),
+            "codex-jetbrains"
         )
     }
 
@@ -1025,6 +1414,40 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssert((storedDocument.updatedAt ?? .distantPast) > oldDate)
     }
 
+    func testExpiredCompletedSessionIgnoresLateActiveReplay() throws {
+        let fixture = try makeTemporaryStore(completedTTLSeconds: 0.01)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let completedDate = Date(timeIntervalSince1970: 100)
+        let replayDate = Date(timeIntervalSince1970: 101)
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .done,
+                updatedAt: completedDate,
+                sessions: [
+                    "codex-desk": SessionRecord(
+                        agent: "codex-desktop",
+                        signal: .done,
+                        lastEvent: "DesktopStop",
+                        updatedAt: completedDate
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let snapshot = try fixture.store.applySessionSignal(
+            .thinking,
+            sessionID: "codex-desk",
+            agent: "codex-desktop",
+            lastEvent: "DesktopThinking",
+            updatedAt: replayDate
+        )
+
+        XCTAssertEqual(snapshot.aggregate, .idle)
+        XCTAssertTrue(snapshot.sessions.isEmpty)
+    }
+
     func testToolDoneSessionExpiresBackToIdle() throws {
         let fixture = try makeTemporaryStore(completedTTLSeconds: 0.01)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -1076,10 +1499,819 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(release.preferredDownloadURL?.lastPathComponent, "AgentSignalLight-local.dmg")
     }
 
+    func testActivityPresentationKeepsCodexEntrypointsSeparate() {
+        let now = Date()
+        let snapshot = SignalSnapshot(
+            aggregate: .working,
+            sessions: [
+                SessionStatus(
+                    sessionID: "codex-desktop:desktop-thread",
+                    signal: .working,
+                    updatedAt: now,
+                    agent: "codex-desktop",
+                    lastEvent: "DesktopToolCall:exec_command"
+                ),
+                SessionStatus(
+                    sessionID: "codex-cli:terminal-session",
+                    signal: .thinking,
+                    updatedAt: now.addingTimeInterval(-1),
+                    agent: "codex-cli",
+                    lastEvent: "UserPromptSubmit"
+                ),
+                SessionStatus(
+                    sessionID: "codex-ide:idea-session",
+                    signal: .working,
+                    updatedAt: now.addingTimeInterval(-2),
+                    agent: "codex-ide",
+                    lastEvent: "PreToolUse"
+                )
+            ],
+            recentEvents: [],
+            stateFileURL: URL(fileURLWithPath: "/tmp/agent-signal/status.json"),
+            updatedAt: now
+        )
+
+        let visible = ActivityPresentation.visibleSessions(from: snapshot, now: now)
+
+        XCTAssertEqual(Set(visible.map(ActivityPresentation.activitySourceKey(for:))), [
+            "codex:desktop",
+            "codex:terminal",
+            "codex:ide:idea"
+        ])
+    }
+
+    func testActivityPresentationRuntimeKindRecognizesIDEA() {
+        let session = SessionStatus(
+            sessionID: "codex-idea:project",
+            signal: .working,
+            updatedAt: Date(),
+            agent: "JetBrains Codex",
+            lastEvent: "PreToolUse"
+        )
+
+        guard case .ide = ActivityPresentation.runtimeKind(for: session) else {
+            XCTFail("Expected JetBrains Codex sessions to be displayed as IDE activity.")
+            return
+        }
+
+        XCTAssertEqual(ActivityPresentation.sourceDetail(for: session), "IDEA")
+    }
+
+    func testActivityPresentationPrefersNewerCompletedCLIOverOlderThinking() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let visible = ActivityPresentation.visibleSessions(
+            from: [
+                SessionStatus(
+                    sessionID: "codex-cli:old-thread",
+                    signal: .thinking,
+                    updatedAt: now.addingTimeInterval(-60),
+                    agent: "codex-cli",
+                    lastEvent: "DesktopActivityHeartbeat"
+                ),
+                SessionStatus(
+                    sessionID: "recent-activity:codex:terminal",
+                    signal: .done,
+                    updatedAt: now,
+                    agent: "codex-cli",
+                    lastEvent: "DesktopTaskComplete"
+                )
+            ],
+            now: now
+        )
+
+        XCTAssertEqual(visible.count, 1)
+        XCTAssertEqual(visible.first?.signal, .done)
+        XCTAssertEqual(visible.first?.lastEvent, "DesktopTaskComplete")
+    }
+
+    func testActivityPresentationRecentEventsExcludeCurrentFallbackSourceEvent() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let current = SessionStatus(
+            sessionID: "recent-activity:codex:terminal",
+            signal: .done,
+            updatedAt: now,
+            agent: "codex-cli",
+            lastEvent: "DesktopTaskComplete"
+        )
+        let snapshot = SignalSnapshot(
+            aggregate: .done,
+            sessions: [],
+            recentEvents: [
+                RecentSignalEvent(
+                    id: "terminal-done",
+                    sessionID: "codex-cli:original-session",
+                    signal: .done,
+                    updatedAt: now,
+                    agent: "codex-cli",
+                    event: "DesktopTaskComplete"
+                ),
+                RecentSignalEvent(
+                    id: "desktop-done",
+                    sessionID: "codex-desktop:session",
+                    signal: .done,
+                    updatedAt: now.addingTimeInterval(-1),
+                    agent: "codex-desktop",
+                    event: "DesktopTaskComplete"
+                )
+            ],
+            stateFileURL: URL(fileURLWithPath: "/tmp/agent-signal/status.json"),
+            updatedAt: now
+        )
+
+        let recent = ActivityPresentation.recentEvents(from: snapshot, excluding: [current])
+
+        XCTAssertEqual(recent.map(\.id), ["desktop-done"])
+    }
+
+    func testActivityPresentationPrefersCompletedCLIOverPresenceAndOlderThinking() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let visible = ActivityPresentation.visibleSessions(
+            from: [
+                SessionStatus(
+                    sessionID: "codex-cli:old-thread",
+                    signal: .thinking,
+                    updatedAt: now.addingTimeInterval(-60),
+                    agent: "codex-cli",
+                    lastEvent: "DesktopActivityHeartbeat"
+                ),
+                SessionStatus(
+                    sessionID: "platform-presence:codex-cli",
+                    signal: .idle,
+                    updatedAt: now,
+                    agent: "codex-cli",
+                    lastEvent: "PlatformPresence:CLI"
+                ),
+                SessionStatus(
+                    sessionID: "codex-cli:finished-thread",
+                    signal: .done,
+                    updatedAt: now.addingTimeInterval(-1),
+                    agent: "codex-cli",
+                    lastEvent: "DesktopTaskComplete"
+                )
+            ],
+            now: now
+        )
+
+        XCTAssertEqual(visible.count, 1)
+        XCTAssertEqual(visible.first?.signal, .done)
+        XCTAssertEqual(visible.first?.lastEvent, "DesktopTaskComplete")
+    }
+
+    func testActivityPresentationLetsFreshPresenceReplaceStaleTerminalThinking() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let visible = ActivityPresentation.visibleSessions(
+            from: [
+                SessionStatus(
+                    sessionID: "codex-cli:old-thread",
+                    signal: .thinking,
+                    updatedAt: now.addingTimeInterval(-60),
+                    agent: "codex-cli",
+                    lastEvent: "DesktopThinking"
+                ),
+                SessionStatus(
+                    sessionID: "platform-presence:codex-cli",
+                    signal: .idle,
+                    updatedAt: now,
+                    agent: "codex-cli",
+                    lastEvent: "PlatformPresence:CLI"
+                )
+            ],
+            now: now
+        )
+
+        XCTAssertEqual(visible.count, 1)
+        XCTAssertEqual(visible.first?.sessionID, "platform-presence:codex-cli")
+        XCTAssertEqual(visible.first?.signal, .idle)
+    }
+
+    @MainActor
+    func testRecentPassiveThinkingDoesNotRemainFallbackSessionForFiveMinutes() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let freshThinking = RecentSignalEvent(
+            id: "fresh-thinking",
+            sessionID: "codex-cli:thread",
+            signal: .thinking,
+            updatedAt: now.addingTimeInterval(-30),
+            agent: "codex-cli",
+            event: "DesktopThinking"
+        )
+        let staleThinking = RecentSignalEvent(
+            id: "stale-thinking",
+            sessionID: "codex-cli:thread",
+            signal: .thinking,
+            updatedAt: now.addingTimeInterval(-60),
+            agent: "codex-cli",
+            event: "DesktopThinking"
+        )
+        let activeToolCall = RecentSignalEvent(
+            id: "tool-call",
+            sessionID: "codex-cli:thread",
+            signal: .working,
+            updatedAt: now.addingTimeInterval(-60),
+            agent: "codex-cli",
+            event: "DesktopToolCall:exec_command"
+        )
+
+        XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(freshThinking, now: now))
+        XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(staleThinking, now: now))
+        XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(activeToolCall, now: now))
+
+        let freshCompleted = RecentSignalEvent(
+            id: "fresh-completed",
+            sessionID: "codex-cli:thread",
+            signal: .done,
+            updatedAt: now.addingTimeInterval(-29),
+            agent: "codex-cli",
+            event: "DesktopTaskComplete"
+        )
+        let staleCompleted = RecentSignalEvent(
+            id: "stale-completed",
+            sessionID: "codex-cli:thread",
+            signal: .done,
+            updatedAt: now.addingTimeInterval(-31),
+            agent: "codex-cli",
+            event: "DesktopTaskComplete"
+        )
+
+        XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(freshCompleted, now: now))
+        XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(staleCompleted, now: now))
+
+        let clearWarning = RecentSignalEvent(
+            id: "clear-warning",
+            sessionID: "manual",
+            signal: .working,
+            updatedAt: now,
+            agent: "manual",
+            event: "ClearWarning"
+        )
+        XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(clearWarning, now: now))
+    }
+
+    @MainActor
+    func testRecentCompletedEventPreventsOlderActiveFallbackAcrossSourcesAfterDoneExpires() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let cases = [
+            (
+                id: "desktop",
+                sessionID: "codex-desktop:finished-thread",
+                agent: "codex-desktop",
+                activeEvent: "DesktopTaskStarted",
+                completedEvent: "DesktopTaskComplete"
+            ),
+            (
+                id: "cli",
+                sessionID: "codex-cli:finished-thread",
+                agent: "codex-cli",
+                activeEvent: "DesktopTaskStarted",
+                completedEvent: "DesktopTaskComplete"
+            ),
+            (
+                id: "vscode",
+                sessionID: "codex-vscode:finished-thread",
+                agent: "codex-vscode",
+                activeEvent: "DesktopTaskStarted",
+                completedEvent: "DesktopTaskComplete"
+            ),
+            (
+                id: "xcode",
+                sessionID: "codex-xcode:finished-thread",
+                agent: "codex-xcode",
+                activeEvent: "DesktopTaskStarted",
+                completedEvent: "DesktopTaskComplete"
+            ),
+            (
+                id: "idea",
+                sessionID: "codex-idea:finished-thread",
+                agent: "codex-idea",
+                activeEvent: "DesktopTaskStarted",
+                completedEvent: "DesktopTaskComplete"
+            ),
+            (
+                id: "claude",
+                sessionID: "claude-code:finished-thread",
+                agent: "claude-code",
+                activeEvent: "PreToolUse",
+                completedEvent: "Stop"
+            )
+        ]
+        let records = cases.flatMap { item in
+            [
+                SignalEventRecord(
+                    id: "\(item.id)-started",
+                    sessionID: item.sessionID,
+                    agent: item.agent,
+                    signal: .thinking,
+                    event: item.activeEvent,
+                    updatedAt: now.addingTimeInterval(-150)
+                ),
+                SignalEventRecord(
+                    id: "\(item.id)-complete",
+                    sessionID: item.sessionID,
+                    agent: item.agent,
+                    signal: .done,
+                    event: item.completedEvent,
+                    updatedAt: now.addingTimeInterval(-120)
+                )
+            ]
+        }
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .idle,
+                updatedAt: now,
+                sessions: [:],
+                events: records
+            ),
+            in: fixture.store
+        )
+
+        let model = MenuBarStatusModel(store: fixture.store)
+        let snapshot = model.activitySnapshot
+
+        for item in cases {
+            let sourceKey = ActivityPresentation.activitySourceKey(
+                for: RecentSignalEvent(
+                    id: "\(item.id)-source",
+                    sessionID: item.sessionID,
+                    signal: .thinking,
+                    updatedAt: now,
+                    agent: item.agent,
+                    event: item.activeEvent
+                )
+            )
+            XCTAssertFalse(
+                snapshot.sessions.contains { session in
+                    session.sessionID == "recent-activity:\(sourceKey)"
+                        && session.signal.displayState == .active
+                },
+                "Older active fallback should not revive after completion for \(item.agent)."
+            )
+        }
+    }
+
+    func testCodexPlatformPresenceMonitorRecognizesCodexEntrypoints() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let sessions = CodexPlatformPresenceMonitor.detectSessions(
+            applications: [
+                CodexPlatformPresenceMonitor.RunningApplicationInfo(
+                    bundleIdentifier: "com.openai.codex",
+                    localizedName: "Codex"
+                )
+            ],
+            processes: [
+                CodexPlatformPresenceMonitor.RunningProcessInfo(
+                    pid: 1,
+                    command: "/opt/homebrew/bin/codex",
+                    arguments: "codex"
+                ),
+                CodexPlatformPresenceMonitor.RunningProcessInfo(
+                    pid: 2,
+                    command: "/Users/me/.vscode/extensions/openai.chatgpt/codex",
+                    arguments: "codex app-server"
+                ),
+                CodexPlatformPresenceMonitor.RunningProcessInfo(
+                    pid: 3,
+                    command: "/Users/me/Library/Developer/Xcode/CodingAssistant/Agents/XcodeVersions/17F42/codex/codex",
+                    arguments: "codex app-server"
+                ),
+                CodexPlatformPresenceMonitor.RunningProcessInfo(
+                    pid: 4,
+                    command: "/Users/me/Library/Caches/JetBrains/IntelliJIdea2026.1/aia/codex/bin/codex",
+                    arguments: "codex app-server"
+                )
+            ],
+            now: now
+        )
+
+        XCTAssertEqual(
+            Set(sessions.map(\.sessionID)),
+            [
+                "platform-presence:codex-desktop",
+                "platform-presence:codex-cli",
+                "platform-presence:codex-vscode",
+                "platform-presence:codex-xcode",
+                "platform-presence:codex-idea"
+            ]
+        )
+    }
+
+    func testCodexPlatformPresenceMonitorParsesRealHomebrewCLIProcessLine() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let processes = CodexPlatformPresenceMonitor.parseProcesses(
+            from: "15577 codex            codex\n"
+        )
+        let sessions = CodexPlatformPresenceMonitor.detectSessions(
+            applications: [],
+            processes: processes,
+            now: now
+        )
+
+        XCTAssertEqual(processes.first?.command, "codex")
+        XCTAssertEqual(processes.first?.arguments, "codex")
+        XCTAssertTrue(sessions.contains { $0.sessionID == "platform-presence:codex-cli" })
+    }
+
+    func testCodexPlatformPresenceMonitorIgnoresComputerUseClientAsCLI() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let processes = CodexPlatformPresenceMonitor.parseProcesses(
+            from: """
+            60393 ./Codex Computer ./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient mcp
+            """
+        )
+        let sessions = CodexPlatformPresenceMonitor.detectSessions(
+            applications: [],
+            processes: processes,
+            now: now
+        )
+
+        XCTAssertFalse(sessions.contains { $0.sessionID == "platform-presence:codex-cli" })
+    }
+
+    func testCodexPlatformPresenceMonitorDoesNotShowIDEEntrypointsFromHostAppsOnly() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let sessions = CodexPlatformPresenceMonitor.detectSessions(
+            applications: [
+                CodexPlatformPresenceMonitor.RunningApplicationInfo(
+                    bundleIdentifier: "com.microsoft.VSCode",
+                    localizedName: "Visual Studio Code"
+                ),
+                CodexPlatformPresenceMonitor.RunningApplicationInfo(
+                    bundleIdentifier: "com.apple.dt.Xcode",
+                    localizedName: "Xcode"
+                ),
+                CodexPlatformPresenceMonitor.RunningApplicationInfo(
+                    bundleIdentifier: "com.jetbrains.intellij",
+                    localizedName: "IntelliJ IDEA"
+                )
+            ],
+            processes: [],
+            now: now
+        )
+
+        XCTAssertFalse(sessions.contains { $0.sessionID == "platform-presence:codex-vscode" })
+        XCTAssertFalse(sessions.contains { $0.sessionID == "platform-presence:codex-xcode" })
+        XCTAssertFalse(sessions.contains { $0.sessionID == "platform-presence:codex-idea" })
+    }
+
+    func testCodexPlatformPresenceMonitorShowsIDEEntrypointsFromCodexPluginProcesses() {
+        let sessions = CodexPlatformPresenceMonitor.detectSessions(
+            applications: [],
+            processes: [
+                CodexPlatformPresenceMonitor.RunningProcessInfo(
+                    pid: 1,
+                    command: "/Users/me/.vscode/extensions/openai.chatgpt/codex",
+                    arguments: "codex app-server"
+                ),
+                CodexPlatformPresenceMonitor.RunningProcessInfo(
+                    pid: 2,
+                    command: "/Users/me/Library/Developer/Xcode/CodingAssistant/Agents/XcodeVersions/17F42/codex/codex",
+                    arguments: "codex app-server"
+                ),
+                CodexPlatformPresenceMonitor.RunningProcessInfo(
+                    pid: 3,
+                    command: "/Users/me/Library/Caches/JetBrains/IntelliJIdea2026.1/aia/codex/bin/codex",
+                    arguments: "codex app-server"
+                )
+            ],
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+
+        XCTAssertEqual(
+            Set(sessions.map(\.sessionID)),
+            [
+                "platform-presence:codex-vscode",
+                "platform-presence:codex-xcode",
+                "platform-presence:codex-idea"
+            ]
+        )
+        XCTAssertTrue(sessions.allSatisfy { $0.signal == .idle })
+    }
+
+    func testCodexPlatformPresenceMonitorIgnoresCodexAppServerAsCLI() {
+        let sessions = CodexPlatformPresenceMonitor.detectSessions(
+            applications: [],
+            processes: [
+                CodexPlatformPresenceMonitor.RunningProcessInfo(
+                    pid: 42,
+                    command: "/Applications/Codex.app/Contents/Resources/codex",
+                    arguments: "codex app-server --listen stdio://"
+                ),
+                CodexPlatformPresenceMonitor.RunningProcessInfo(
+                    pid: 43,
+                    command: "/Users/me/Library/Developer/Xcode/CodingAssistant/Agents/XcodeVersions/17F42/codex/codex",
+                    arguments: "codex app-server"
+                )
+            ],
+            now: Date()
+        )
+
+        XCTAssertFalse(sessions.contains { $0.sessionID == "platform-presence:codex-cli" })
+        XCTAssertTrue(sessions.contains { $0.sessionID == "platform-presence:codex-xcode" })
+    }
+
+    @MainActor
+    func testActivityPresentationCurrentLimitIncludesAllSupportedEntrypoints() throws {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let snapshot = SignalSnapshot(
+            aggregate: .idle,
+            sessions: [
+                SessionStatus(
+                    sessionID: "platform-presence:codex-desktop",
+                    signal: .idle,
+                    updatedAt: now,
+                    agent: "codex-desktop",
+                    lastEvent: "PlatformPresence:Desktop"
+                ),
+                SessionStatus(
+                    sessionID: "platform-presence:codex-vscode",
+                    signal: .idle,
+                    updatedAt: now,
+                    agent: "codex-vscode",
+                    lastEvent: "PlatformPresence:VSCode"
+                ),
+                SessionStatus(
+                    sessionID: "platform-presence:codex-xcode",
+                    signal: .idle,
+                    updatedAt: now,
+                    agent: "codex-xcode",
+                    lastEvent: "PlatformPresence:Xcode"
+                ),
+                SessionStatus(
+                    sessionID: "platform-presence:codex-idea",
+                    signal: .idle,
+                    updatedAt: now,
+                    agent: "codex-idea",
+                    lastEvent: "PlatformPresence:IDEA"
+                ),
+                SessionStatus(
+                    sessionID: "platform-presence:claude-desktop",
+                    signal: .idle,
+                    updatedAt: now,
+                    agent: "claude-desktop",
+                    lastEvent: "PlatformPresence:Desktop"
+                ),
+                SessionStatus(
+                    sessionID: "platform-presence:codex-cli",
+                    signal: .idle,
+                    updatedAt: now,
+                    agent: "codex-cli",
+                    lastEvent: "PlatformPresence:CLI"
+                )
+            ],
+            recentEvents: [],
+            stateFileURL: URL(fileURLWithPath: "/tmp/agent-signal/status.json"),
+            updatedAt: now
+        )
+
+        let visible = ActivityPresentation.visibleSessions(
+            from: snapshot,
+            limit: ActivityPresentation.currentSessionLimit
+        )
+
+        XCTAssertEqual(visible.count, 6)
+        XCTAssertTrue(visible.contains { $0.sessionID == "platform-presence:codex-cli" })
+
+        let cliSession = try XCTUnwrap(visible.first { $0.sessionID == "platform-presence:codex-cli" })
+        let model = MenuBarStatusModel()
+        XCTAssertEqual(model.activitySessionTitle(for: cliSession), "Codex · 终端运行中")
+        XCTAssertEqual(model.activitySessionStatusSubtitle(for: cliSession), "空闲")
+    }
+
+    @MainActor
+    func testActivityPresentationEventTitleIncludesCodexEntrypoint() {
+        let model = MenuBarStatusModel()
+        let xcodeEvent = RecentSignalEvent(
+            id: "xcode-event",
+            sessionID: "codex-xcode:thread",
+            signal: .working,
+            updatedAt: Date(),
+            agent: "codex-xcode",
+            event: "DesktopToolCall:exec_command"
+        )
+        let vscodeEvent = RecentSignalEvent(
+            id: "vscode-event",
+            sessionID: "codex-vscode:thread",
+            signal: .thinking,
+            updatedAt: Date(),
+            agent: "codex-vscode",
+            event: "DesktopThinking"
+        )
+
+        XCTAssertEqual(model.activityEventTitle(for: xcodeEvent), "Codex Xcode")
+        XCTAssertEqual(model.activityEventSubtitle(for: xcodeEvent), "正在执行步骤 exec_command")
+        XCTAssertEqual(model.activityEventTitle(for: vscodeEvent), "Codex VS Code")
+        XCTAssertEqual(model.activityEventSubtitle(for: vscodeEvent), "思考中")
+    }
+
+    @MainActor
+    func testActivityPresenceSubtitleDoesNotExposeInternalEventName() {
+        let model = MenuBarStatusModel()
+        let session = SessionStatus(
+            sessionID: "platform-presence:codex-vscode",
+            signal: .idle,
+            updatedAt: Date(),
+            agent: "codex-vscode",
+            lastEvent: "PlatformPresence:VSCode"
+        )
+
+        XCTAssertEqual(model.activitySessionTitle(for: session), "Codex · VS Code 运行中")
+        XCTAssertEqual(model.activitySessionStatusSubtitle(for: session), "空闲")
+    }
+
+    @MainActor
+    func testPlatformPresenceFilteringRespectsCodexAndClaudeToggles() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let model = MenuBarStatusModel()
+        let codexSession = SessionStatus(
+            sessionID: "platform-presence:codex-desktop",
+            signal: .idle,
+            updatedAt: now,
+            agent: "codex-desktop",
+            lastEvent: "PlatformPresence:Desktop"
+        )
+        let claudeSession = SessionStatus(
+            sessionID: "platform-presence:claude-desktop",
+            signal: .idle,
+            updatedAt: now,
+            agent: "claude-desktop",
+            lastEvent: "PlatformPresence:Desktop"
+        )
+
+        model.isCodexDesktopMonitoringEnabled = false
+        model.isClaudeDesktopMonitoringEnabled = true
+        XCTAssertEqual(model.filteredPlatformPresenceSessions([codexSession, claudeSession]).map(\.sessionID), [
+            "platform-presence:claude-desktop"
+        ])
+
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isClaudeDesktopMonitoringEnabled = false
+        XCTAssertEqual(model.filteredPlatformPresenceSessions([codexSession, claudeSession]).map(\.sessionID), [
+            "platform-presence:codex-desktop"
+        ])
+    }
+
+    @MainActor
+    func testActivitySessionSubtitleUsesSameRealEventTextAsRecentEvents() {
+        let model = MenuBarStatusModel()
+        let session = SessionStatus(
+            sessionID: "codex-xcode:thread",
+            signal: .working,
+            updatedAt: Date(),
+            agent: "codex-xcode",
+            lastEvent: "DesktopToolCall:exec_command"
+        )
+        let event = RecentSignalEvent(
+            id: "xcode-event",
+            sessionID: session.sessionID,
+            signal: session.signal,
+            updatedAt: session.updatedAt,
+            agent: session.agent,
+            event: session.lastEvent
+        )
+
+        XCTAssertEqual(model.activitySessionStatusSubtitle(for: session), "正在执行步骤 exec_command")
+        XCTAssertEqual(model.activitySessionStatusSubtitle(for: session), model.activityEventSubtitle(for: event))
+    }
+
+    func testSignalLightAgentScopesMatchSupportedSources() throws {
+        let now = Date()
+        let sessions: [(SignalLightAgentScope, SessionStatus)] = [
+            (
+                .codexDesktop,
+                SessionStatus(
+                    sessionID: "codex-desktop:thread",
+                    signal: .working,
+                    updatedAt: now,
+                    agent: "codex-desktop",
+                    lastEvent: "DesktopToolCall:exec_command"
+                )
+            ),
+            (
+                .codexCLI,
+                SessionStatus(
+                    sessionID: "codex-cli:terminal-thread",
+                    signal: .thinking,
+                    updatedAt: now,
+                    agent: "codex-cli",
+                    lastEvent: "DesktopActivityHeartbeat"
+                )
+            ),
+            (
+                .codexVSCode,
+                SessionStatus(
+                    sessionID: "codex-vscode:thread",
+                    signal: .working,
+                    updatedAt: now,
+                    agent: "codex-vscode",
+                    lastEvent: "DesktopToolCall:apply_patch"
+                )
+            ),
+            (
+                .codexXcode,
+                SessionStatus(
+                    sessionID: "codex-xcode:thread",
+                    signal: .working,
+                    updatedAt: now,
+                    agent: "codex-xcode",
+                    lastEvent: "DesktopToolCall:swift_test"
+                )
+            ),
+            (
+                .codexIDEA,
+                SessionStatus(
+                    sessionID: "codex-idea:thread",
+                    signal: .working,
+                    updatedAt: now,
+                    agent: "codex-idea",
+                    lastEvent: "PreToolUse"
+                )
+            ),
+            (
+                .claudeCode,
+                SessionStatus(
+                    sessionID: "claude-code:thread",
+                    signal: .working,
+                    updatedAt: now,
+                    agent: "claude-code",
+                    lastEvent: "PreToolUse"
+                )
+            ),
+            (
+                .localScript,
+                SessionStatus(
+                    sessionID: "local:script",
+                    signal: .attention,
+                    updatedAt: now,
+                    agent: "local-script",
+                    lastEvent: "ManualEvent"
+                )
+            )
+        ]
+
+        for (scope, session) in sessions {
+            XCTAssertTrue(scope.matches(session: session), "\(scope.rawValue) should match \(session.sessionID)")
+        }
+
+        let cliSession = try XCTUnwrap(sessions.first { $0.0 == .codexCLI }?.1)
+        XCTAssertFalse(SignalLightAgentScope.codexDesktop.matches(session: cliSession))
+        XCTAssertFalse(SignalLightAgentScope.codexVSCode.matches(session: cliSession))
+    }
+
+    @MainActor
+    func testSignalLightAgentScopesExposeSingleClaudeDesktopChoice() {
+        XCTAssertFalse(SignalLightAgentScope.selectableCases.contains(.claudeDesktop))
+        XCTAssertTrue(SignalLightAgentScope.selectableCases.contains(.claudeCode))
+
+        let claudeDesktopSession = SessionStatus(
+            sessionID: "claude-desktop:presence",
+            signal: .idle,
+            updatedAt: Date(),
+            agent: "claude-desktop",
+            lastEvent: "PlatformPresence:Desktop"
+        )
+
+        XCTAssertTrue(SignalLightAgentScope.claudeCode.matches(session: claudeDesktopSession))
+
+        let model = MenuBarStatusModel()
+        model.setAppLanguage(.zhHans)
+        XCTAssertEqual(model.displayName(for: SignalLightAgentScope.claudeCode), "Claude 桌面版")
+    }
+
+    @MainActor
+    func testCodexCLISessionKeepsTerminalRuntimeForDesktopNamedEvents() {
+        let model = MenuBarStatusModel()
+        let session = SessionStatus(
+            sessionID: "codex-cli:terminal-thread",
+            signal: .thinking,
+            updatedAt: Date(),
+            agent: "codex-cli",
+            lastEvent: "DesktopActivityHeartbeat"
+        )
+        let event = RecentSignalEvent(
+            id: "cli-heartbeat",
+            sessionID: "codex-cli:terminal-thread",
+            signal: .thinking,
+            updatedAt: Date(),
+            agent: "codex-cli",
+            event: "DesktopActivityHeartbeat"
+        )
+
+        guard case .terminal = ActivityPresentation.runtimeKind(for: session) else {
+            XCTFail("Expected codex-cli sessions to stay terminal even when Codex logs use Desktop-prefixed event names.")
+            return
+        }
+
+        XCTAssertEqual(model.activitySessionTitle(for: session), "Codex · 终端运行中")
+        XCTAssertEqual(model.activityEventTitle(for: event), "Codex CLI")
+        XCTAssertEqual(model.activityEventSubtitle(for: event), "活动中")
+    }
+
     private func makeTemporaryStore(
         sessionTTLSeconds: Double = 86_400,
-        completedTTLSeconds: Double = 90,
-        eventLimit: Int = 30
+        completedTTLSeconds: Double = 30,
+        eventLimit: Int = 50
     ) throws -> (store: SignalStateStore, directory: URL) {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("agent-signal-light-tests-\(UUID().uuidString)", isDirectory: true)

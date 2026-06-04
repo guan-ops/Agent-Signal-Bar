@@ -79,7 +79,7 @@ public final class SignalStateStore: @unchecked Sendable {
               let value = Double(rawValue),
               value > 0
         else {
-            return 90
+            return 30
         }
         return value
     }
@@ -91,7 +91,7 @@ public final class SignalStateStore: @unchecked Sendable {
               let value = Int(rawValue),
               value > 0
         else {
-            return 30
+            return 50
         }
         return value
     }
@@ -221,7 +221,7 @@ public final class SignalStateStore: @unchecked Sendable {
                 to: &document,
                 sessionID: "manual",
                 agent: "manual",
-                signal: document.aggregate ?? .idle,
+                signal: .idle,
                 event: "ClearWarning",
                 updatedAt: now
             )
@@ -242,15 +242,25 @@ public final class SignalStateStore: @unchecked Sendable {
             let now = Date()
             let eventDate = updatedAt
             var document = readDocument()
+            let existingBeforePrune = document.sessions[sessionID]
 
             if shouldIgnoreOutOfOrderEvent(
-                existing: document.sessions[sessionID],
+                existing: existingBeforePrune,
                 updatedAt: eventDate
             ) {
                 return document.snapshot(stateFileURL: stateFileURL)
             }
 
-            _ = pruneRuntimeSessions(in: &document, now: now)
+            let pruneResult = pruneRuntimeSessions(in: &document, now: now)
+
+            if shouldIgnoreCompletedSessionReplay(
+                existing: document.sessions[sessionID] ?? existingBeforePrune,
+                signal: signal,
+                event: lastEvent
+            ) {
+                updateAggregateAfterPruning(in: &document, pruneResult: pruneResult)
+                return document.snapshot(stateFileURL: stateFileURL)
+            }
 
             switch signal {
             case .off, .pause, .paused:
@@ -427,6 +437,29 @@ private extension SignalStateStore {
     ) -> Bool {
         guard let existing else { return false }
         return existing.updatedAt > eventDate
+    }
+
+    func shouldIgnoreCompletedSessionReplay(
+        existing: SessionRecord?,
+        signal: AgentSignal,
+        event: String?
+    ) -> Bool {
+        guard existing?.signal.displayState == .completed,
+              signal.displayState == .active,
+              let event
+        else {
+            return false
+        }
+
+        switch event {
+        case "DesktopActivityHeartbeat",
+             "DesktopThinking",
+             "DesktopMessage",
+             "DesktopToolDone":
+            return true
+        default:
+            return false
+        }
     }
 
     func appendEvent(

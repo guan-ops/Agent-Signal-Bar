@@ -2,10 +2,11 @@
 set -euo pipefail
 
 APP_NAME="AgentSignalLight"
+RELEASE_BASENAME="AgentSignalBar"
 BUNDLE_ID="com.agentsignallight.AgentSignalLight"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DMG_PATH="$ROOT_DIR/dist/$APP_NAME-local.dmg"
-RELEASE_MANIFEST="$ROOT_DIR/dist/$APP_NAME-release-manifest.json"
+DMG_PATH="$ROOT_DIR/dist/$RELEASE_BASENAME.dmg"
+RELEASE_MANIFEST="$ROOT_DIR/dist/$RELEASE_BASENAME-release-manifest.json"
 RUN_LAUNCH_CHECK=0
 KEEP_TEMP=0
 TMP_ROOT=""
@@ -22,7 +23,7 @@ directory, and verify the copied app bundle, code signature, bundled CLI,
 release info, and diagnostics exporter.
 
 Options:
-  --dmg <path>   DMG to verify. Defaults to dist/$APP_NAME-local.dmg.
+  --dmg <path>   DMG to verify. Defaults to dist/$RELEASE_BASENAME.dmg.
   --launch       Also launch the temporary installed app and verify it starts.
   --keep-temp    Keep the temporary install directory for manual inspection.
 EOF

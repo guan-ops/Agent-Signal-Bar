@@ -43,11 +43,27 @@ struct HookInstallManager: Sendable {
         )
     }
 
+    func uninstallCodex() throws -> HookInstallResult {
+        let root = try hookRoot()
+        return try runInstallHooks(
+            hookRoot: root,
+            arguments: ["--target", "codex", "--codex-scope", root.codexScope, "--remove", "--install"]
+        )
+    }
+
     func installClaude() throws -> HookInstallResult {
         let root = try hookRoot()
         return try runInstallHooks(
             hookRoot: root,
             arguments: ["--target", "claude", "--install"]
+        )
+    }
+
+    func uninstallClaude() throws -> HookInstallResult {
+        let root = try hookRoot()
+        return try runInstallHooks(
+            hookRoot: root,
+            arguments: ["--target", "claude", "--remove", "--install"]
         )
     }
 

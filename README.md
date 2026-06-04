@@ -56,7 +56,7 @@ Agent Signal Bar is a local-first macOS menu bar app that uses three red, yellow
 For normal use, download the app from [GitHub Releases](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest), not from the green `Code` button. The `Code > Download ZIP` file is source code and does not contain a ready-to-open app installer.
 
 1. Open the [latest release](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest).
-2. Download `AgentSignalLight-local.dmg`.
+2. Download `AgentSignalBar.dmg`.
 3. Open the DMG and drag `AgentSignalLight.app` to `Applications`.
 4. Open Agent Signal Bar from `Applications`.
 
@@ -145,7 +145,7 @@ When multiple agents or sessions are active, the menu bar shows the highest-prio
 paused > blocked > permission > needs_review > stale > active > completed > ready
 ```
 
-Red states are never overwritten by normal work. Yellow attention states are also protected from newer working events. `done` is visible for 90 seconds by default, then returns to idle.
+Red states are never overwritten by normal work. Yellow attention states are also protected from newer working events. `done` is visible for 30 seconds by default, then returns to idle.
 
 ## Quick Start
 
@@ -304,7 +304,7 @@ Environment variables:
 ```bash
 export AGENT_SIGNAL_LIGHT_STATE_FILE=/path/to/status.json
 export AGENT_SIGNAL_LIGHT_STATE_DIR=/tmp/agent-signal
-export AGENT_SIGNAL_LIGHT_EVENT_LIMIT=30
+export AGENT_SIGNAL_LIGHT_EVENT_LIMIT=50
 export AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS=90
 export SIGNAL_LIGHT_SESSION_TTL_SECONDS=1800
 ```

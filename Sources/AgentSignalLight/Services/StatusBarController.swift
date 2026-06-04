@@ -120,7 +120,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         }
         .store(in: &cancellables)
 
-        model.$signalLightAgentScope.sink { [weak self] _ in
+        model.$signalLightAgentScopes.sink { [weak self] _ in
             Task { @MainActor in self?.updateStatusItem() }
         }
         .store(in: &cancellables)
@@ -375,14 +375,14 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     private func nativeVisibleAgentSessions(from snapshot: SignalSnapshot) -> [SessionStatus] {
-        var seenAgents = Set<String>()
+        var seenSources = Set<String>()
         var sessions: [SessionStatus] = []
 
         for session in snapshot.sessions {
             guard isVisibleNativeAgentSession(session) else { continue }
-            let agentKey = normalizedNativeAgentKey(session.agent, fallback: session.sessionID)
-            guard !seenAgents.contains(agentKey) else { continue }
-            seenAgents.insert(agentKey)
+            let sourceKey = ActivityPresentation.activitySourceKey(for: session)
+            guard !seenSources.contains(sourceKey) else { continue }
+            seenSources.insert(sourceKey)
             sessions.append(session)
         }
 
@@ -390,7 +390,10 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     private func isVisibleNativeAgentSession(_ session: SessionStatus) -> Bool {
-        if session.sessionID.hasPrefix("desktop-app:") || session.lastEvent == "DesktopAppRunning" {
+        if session.sessionID.hasPrefix("desktop-app:")
+            || session.sessionID.hasPrefix("platform-presence:")
+            || session.lastEvent == "DesktopAppRunning"
+            || session.lastEvent?.hasPrefix("PlatformPresence:") == true {
             return true
         }
 
@@ -416,9 +419,15 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             .replacingOccurrences(of: " ", with: "-")
 
         switch normalized {
-        case "codex", "codex-desktop", "codex-cli", "codex-ide":
+        case "codex", "codex-desktop", "codex-cli", "codex-ide", "codex-xcode",
+             "codex-terminal", "terminal-codex", "codex-tui", "codex-shell",
+             "idea-codex", "intellij-codex", "jetbrains-codex", "codex-idea",
+             "codex-intellij", "codex-jetbrains", "codex-vscode", "vscode-codex",
+             "xcode-codex":
             return "codex"
-        case "claude", "claude-code", "claude-desktop":
+        case "claude", "claude-code", "claude-desktop", "claude-cli",
+             "claude-terminal", "terminal-claude", "claude-ide",
+             "idea-claude", "intellij-claude", "jetbrains-claude":
             return "claude"
         default:
             return normalized
@@ -426,7 +435,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     private func nativeSessionMenuTitle(_ session: SessionStatus) -> String {
-        let agent = model.friendlyAgentName(session.agent)
+        let agent = model.activitySessionTitle(for: session)
         let eventName = nativeShortEventName(rawEvent: session.lastEvent, signal: session.signal)
 
         return "\(agent) · \(eventName)"
@@ -470,6 +479,8 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             return model.text("已取消", "Canceled")
         case "DesktopAppRunning":
             return model.text("桌面版运行中", "Desktop app running")
+        case let event where event.hasPrefix("PlatformPresence:"):
+            return nativeShortSignalName(signal)
         case "PermissionRequest":
             return model.text("等待授权", "Waiting for Permission")
         case "Notification":
@@ -775,7 +786,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
+        window.isMovableByWindowBackground = false
         window.backgroundColor = .clear
         window.isOpaque = false
     }

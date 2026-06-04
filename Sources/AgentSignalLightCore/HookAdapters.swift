@@ -92,6 +92,99 @@ public enum CodexHookAdapter {
 
         return "global"
     }
+
+    public static func agentName(payload: [String: Any], environment: [String: String]) -> String {
+        if let explicit = firstString(
+            payload,
+            keys: ["agent", "agent_name", "source", "source_name", "app", "application", "client", "tool", "runner", "provider"]
+        ) ?? findNestedString(
+            payload,
+            keys: ["agent", "agent_name", "source", "source_name", "app", "application", "client", "tool", "runner", "provider"]
+        ) {
+            return normalizedCodexSourceAgent(explicit)
+        }
+
+        for key in [
+            "AGENT_SIGNAL_AGENT",
+            "AGENT_NAME",
+            "AGENT_SOURCE",
+            "CODEX_SOURCE",
+            "CODEX_APP",
+            "TERM_PROGRAM",
+            "TERMINAL_EMULATOR",
+            "JETBRAINS_IDE",
+            "IDEA_INITIAL_DIRECTORY",
+            "IDEA_PROPERTIES",
+            "IDEA_VM_OPTIONS"
+        ] {
+            if let value = environment[key], !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return normalizedCodexSourceAgent(value)
+            }
+        }
+
+        return "codex-cli"
+    }
+
+    public static func sourceScopedSessionKey(_ sessionID: String, agent: String) -> String {
+        let trimmedSessionID = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceAgent = normalizedCodexSourceAgent(agent)
+        guard sourceAgent != "codex-desktop",
+              !trimmedSessionID.hasPrefix("\(sourceAgent):")
+        else {
+            return trimmedSessionID
+        }
+
+        return "\(sourceAgent):\(trimmedSessionID)"
+    }
+
+    private static func normalizedCodexSourceAgent(_ value: String) -> String {
+        let normalized = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: " ", with: "-")
+
+        if ["codex-desktop", "desktop"].contains(normalized)
+            || normalized.contains("desktop-app") {
+            return "codex-desktop"
+        }
+
+        if normalized.contains("idea")
+            || normalized.contains("intellij") {
+            return "codex-idea"
+        }
+
+        if normalized.contains("vscode")
+            || normalized.contains("vs-code")
+            || normalized.contains("visual-studio-code") {
+            return "codex-vscode"
+        }
+
+        if normalized.contains("xcode") {
+            return "codex-xcode"
+        }
+
+        if normalized.contains("jetbrains") {
+            return "codex-jetbrains"
+        }
+
+        if normalized.contains("codex-ide")
+            || normalized == "ide" {
+            return "codex-ide"
+        }
+
+        if normalized.contains("codex-terminal")
+            || normalized.contains("codex-cli")
+            || normalized.contains("terminal")
+            || normalized.contains("tty")
+            || normalized.contains("shell")
+            || normalized.contains("iterm")
+            || normalized.contains("apple-terminal") {
+            return "codex-cli"
+        }
+
+        return "codex-cli"
+    }
 }
 
 public enum ClaudeHookAdapter {
@@ -532,7 +625,7 @@ private func findNestedString(_ value: Any, keys: [String]) -> String? {
         if let direct = firstString(object, keys: keys) {
             return direct.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        for child in object.values {
+        for (key, child) in object where shouldSearchNestedMetadataContainer(key) {
             if let found = findNestedString(child, keys: keys) {
                 return found
             }
@@ -567,6 +660,9 @@ private func containsFailureMarker(_ value: Any) -> Bool {
                     return true
                 }
             }
+            guard shouldSearchNestedMetadataContainer(key) else {
+                continue
+            }
             if containsFailureMarker(child) {
                 return true
             }
@@ -575,6 +671,70 @@ private func containsFailureMarker(_ value: Any) -> Bool {
         return array.contains(where: containsFailureMarker)
     }
     return false
+}
+
+private func shouldSearchNestedMetadataContainer(_ key: String) -> Bool {
+    let normalized = normalizedEventName(key)
+
+    let ignoredPayloadContainers = Set([
+        "arg",
+        "args",
+        "argument",
+        "arguments",
+        "body",
+        "content",
+        "contents",
+        "input",
+        "inputs",
+        "item",
+        "items",
+        "message",
+        "messages",
+        "parameter",
+        "parameters",
+        "param",
+        "params",
+        "prompt",
+        "prompts",
+        "text",
+        "texts",
+        "toolinput",
+        "toolinputs",
+        "toolarguments",
+        "toolparameters",
+        "userdata",
+        "userinput"
+    ])
+
+    if ignoredPayloadContainers.contains(normalized) {
+        return false
+    }
+
+    let metadataContainers = Set([
+        "context",
+        "conversation",
+        "data",
+        "detail",
+        "details",
+        "event",
+        "hook",
+        "metadata",
+        "meta",
+        "payload",
+        "request",
+        "response",
+        "result",
+        "run",
+        "session",
+        "source",
+        "thread",
+        "tool",
+        "toolcontext",
+        "transcript",
+        "workspace"
+    ])
+
+    return metadataContainers.contains(normalized)
 }
 
 private func failureValue(_ value: Any) -> Bool {

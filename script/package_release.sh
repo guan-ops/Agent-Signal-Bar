@@ -2,14 +2,15 @@
 set -euo pipefail
 
 APP_NAME="AgentSignalLight"
+RELEASE_BASENAME="AgentSignalBar"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 RELEASE_ROOT="$DIST_DIR/release"
 PAYLOAD_DIR="$RELEASE_ROOT/$APP_NAME"
-ARCHIVE="$DIST_DIR/${APP_NAME}-local.zip"
-DMG="$DIST_DIR/${APP_NAME}-local.dmg"
-CHECKSUMS="$DIST_DIR/${APP_NAME}-SHA256SUMS.txt"
-MANIFEST="$DIST_DIR/${APP_NAME}-release-manifest.json"
+ARCHIVE="$DIST_DIR/${RELEASE_BASENAME}.zip"
+DMG="$DIST_DIR/${RELEASE_BASENAME}.dmg"
+CHECKSUMS="$DIST_DIR/${RELEASE_BASENAME}-SHA256SUMS.txt"
+MANIFEST="$DIST_DIR/${RELEASE_BASENAME}-release-manifest.json"
 XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 
 cd "$ROOT_DIR"
@@ -26,9 +27,20 @@ swift_tool() {
 
 cleanup_duplicate_artifacts() {
   mkdir -p "$DIST_DIR"
+  rm -f \
+    "$DIST_DIR/$APP_NAME-local.zip" \
+    "$DIST_DIR/$APP_NAME-local.dmg" \
+    "$DIST_DIR/$APP_NAME-SHA256SUMS.txt" \
+    "$DIST_DIR/$APP_NAME-release-manifest.json"
   find "$DIST_DIR" -maxdepth 1 \( \
     -name "$APP_NAME-local *.zip" -o \
+    -name "$APP_NAME-local *.dmg" -o \
+    -name "$APP_NAME-release-manifest *.json" -o \
+    -name "$RELEASE_BASENAME *.zip" -o \
+    -name "$RELEASE_BASENAME *.dmg" -o \
+    -name "$RELEASE_BASENAME-release-manifest *.json" -o \
     -name "$APP_NAME-SHA256SUMS *.txt" -o \
+    -name "$RELEASE_BASENAME-SHA256SUMS *.txt" -o \
     -name "$APP_NAME *.app" \
   \) -exec rm -rf {} +
 }
@@ -75,7 +87,7 @@ printf "packaged-release\n" >"$PAYLOAD_DIR/dist/.packaged-release"
 
 find "$PAYLOAD_DIR" -type d -name __pycache__ -prune -exec rm -rf {} +
 find "$PAYLOAD_DIR" -type f \( -name '*.pyc' -o -name '.DS_Store' \) -delete
-rm -rf "$PAYLOAD_DIR/marketing"
+find "$PAYLOAD_DIR" -type d \( -name marketing -o -name social -o -name video \) -prune -exec rm -rf {} +
 rm -f "$PAYLOAD_DIR/.codex/hooks.json" "$PAYLOAD_DIR/.codex"/hooks.json.*
 
 chmod +x "$PAYLOAD_DIR/dist/bin/agent-signal" \

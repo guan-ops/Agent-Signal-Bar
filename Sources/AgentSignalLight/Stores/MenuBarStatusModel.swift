@@ -18,17 +18,181 @@ final class SignalAnimationClock: ObservableObject {
     }
 }
 
+enum SignalLightAgentScopeGroup: Int, CaseIterable, Hashable {
+    case codex
+    case claude
+    case other
+}
+
 enum SignalLightAgentScope: String, CaseIterable, Hashable {
     case codex
     case claude
+    case codexDesktop = "codex-desktop"
+    case codexCLI = "codex-cli"
+    case codexVSCode = "codex-vscode"
+    case codexXcode = "codex-xcode"
+    case codexIDEA = "codex-idea"
+    case claudeCode = "claude-code"
+    case claudeDesktop = "claude-desktop"
+    case localScript = "local-script"
 
-    var agentKey: String {
+    static let selectableCases: [SignalLightAgentScope] = [
+        .codexDesktop,
+        .codexCLI,
+        .codexVSCode,
+        .codexXcode,
+        .codexIDEA,
+        .claudeCode,
+        .localScript
+    ]
+
+    static let allCases: [SignalLightAgentScope] = selectableCases
+
+    static let defaultSelectedCases: Set<SignalLightAgentScope> = [
+        .codexDesktop,
+        .codexCLI,
+        .codexVSCode,
+        .codexXcode,
+        .codexIDEA
+    ]
+
+    static let codexCases: Set<SignalLightAgentScope> = [
+        .codexDesktop,
+        .codexCLI,
+        .codexVSCode,
+        .codexXcode,
+        .codexIDEA
+    ]
+
+    static let claudeCases: Set<SignalLightAgentScope> = [
+        .claudeCode
+    ]
+
+    var group: SignalLightAgentScopeGroup {
+        switch self {
+        case .codex, .codexDesktop, .codexCLI, .codexVSCode, .codexXcode, .codexIDEA:
+            return .codex
+        case .claude, .claudeCode, .claudeDesktop:
+            return .claude
+        case .localScript:
+            return .other
+        }
+    }
+
+    var sortOrder: Int {
+        switch self {
+        case .codexDesktop:
+            return 0
+        case .codexCLI:
+            return 1
+        case .codexVSCode:
+            return 2
+        case .codexXcode:
+            return 3
+        case .codexIDEA:
+            return 4
+        case .claudeCode:
+            return 5
+        case .claudeDesktop:
+            return 6
+        case .localScript:
+            return 7
+        case .codex:
+            return 100
+        case .claude:
+            return 101
+        }
+    }
+
+    var expandedSelection: Set<SignalLightAgentScope> {
         switch self {
         case .codex:
-            return "codex"
+            return Self.codexCases
         case .claude:
-            return "claude"
+            return Self.claudeCases
+        default:
+            return Self.selectableCases.contains(self) ? [self] : []
         }
+    }
+
+    func matches(session: SessionStatus) -> Bool {
+        matches(
+            sourceKey: ActivityPresentation.activitySourceKey(for: session),
+            agent: session.agent,
+            sessionID: session.sessionID
+        )
+    }
+
+    func matches(event: RecentSignalEvent) -> Bool {
+        matches(
+            sourceKey: ActivityPresentation.activitySourceKey(for: event),
+            agent: event.agent,
+            sessionID: event.sessionID
+        )
+    }
+
+    private func matches(sourceKey: String, agent: String?, sessionID: String) -> Bool {
+        let normalizedAgent = Self.normalizedAgentName(agent)
+        let normalizedSessionID = sessionID.lowercased()
+
+        switch self {
+        case .codex:
+            return sourceKey.hasPrefix("codex:")
+        case .claude:
+            return sourceKey.hasPrefix("claude:")
+        case .codexDesktop:
+            return sourceKey == "codex:desktop"
+                || normalizedAgent == "codex-desktop"
+                || normalizedSessionID.hasPrefix("codex-desktop:")
+        case .codexCLI:
+            return sourceKey == "codex:terminal"
+                || normalizedAgent == "codex-cli"
+                || normalizedAgent == "codex-terminal"
+                || normalizedSessionID.hasPrefix("codex-cli:")
+        case .codexVSCode:
+            return sourceKey == "codex:ide:vs-code"
+                || normalizedAgent == "codex-vscode"
+                || normalizedAgent == "vscode-codex"
+                || normalizedSessionID.hasPrefix("codex-vscode:")
+        case .codexXcode:
+            return sourceKey == "codex:ide:xcode"
+                || normalizedAgent == "codex-xcode"
+                || normalizedAgent == "xcode-codex"
+                || normalizedSessionID.hasPrefix("codex-xcode:")
+        case .codexIDEA:
+            return sourceKey == "codex:ide:idea"
+                || sourceKey == "codex:ide:jetbrains"
+                || normalizedAgent == "codex-idea"
+                || normalizedAgent == "codex-intellij"
+                || normalizedAgent == "codex-jetbrains"
+                || normalizedSessionID.hasPrefix("codex-idea:")
+        case .claudeCode:
+            return sourceKey == "claude:terminal"
+                || sourceKey == "claude:desktop"
+                || normalizedAgent == "claude-code"
+                || normalizedAgent == "claude-cli"
+                || normalizedAgent == "claude-desktop"
+                || normalizedSessionID.hasPrefix("claude-code:")
+                || normalizedSessionID.hasPrefix("claude-cli:")
+                || normalizedSessionID.hasPrefix("claude-desktop:")
+        case .claudeDesktop:
+            return sourceKey == "claude:desktop"
+                || normalizedAgent == "claude-desktop"
+                || normalizedSessionID.hasPrefix("claude-desktop:")
+        case .localScript:
+            return !sourceKey.hasPrefix("codex:")
+                && !sourceKey.hasPrefix("claude:")
+                && !normalizedAgent.isEmpty
+        }
+    }
+
+    private static func normalizedAgentName(_ agent: String?) -> String {
+        guard let agent else { return "" }
+        return agent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: " ", with: "-")
     }
 }
 
@@ -72,6 +236,13 @@ struct StatusLightOverrideFrame: Equatable {
     }
 }
 
+enum HookInstallOperation: Hashable {
+    case preview
+    case install
+    case uninstall
+    case message
+}
+
 @MainActor
 final class MenuBarStatusModel: ObservableObject {
     @Published private(set) var snapshot: SignalSnapshot
@@ -86,9 +257,10 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var macOSHorizontalUsesTrafficLightSize: Bool
     @Published var trafficLightVerticalUsesMacOSSize: Bool
     @Published var isStatusBarIconEnabled: Bool
-    @Published var signalLightAgentScope: SignalLightAgentScope
+    @Published var signalLightAgentScopes: Set<SignalLightAgentScope>
     @Published var statusMenuMode: StatusMenuMode
     @Published var isCodexDesktopMonitoringEnabled: Bool
+    @Published var isClaudeDesktopMonitoringEnabled: Bool
     @Published var appLanguage: AppLanguage
     @Published var appTheme: AppTheme
     @Published var isSettingsGlassEnabled: Bool
@@ -100,6 +272,7 @@ final class MenuBarStatusModel: ObservableObject {
     @Published private(set) var isLaunchAtLoginChangeRunning = false
     @Published var isHookInstallRunning = false
     @Published var hookInstallMessage: String?
+    @Published var hookInstallOperation: HookInstallOperation = .message
     @Published var isDiagnosticsExportRunning = false
     @Published var diagnosticsExportMessage: String?
     @Published private(set) var releaseInfo: ReleaseInfo = .current()
@@ -107,6 +280,7 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var updateCheckMessage: String?
     @Published private(set) var updateReleasePageURL: URL?
     @Published var lastError: String?
+    @Published private(set) var presentationRefreshTick = 0
 
     let animationClock = SignalAnimationClock()
 
@@ -115,20 +289,25 @@ final class MenuBarStatusModel: ObservableObject {
     private let hookInstallManager: HookInstallManager
     private let diagnosticsExportManager: DiagnosticsExportManager
     private let codexDesktopActivityMonitor: CodexDesktopActivityMonitor
+    private let codexPlatformPresenceMonitor: CodexPlatformPresenceMonitor
     private let updateChecker: GitHubReleaseUpdateChecker
     private let codexDesktopPollQueue = DispatchQueue(label: "com.agentsignallight.codex-desktop-poll")
+    private let platformPresencePollQueue = DispatchQueue(label: "com.agentsignallight.platform-presence-poll")
     private var pollTimer: Timer?
     private var animationTimer: Timer?
+    private var presentationTimer: Timer?
     private var codexDesktopTimer: Timer?
     private var desktopAppTimer: Timer?
     private var watcher: StateFileWatcher?
     private static let recentEventDeduplicationWindow: TimeInterval = 4
-    private static let completedDisplayWindow: TimeInterval = 90
+    private static let completedDisplayWindow: TimeInterval = 30
     private static let recentActivityFallbackWindow: TimeInterval = 5 * 60
     private static let desktopPresenceSuppressionWindow: TimeInterval = 5 * 60
+    private static let passiveActiveDisplayWindow: TimeInterval = 45
     private var statusLightSequence: [StatusLightOverrideFrame] = []
     private var statusLightSequenceIndex = 0
     private var isCodexDesktopPollInFlight = false
+    private var isPlatformPresencePollInFlight = false
 
     private static let defaultDisplayLayout: TrafficSignalLayout = .horizontal
     private static let defaultStatusBarStyle: TrafficSignalStyle = .macOS
@@ -138,7 +317,7 @@ final class MenuBarStatusModel: ObservableObject {
     private static let statePollInterval: TimeInterval = 0.75
     private static let animationTickInterval: TimeInterval = 0.25
     private static let agentPollInterval: TimeInterval = 0.5
-    private static let desktopAppPresencePollInterval: TimeInterval = 3.0
+    private static let desktopAppPresencePollInterval: TimeInterval = 1.0
     private static let activeDisplayWindow: TimeInterval = SignalStateStore.defaultSessionTTL()
 
     private struct LaunchAtLoginUpdateResult: Sendable {
@@ -146,42 +325,13 @@ final class MenuBarStatusModel: ObservableObject {
         let errorMessage: String?
     }
 
-    private struct DesktopAgentApp: Sendable {
-        let sessionID: String
-        let agent: String
-        let event: String
-        let bundleIdentifiers: Set<String>
-        let appNames: Set<String>
-    }
-
-    private static let desktopAgentApps: [DesktopAgentApp] = [
-        DesktopAgentApp(
-            sessionID: "desktop-app:codex",
-            agent: "codex-desktop",
-            event: "DesktopAppRunning",
-            bundleIdentifiers: [
-                "com.openai.codex"
-            ],
-            appNames: ["codex"]
-        ),
-        DesktopAgentApp(
-            sessionID: "desktop-app:claude",
-            agent: "claude-desktop",
-            event: "DesktopAppRunning",
-            bundleIdentifiers: [
-                "com.anthropic.claudefordesktop",
-                "com.anthropic.claude"
-            ],
-            appNames: ["claude"]
-        )
-    ]
-
     init(
         store: SignalStateStore = SignalStateStore(),
         launchAtLoginManager: LaunchAtLoginManager = LaunchAtLoginManager(),
         hookInstallManager: HookInstallManager = HookInstallManager(),
         diagnosticsExportManager: DiagnosticsExportManager = DiagnosticsExportManager(),
         codexDesktopActivityMonitor: CodexDesktopActivityMonitor = CodexDesktopActivityMonitor(),
+        codexPlatformPresenceMonitor: CodexPlatformPresenceMonitor = CodexPlatformPresenceMonitor(),
         updateChecker: GitHubReleaseUpdateChecker = GitHubReleaseUpdateChecker()
     ) {
         self.store = store
@@ -189,6 +339,7 @@ final class MenuBarStatusModel: ObservableObject {
         self.hookInstallManager = hookInstallManager
         self.diagnosticsExportManager = diagnosticsExportManager
         self.codexDesktopActivityMonitor = codexDesktopActivityMonitor
+        self.codexPlatformPresenceMonitor = codexPlatformPresenceMonitor
         self.updateChecker = updateChecker
         let storedLayout = UserDefaults.standard.string(forKey: "trafficSignalLayout")
         let storedStyle = UserDefaults.standard.string(forKey: "trafficSignalStyle")
@@ -205,6 +356,7 @@ final class MenuBarStatusModel: ObservableObject {
             UserDefaults.standard.string(forKey: "settingsGlassEffect")
             ?? UserDefaults.standard.string(forKey: "settingsMenuGlassEffect")
         let storedSignalLightAgentScope = UserDefaults.standard.string(forKey: "signalLightAgentScope")
+        let storedSignalLightAgentScopes = UserDefaults.standard.stringArray(forKey: "signalLightAgentScopes")
         let storedStatusMenuMode = UserDefaults.standard.string(forKey: "statusMenuMode")
         let shouldApplyEffectDefaults = UserDefaults.standard.integer(forKey: "signalEffectDefaultsVersion") < Self.effectDefaultsVersion
         displayLayout = storedLayout.flatMap(TrafficSignalLayout.init(rawValue:)) ?? Self.defaultDisplayLayout
@@ -245,13 +397,18 @@ final class MenuBarStatusModel: ObservableObject {
         let storedStatusBarIconEnabled = UserDefaults.standard.object(forKey: "isStatusBarIconEnabled") as? Bool ?? true
         isStatusBarIconEnabled = DebugLaunchOptions.shouldForceStatusBarIconEnabled ? true : storedStatusBarIconEnabled
         UserDefaults.standard.set(false, forKey: "isStatusBarAllLightsOn")
-        signalLightAgentScope = storedSignalLightAgentScope.flatMap(SignalLightAgentScope.init(rawValue:)) ?? .codex
+        signalLightAgentScopes = Self.resolvedSignalLightAgentScopes(
+            storedScopes: storedSignalLightAgentScopes,
+            legacyScope: storedSignalLightAgentScope
+        )
         statusMenuMode = storedStatusMenuMode.flatMap(StatusMenuMode.init(rawValue:)) ?? .detailed
         isCodexDesktopMonitoringEnabled =
             UserDefaults.standard.object(forKey: "isCodexDesktopMonitoringEnabled") as? Bool ?? true
+        isClaudeDesktopMonitoringEnabled =
+            UserDefaults.standard.object(forKey: "isClaudeDesktopMonitoringEnabled") as? Bool ?? true
         snapshot = store.readSnapshot()
         isLaunchAtLoginEnabled = launchAtLoginManager.isEnabled
-        desktopAppSessions = Self.detectDesktopAppSessions()
+        desktopAppSessions = filteredPlatformPresenceSessions(codexPlatformPresenceMonitor.detectSessions())
         watcher = StateFileWatcher(stateFileURL: snapshot.stateFileURL) { [weak self] in
             self?.reloadFromWatcher()
         }
@@ -422,9 +579,29 @@ final class MenuBarStatusModel: ObservableObject {
         UserDefaults.standard.set(enabled, forKey: "isStatusBarIconEnabled")
     }
 
-    func setSignalLightAgentScope(_ scope: SignalLightAgentScope) {
-        signalLightAgentScope = scope
-        UserDefaults.standard.set(scope.rawValue, forKey: "signalLightAgentScope")
+    func setSignalLightAgentScopes(_ scopes: Set<SignalLightAgentScope>) {
+        let selectableScopes = Set(SignalLightAgentScope.selectableCases)
+        let resolvedScopes = scopes.intersection(selectableScopes)
+        guard !resolvedScopes.isEmpty else { return }
+
+        signalLightAgentScopes = resolvedScopes
+        UserDefaults.standard.set(
+            resolvedScopes
+                .sorted { $0.sortOrder < $1.sortOrder }
+                .map(\.rawValue),
+            forKey: "signalLightAgentScopes"
+        )
+    }
+
+    func toggleSignalLightAgentScope(_ scope: SignalLightAgentScope) {
+        var updatedScopes = signalLightAgentScopes
+        if updatedScopes.contains(scope) {
+            updatedScopes.remove(scope)
+        } else {
+            updatedScopes.insert(scope)
+        }
+
+        setSignalLightAgentScopes(updatedScopes)
     }
 
     func setStatusMenuMode(_ mode: StatusMenuMode) {
@@ -439,6 +616,13 @@ final class MenuBarStatusModel: ObservableObject {
             codexDesktopActivityMonitor.reset()
             pollCodexDesktopActivity()
         }
+        pollDesktopAppPresence()
+    }
+
+    func setClaudeDesktopMonitoringEnabled(_ enabled: Bool) {
+        isClaudeDesktopMonitoringEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isClaudeDesktopMonitoringEnabled")
+        pollDesktopAppPresence()
     }
 
     func setAppLanguage(_ language: AppLanguage) {
@@ -468,7 +652,7 @@ final class MenuBarStatusModel: ObservableObject {
             "\(displayName(for: displaySnapshot.aggregate)) - \(humanAction(for: displaySnapshot.aggregate))"
         ]
 
-        lines.append("\(text("灯效 Agent", "Light Agent")): \(displayName(for: signalLightAgentScope))")
+        lines.append("\(text("灯效 Agent", "Light Agent")): \(displayName(for: signalLightAgentScopes))")
 
         if statusBarStyle == .macOS && displayLayout == .horizontal && !macOSHorizontalUsesTrafficLightSize {
             lines.append(text("圆点横向尺寸：小", "Horizontal dot size: Small"))
@@ -479,7 +663,7 @@ final class MenuBarStatusModel: ObservableObject {
         }
 
         if isCodexDesktopMonitoringEnabled {
-            lines.append(text("Codex Desktop 监控已开启", "Codex Desktop monitoring is on"))
+            lines.append(text("Codex 自动监控已开启", "Codex auto monitoring is on"))
         }
 
         if let session = displaySnapshot.sessions.first {
@@ -498,17 +682,17 @@ final class MenuBarStatusModel: ObservableObject {
 
     var displaySnapshot: SignalSnapshot {
         let displaySessions = combinedDisplaySessions()
-        let scopedDisplaySessions = displaySessions.filter { sessionMatchesSignalLightScope($0) }
+        let scopedDisplaySessions = displaySessions.filter { sessionMatchesSignalLightScopes($0) }
         let deduplicatedSessions = deduplicatedDisplaySessions(scopedDisplaySessions)
         let scopedRecentEvents = snapshot.recentEvents
             .filter { !Self.isSignalTestEvent($0.event) }
-            .filter { recentEventMatchesSignalLightScope($0) }
+            .filter { recentEventMatchesSignalLightScopes($0) }
         let deduplicatedRecentEvents = deduplicatedRecentEvents(scopedRecentEvents)
         let displayUpdatedAt = deduplicatedSessions.map(\.updatedAt).max()
 
         return SignalSnapshot(
-            aggregate: aggregateForSignalLightScope(
-                sessions: scopedDisplaySessions,
+            aggregate: aggregateForSignalLightScopes(
+                sessions: deduplicatedSessions,
                 fallback: snapshot.aggregate
             ),
             sessions: deduplicatedSessions,
@@ -520,14 +704,15 @@ final class MenuBarStatusModel: ObservableObject {
 
     var activitySnapshot: SignalSnapshot {
         let displaySessions = combinedDisplaySessions()
+        let deduplicatedSessions = deduplicatedDisplaySessions(displaySessions)
         let visibleRecentEvents = snapshot.recentEvents
             .filter { !Self.isSignalTestEvent($0.event) }
         let deduplicatedRecentEvents = deduplicatedRecentEvents(visibleRecentEvents)
-        let displayUpdatedAt = displaySessions.map(\.updatedAt).max()
+        let displayUpdatedAt = deduplicatedSessions.map(\.updatedAt).max()
 
         return SignalSnapshot(
-            aggregate: aggregateForSessions(displaySessions, fallback: snapshot.aggregate),
-            sessions: displaySessions,
+            aggregate: aggregateForSessions(deduplicatedSessions, fallback: snapshot.aggregate),
+            sessions: deduplicatedSessions,
             recentEvents: deduplicatedRecentEvents,
             stateFileURL: snapshot.stateFileURL,
             updatedAt: displayUpdatedAt ?? snapshot.updatedAt
@@ -574,38 +759,50 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     func previewHookInstall() {
-        runHookInstall { manager in
+        runHookInstall(operation: .preview) { manager in
             try manager.preview()
         }
     }
 
     func installHooks() {
-        runHookInstall { manager in
+        runHookInstall(operation: .install) { manager in
             try manager.install()
         }
     }
 
     func previewCodexHookInstall() {
-        runHookInstall { manager in
+        runHookInstall(operation: .preview) { manager in
             try manager.previewCodex()
         }
     }
 
     func installCodexHooks() {
-        runHookInstall { manager in
+        runHookInstall(operation: .install) { manager in
             try manager.installCodex()
         }
     }
 
+    func uninstallCodexHooks() {
+        runHookInstall(operation: .uninstall) { manager in
+            try manager.uninstallCodex()
+        }
+    }
+
     func previewClaudeHookInstall() {
-        runHookInstall { manager in
+        runHookInstall(operation: .preview) { manager in
             try manager.previewClaude()
         }
     }
 
     func installClaudeHooks() {
-        runHookInstall { manager in
+        runHookInstall(operation: .install) { manager in
             try manager.installClaude()
+        }
+    }
+
+    func uninstallClaudeHooks() {
+        runHookInstall(operation: .uninstall) { manager in
+            try manager.uninstallClaude()
         }
     }
 
@@ -701,6 +898,7 @@ final class MenuBarStatusModel: ObservableObject {
         """
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(command, forType: .string)
+        hookInstallOperation = .message
         hookInstallMessage = text("已复制通用 Agent Hook 命令。", "Generic agent hook command copied.")
         lastError = nil
     }
@@ -761,6 +959,15 @@ final class MenuBarStatusModel: ObservableObject {
         RunLoop.main.add(animationTimer, forMode: .common)
         self.animationTimer = animationTimer
 
+        let presentationTimer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.presentationRefreshTick &+= 1
+            }
+        }
+        presentationTimer.tolerance = 0.25
+        RunLoop.main.add(presentationTimer, forMode: .common)
+        self.presentationTimer = presentationTimer
+
         let codexDesktopTimer = Timer(timeInterval: Self.agentPollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.pollCodexDesktopActivity()
@@ -778,7 +985,7 @@ final class MenuBarStatusModel: ObservableObject {
                 self?.pollDesktopAppPresence()
             }
         }
-        desktopAppTimer.tolerance = 0.5
+        desktopAppTimer.tolerance = 0.2
         RunLoop.main.add(desktopAppTimer, forMode: .common)
         self.desktopAppTimer = desktopAppTimer
     }
@@ -896,7 +1103,7 @@ final class MenuBarStatusModel: ObservableObject {
                         latestSnapshot = try store.applySessionSignal(
                             activity.signal,
                             sessionID: activity.sessionID,
-                            agent: "codex-desktop",
+                            agent: activity.agent,
                             lastEvent: activity.event,
                             updatedAt: activity.timestamp ?? Date()
                         )
@@ -920,73 +1127,115 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private func pollDesktopAppPresence() {
-        let latestSessions = Self.detectDesktopAppSessions()
-        if latestSessions != desktopAppSessions {
-            desktopAppSessions = latestSessions
+        guard !isPlatformPresencePollInFlight else { return }
+
+        isPlatformPresencePollInFlight = true
+        let monitor = codexPlatformPresenceMonitor
+
+        platformPresencePollQueue.async { [weak self] in
+            let detectedSessions = monitor.detectSessions()
+
+            DispatchQueue.main.async { [weak self] in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.isPlatformPresencePollInFlight = false
+                    let latestSessions = self.filteredPlatformPresenceSessions(detectedSessions)
+                    if latestSessions != self.desktopAppSessions {
+                        self.desktopAppSessions = latestSessions
+                    }
+                }
+            }
+        }
+    }
+
+    func filteredPlatformPresenceSessions(_ sessions: [SessionStatus]) -> [SessionStatus] {
+        sessions.filter { session in
+            let sourceKey = ActivityPresentation.activitySourceKey(for: session)
+            if sourceKey.hasPrefix("codex:") {
+                return isCodexDesktopMonitoringEnabled
+            }
+            if sourceKey.hasPrefix("claude:") {
+                return isClaudeDesktopMonitoringEnabled
+            }
+            return true
         }
     }
 
     private func combinedDisplaySessions() -> [SessionStatus] {
         let now = Date()
+        let visibleRecentEvents = snapshot.recentEvents.filter { !Self.isSignalTestEvent($0.event) }
+        let completionCutoffsBySourceKey = Self.latestCompletionCutoffsBySourceKey(visibleRecentEvents)
         var sessions = snapshot.sessions.filter { session in
             Self.shouldIncludeStoredSessionInDisplay(session, now: now)
+                && !Self.isSupersededByCompletedRecentEvent(
+                    session,
+                    completionCutoffsBySourceKey: completionCutoffsBySourceKey
+                )
         }
-        sessions.append(contentsOf: recentActivityFallbackSessions(existingSessions: sessions, now: now))
+        sessions.append(
+            contentsOf: recentActivityFallbackSessions(
+                from: visibleRecentEvents,
+                existingSessions: sessions,
+                completionCutoffsBySourceKey: completionCutoffsBySourceKey,
+                now: now
+            )
+        )
 
         let liveAgentKeys = Set(
             sessions.compactMap { session -> String? in
                 guard Self.shouldSuppressDesktopPresence(for: session, now: now) else { return nil }
-                return Self.normalizedAgentKey(session.agent, fallback: session.sessionID)
+                return ActivityPresentation.activitySourceKey(for: session)
             }
         )
 
         for desktopSession in desktopAppSessions {
-            let agentKey = Self.normalizedAgentKey(desktopSession.agent, fallback: desktopSession.sessionID)
-            guard !liveAgentKeys.contains(agentKey) else { continue }
+            let sourceKey = ActivityPresentation.activitySourceKey(for: desktopSession)
+            guard !liveAgentKeys.contains(sourceKey) else { continue }
             sessions.append(desktopSession)
         }
 
-        return sessions.sorted { lhs, rhs in
-            if lhs.signal.displayState.priority != rhs.signal.displayState.priority {
-                return lhs.signal.displayState.priority > rhs.signal.displayState.priority
-            }
-            return lhs.updatedAt > rhs.updatedAt
-        }
+        return sessions.sorted(by: Self.displaySessionSortPrecedes)
     }
 
     private func recentActivityFallbackSessions(
+        from recentEvents: [RecentSignalEvent],
         existingSessions: [SessionStatus],
+        completionCutoffsBySourceKey: [String: Date],
         now: Date
     ) -> [SessionStatus] {
-        let activeAgentKeys = Set(
-            existingSessions.compactMap { session -> String? in
-                guard Self.shouldSuppressDesktopPresence(for: session, now: now) else { return nil }
-                return Self.normalizedAgentKey(session.agent, fallback: session.sessionID)
-            }
-        )
-        var handledAgentKeys: Set<String> = []
+        let latestExistingSessionBySourceKey = Dictionary(
+            grouping: existingSessions,
+            by: ActivityPresentation.activitySourceKey(for:)
+        ).compactMapValues { sessions in
+            sessions.max(by: { lhs, rhs in lhs.updatedAt < rhs.updatedAt })
+        }
+        var handledSourceKeys: Set<String> = []
         var fallbackSessions: [SessionStatus] = []
 
-        for event in snapshot.recentEvents {
-            guard !Self.isSignalTestEvent(event.event) else { continue }
-
-            let agentKey = Self.normalizedAgentKey(event.agent, fallback: event.sessionID)
-            guard !activeAgentKeys.contains(agentKey),
-                  !handledAgentKeys.contains(agentKey)
+        for event in recentEvents.sorted(by: { $0.updatedAt > $1.updatedAt }) {
+            let sourceKey = ActivityPresentation.activitySourceKey(for: event)
+            guard !handledSourceKeys.contains(sourceKey)
             else {
                 continue
             }
 
-            handledAgentKeys.insert(agentKey)
-            guard event.signal.displayState == .active,
-                  now.timeIntervalSince(event.updatedAt) <= Self.recentActivityFallbackWindow
-            else {
+            if let existingSession = latestExistingSessionBySourceKey[sourceKey],
+               existingSession.updatedAt >= event.updatedAt {
                 continue
             }
 
+            if event.signal.displayState == .active,
+               let completedAt = completionCutoffsBySourceKey[sourceKey],
+               event.updatedAt <= completedAt {
+                continue
+            }
+
+            guard Self.shouldUseRecentEventAsFallbackSession(event, now: now) else { continue }
+
+            handledSourceKeys.insert(sourceKey)
             fallbackSessions.append(
                 SessionStatus(
-                    sessionID: "recent-activity:\(agentKey)",
+                    sessionID: "recent-activity:\(sourceKey)",
                     signal: event.signal,
                     updatedAt: event.updatedAt,
                     agent: event.agent,
@@ -999,47 +1248,74 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private func deduplicatedDisplaySessions(_ sessions: [SessionStatus]) -> [SessionStatus] {
-        var sessionsByAgentKey: [String: SessionStatus] = [:]
+        var sessionsBySourceKey: [String: SessionStatus] = [:]
 
         for session in sessions {
-            let agentKey = Self.normalizedAgentKey(session.agent, fallback: session.sessionID)
-            guard let current = sessionsByAgentKey[agentKey] else {
-                sessionsByAgentKey[agentKey] = session
+            let sourceKey = ActivityPresentation.activitySourceKey(for: session)
+            guard let current = sessionsBySourceKey[sourceKey] else {
+                sessionsBySourceKey[sourceKey] = session
                 continue
             }
 
             if Self.shouldPreferDisplaySession(session, over: current) {
-                sessionsByAgentKey[agentKey] = session
+                sessionsBySourceKey[sourceKey] = session
             }
         }
 
-        return sessionsByAgentKey.values.sorted { lhs, rhs in
-            if lhs.signal.displayState.priority != rhs.signal.displayState.priority {
-                return lhs.signal.displayState.priority > rhs.signal.displayState.priority
-            }
+        return sessionsBySourceKey.values.sorted(by: Self.displaySessionSortPrecedes)
+    }
+
+    private static func displaySessionSortPrecedes(_ lhs: SessionStatus, _ rhs: SessionStatus) -> Bool {
+        if lhs.signal.displayState.priority != rhs.signal.displayState.priority {
+            return lhs.signal.displayState.priority > rhs.signal.displayState.priority
+        }
+
+        if lhs.updatedAt != rhs.updatedAt {
             return lhs.updatedAt > rhs.updatedAt
         }
+
+        return ActivityPresentation.activitySourceKey(for: lhs)
+            < ActivityPresentation.activitySourceKey(for: rhs)
     }
 
     private static func shouldPreferDisplaySession(_ candidate: SessionStatus, over current: SessionStatus) -> Bool {
-        let candidatePriority = deduplicationPriority(for: candidate.signal)
-        let currentPriority = deduplicationPriority(for: current.signal)
-
-        if candidatePriority != currentPriority {
-            return candidatePriority > currentPriority
+        let candidateIsDesktopPresence = isPresenceSession(candidate)
+        let currentIsDesktopPresence = isPresenceSession(current)
+        if candidateIsDesktopPresence != currentIsDesktopPresence {
+            if candidateIsDesktopPresence {
+                return shouldPresenceOverrideStaleActivity(candidate, nonPresence: current)
+            }
+            if currentIsDesktopPresence {
+                return !shouldPresenceOverrideStaleActivity(current, nonPresence: candidate)
+            }
         }
 
-        let candidateIsDesktopPresence = isDesktopPresenceSession(candidate)
-        let currentIsDesktopPresence = isDesktopPresenceSession(current)
-        if candidateIsDesktopPresence != currentIsDesktopPresence {
-            return !candidateIsDesktopPresence
+        let candidateIsAlert = isPersistentAlert(candidate.signal.displayState)
+        let currentIsAlert = isPersistentAlert(current.signal.displayState)
+        if candidateIsAlert || currentIsAlert {
+            let candidatePriority = deduplicationPriority(for: candidate.signal)
+            let currentPriority = deduplicationPriority(for: current.signal)
+            if candidatePriority != currentPriority {
+                return candidatePriority > currentPriority
+            }
         }
 
         if candidate.updatedAt != current.updatedAt {
             return candidate.updatedAt > current.updatedAt
         }
 
-        return false
+        return deduplicationPriority(for: candidate.signal) > deduplicationPriority(for: current.signal)
+    }
+
+    private static func shouldPresenceOverrideStaleActivity(
+        _ presence: SessionStatus,
+        nonPresence: SessionStatus
+    ) -> Bool {
+        guard nonPresence.signal.displayState == .active else {
+            return false
+        }
+
+        return presence.updatedAt.timeIntervalSince(nonPresence.updatedAt) > activeDisplayWindow(for: nonPresence)
     }
 
     private static func deduplicationPriority(for signal: AgentSignal) -> Int {
@@ -1049,6 +1325,80 @@ final class MenuBarStatusModel: ObservableObject {
         case .active, .completed, .ready:
             return signal.displayState.priority
         }
+    }
+
+    private static func isPersistentAlert(_ displayState: DisplayState) -> Bool {
+        switch displayState {
+        case .needsReview, .permission, .blocked, .stale, .paused:
+            return true
+        case .ready, .active, .completed:
+            return false
+        }
+    }
+
+    static func shouldUseRecentEventAsFallbackSession(_ event: RecentSignalEvent, now: Date) -> Bool {
+        if event.event == "ClearWarning" {
+            return false
+        }
+
+        let age = now.timeIntervalSince(event.updatedAt)
+        switch event.signal.displayState {
+        case .active:
+            return age <= recentActivityFallbackWindow(for: event)
+        case .completed:
+            return age <= completedDisplayWindow
+        case .needsReview, .permission, .blocked, .stale:
+            return true
+        case .ready, .paused:
+            return false
+        }
+    }
+
+    private static func recentActivityFallbackWindow(for event: RecentSignalEvent) -> TimeInterval {
+        isPassiveActiveEvent(event) ? passiveActiveDisplayWindow : recentActivityFallbackWindow
+    }
+
+    private static func isPassiveActiveEvent(_ event: RecentSignalEvent) -> Bool {
+        guard event.signal.displayState == .active else { return false }
+
+        switch event.event {
+        case "DesktopActivityHeartbeat", "DesktopThinking":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func latestCompletionCutoffsBySourceKey(_ events: [RecentSignalEvent]) -> [String: Date] {
+        var cutoffs: [String: Date] = [:]
+
+        for event in events where event.signal.displayState == .completed {
+            let sourceKey = ActivityPresentation.activitySourceKey(for: event)
+            if let existing = cutoffs[sourceKey], existing >= event.updatedAt {
+                continue
+            }
+            cutoffs[sourceKey] = event.updatedAt
+        }
+
+        return cutoffs
+    }
+
+    private static func isSupersededByCompletedRecentEvent(
+        _ session: SessionStatus,
+        completionCutoffsBySourceKey: [String: Date]
+    ) -> Bool {
+        guard !isPresenceSession(session),
+              session.signal.displayState == .active
+        else {
+            return false
+        }
+
+        let sourceKey = ActivityPresentation.activitySourceKey(for: session)
+        guard let completedAt = completionCutoffsBySourceKey[sourceKey] else {
+            return false
+        }
+
+        return completedAt >= session.updatedAt
     }
 
     private func deduplicatedRecentEvents(_ events: [RecentSignalEvent]) -> [RecentSignalEvent] {
@@ -1070,9 +1420,9 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private static func recentEventDeduplicationKey(for event: RecentSignalEvent) -> String {
-        let agentKey = normalizedAgentKey(event.agent, fallback: event.sessionID)
+        let sourceKey = ActivityPresentation.activitySourceKey(for: event)
         let semanticEvent = normalizedEventDeduplicationKey(event.event, signal: event.signal)
-        return "\(agentKey)|\(semanticEvent)"
+        return "\(sourceKey)|\(semanticEvent)"
     }
 
     private static func normalizedEventDeduplicationKey(_ event: String?, signal: AgentSignal) -> String {
@@ -1116,14 +1466,48 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
-    private func aggregateForSignalLightScope(
+    var activeSignalLightAgentScopes: Set<SignalLightAgentScope> {
+        let visibleSessions = ActivityPresentation.visibleSessions(from: activitySnapshot, limit: nil)
+        return Set(
+            SignalLightAgentScope.selectableCases.filter { scope in
+                visibleSessions.contains { scope.matches(session: $0) }
+            }
+        )
+    }
+
+    private static func resolvedSignalLightAgentScopes(
+        storedScopes: [String]?,
+        legacyScope: String?
+    ) -> Set<SignalLightAgentScope> {
+        let selectableScopes = Set(SignalLightAgentScope.selectableCases)
+        let resolvedStoredScopes = Set(
+            (storedScopes ?? [])
+                .compactMap(SignalLightAgentScope.init(rawValue:))
+                .flatMap(\.expandedSelection)
+        )
+        .intersection(selectableScopes)
+
+        if !resolvedStoredScopes.isEmpty {
+            return resolvedStoredScopes
+        }
+
+        if let legacyScope,
+           let legacySelection = SignalLightAgentScope(rawValue: legacyScope) {
+            let resolvedLegacyScopes = legacySelection.expandedSelection.intersection(selectableScopes)
+            if !resolvedLegacyScopes.isEmpty {
+                return resolvedLegacyScopes
+            }
+        }
+
+        return SignalLightAgentScope.defaultSelectedCases
+    }
+
+    private func aggregateForSignalLightScopes(
         sessions: [SessionStatus],
         fallback: AgentSignal
     ) -> AgentSignal {
-        let selectedAgentKey = signalLightAgentScope.agentKey
         let selectedSignals = sessions.compactMap { session -> AgentSignal? in
-            let agentKey = Self.normalizedAgentKey(session.agent, fallback: session.sessionID)
-            guard agentKey == selectedAgentKey else { return nil }
+            guard sessionMatchesSignalLightScopes(session) else { return nil }
             return session.signal
         }
 
@@ -1159,12 +1543,12 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
-    private func sessionMatchesSignalLightScope(_ session: SessionStatus) -> Bool {
-        Self.normalizedAgentKey(session.agent, fallback: session.sessionID) == signalLightAgentScope.agentKey
+    private func sessionMatchesSignalLightScopes(_ session: SessionStatus) -> Bool {
+        signalLightAgentScopes.contains { $0.matches(session: session) }
     }
 
-    private func recentEventMatchesSignalLightScope(_ event: RecentSignalEvent) -> Bool {
-        Self.normalizedAgentKey(event.agent, fallback: event.sessionID) == signalLightAgentScope.agentKey
+    private func recentEventMatchesSignalLightScopes(_ event: RecentSignalEvent) -> Bool {
+        signalLightAgentScopes.contains { $0.matches(event: event) }
     }
 
     private func snapshot(_ snapshot: SignalSnapshot, overridingAggregate aggregate: AgentSignal) -> SignalSnapshot {
@@ -1177,46 +1561,18 @@ final class MenuBarStatusModel: ObservableObject {
         )
     }
 
-    private static func detectDesktopAppSessions() -> [SessionStatus] {
-        let runningApplications = NSWorkspace.shared.runningApplications
-        let now = Date()
-
-        return desktopAgentApps.compactMap { app in
-            let isRunning = runningApplications.contains { runningApp in
-                if let bundleIdentifier = runningApp.bundleIdentifier?.lowercased(),
-                   app.bundleIdentifiers.contains(bundleIdentifier) {
-                    return true
-                }
-
-                let localizedName = runningApp.localizedName?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased()
-                return localizedName.map(app.appNames.contains) ?? false
-            }
-
-            guard isRunning else { return nil }
-            return SessionStatus(
-                sessionID: app.sessionID,
-                signal: .idle,
-                updatedAt: now,
-                agent: app.agent,
-                lastEvent: app.event
-            )
-        }
-    }
-
     private static func shouldIncludeStoredSessionInDisplay(_ session: SessionStatus, now: Date) -> Bool {
         if isSignalTestEvent(session.lastEvent) {
             return false
         }
 
-        if isDesktopPresenceSession(session) {
+        if isPresenceSession(session) {
             return true
         }
 
         switch session.signal.displayState {
         case .active:
-            return now.timeIntervalSince(session.updatedAt) <= activeDisplayWindow
+            return now.timeIntervalSince(session.updatedAt) <= activeDisplayWindow(for: session)
         case .completed:
             return now.timeIntervalSince(session.updatedAt) <= completedDisplayWindow
         case .needsReview, .permission, .blocked, .stale:
@@ -1233,7 +1589,7 @@ final class MenuBarStatusModel: ObservableObject {
 
         switch session.signal.displayState {
         case .active:
-            return now.timeIntervalSince(session.updatedAt) <= desktopPresenceSuppressionWindow
+            return now.timeIntervalSince(session.updatedAt) <= activeDisplayWindow(for: session)
         case .needsReview, .permission, .blocked, .stale:
             return true
         case .ready, .completed, .paused:
@@ -1241,8 +1597,26 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
-    private static func isDesktopPresenceSession(_ session: SessionStatus) -> Bool {
-        session.sessionID.hasPrefix("desktop-app:") || session.lastEvent == "DesktopAppRunning"
+    private static func isPresenceSession(_ session: SessionStatus) -> Bool {
+        session.sessionID.hasPrefix("desktop-app:")
+            || session.sessionID.hasPrefix("platform-presence:")
+            || session.lastEvent == "DesktopAppRunning"
+            || session.lastEvent?.hasPrefix("PlatformPresence:") == true
+    }
+
+    private static func activeDisplayWindow(for session: SessionStatus) -> TimeInterval {
+        isPassiveActiveSession(session) ? passiveActiveDisplayWindow : activeDisplayWindow
+    }
+
+    private static func isPassiveActiveSession(_ session: SessionStatus) -> Bool {
+        guard session.signal.displayState == .active else { return false }
+
+        switch session.lastEvent {
+        case "DesktopActivityHeartbeat", "DesktopThinking":
+            return true
+        default:
+            return false
+        }
     }
 
     private static func isSignalTestEvent(_ event: String?) -> Bool {
@@ -1261,9 +1635,15 @@ final class MenuBarStatusModel: ObservableObject {
             .replacingOccurrences(of: " ", with: "-")
 
         switch normalized {
-        case "claude", "claude-code", "claude-desktop":
+        case "claude", "claude-code", "claude-desktop", "claude-cli",
+             "claude-terminal", "terminal-claude", "claude-ide",
+             "idea-claude", "intellij-claude", "jetbrains-claude":
             return "claude"
-        case "codex", "codex-desktop", "codex-cli", "codex-ide":
+        case "codex", "codex-desktop", "codex-cli", "codex-ide", "codex-xcode",
+             "codex-terminal", "terminal-codex", "codex-tui", "codex-shell",
+             "idea-codex", "intellij-codex", "jetbrains-codex", "codex-idea",
+             "codex-intellij", "codex-jetbrains", "codex-vscode", "vscode-codex",
+             "xcode-codex":
             return "codex"
         default:
             return normalized
@@ -1314,9 +1694,13 @@ final class MenuBarStatusModel: ObservableObject {
         lastError = nil
     }
 
-    private func runHookInstall(_ action: @escaping @Sendable (HookInstallManager) throws -> HookInstallResult) {
+    private func runHookInstall(
+        operation: HookInstallOperation,
+        _ action: @escaping @Sendable (HookInstallManager) throws -> HookInstallResult
+    ) {
         guard !isHookInstallRunning else { return }
         isHookInstallRunning = true
+        hookInstallOperation = operation
         hookInstallMessage = text("正在处理 hooks...", "Processing hooks...")
         lastError = nil
 

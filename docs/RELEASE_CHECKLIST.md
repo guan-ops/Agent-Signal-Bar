@@ -44,7 +44,7 @@ The all-in-one release gate replaces the old manual command chain. It packages r
 - Confirm the menu shows the current version/build and release state such as `Local / not notarized`.
 - Open `运行`, confirm it shows the current aggregate status, monitoring state, active sessions, and recent events without exposing raw JSON; the summary signal should be one pure-color lamp only, independent of the selected status bar style, while keeping the same status color and flashing/breathing timing.
 - Open `通用`, confirm language is a dropdown menu, the status bar controls are in this same page, and switch between `跟随系统`, `简体中文`, `English`, and one additional language; the settings window and menu bar panel should update immediately.
-- Open `连接` and click `版本`; Finder should select `dist/AgentSignalLight-release-manifest.json` when a release manifest is present, or the bundled `AgentSignalLight-release-info.json` after DMG installation.
+- Open `连接` and click `版本`; Finder should select `dist/AgentSignalBar-release-manifest.json` when a release manifest is present, or the bundled `AgentSignalLight-release-info.json` after DMG installation.
 - Set `圆点横向尺寸` to `默认` while the style is `极简圆点` and direction is `横向`; confirm the icon becomes the same footprint as horizontal `经典灯牌` while keeping transparent white-ring styling.
 - Set `灯牌竖向尺寸` to `大` while the style is `经典灯牌` and direction is `竖向`; confirm the icon stays compact but no longer collapses into a tiny column, and still keeps the black lamp housing.
 - Check both styles:
@@ -78,7 +78,7 @@ The all-in-one release gate replaces the old manual command chain. It packages r
 
 - For manual startup, run `./script/install_app.sh`.
 - For release zip startup, confirm `./script/install_app.sh --no-open` installs the existing `dist/AgentSignalLight.app` without rebuilding.
-- For scripted DMG startup, run `./script/install_app.sh --dmg dist/AgentSignalLight-local.dmg`.
+- For scripted DMG startup, run `./script/install_app.sh --dmg dist/AgentSignalBar.dmg`.
 - For login startup, run `./script/install_app.sh --login-item`, or toggle `开机自启动` in the app.
 - Run `./script/doctor.sh --full`.
 - If login startup is enabled, confirm:

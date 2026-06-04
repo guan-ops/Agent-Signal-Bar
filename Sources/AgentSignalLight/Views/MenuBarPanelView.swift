@@ -14,7 +14,6 @@ struct MenuBarPanelView: View {
     var onOpenSettings: (() -> Void)?
     @StateObject private var viewState: MenuBarPanelViewState
     @Environment(\.colorScheme) private var colorScheme
-    @State private var isOpenAgentDropdownExpanded = false
 
     init(model: MenuBarStatusModel, onOpenSettings: (() -> Void)? = nil) {
         self.model = model
@@ -27,15 +26,6 @@ struct MenuBarPanelView: View {
             PopoverBackdropView()
                 .ignoresSafeArea()
                 .zIndex(0)
-
-            if isOpenAgentDropdownExpanded {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        closeOpenAgentDropdown()
-                    }
-                    .zIndex(5)
-            }
 
             VStack(spacing: 0) {
                 ScrollView {
@@ -56,9 +46,6 @@ struct MenuBarPanelView: View {
                     .frame(width: Self.panelWidth, alignment: .leading)
                 }
                 .contentShape(Rectangle())
-                .onTapGesture {
-                    closeOpenAgentDropdown()
-                }
                 .scrollIndicators(.hidden)
                 .frame(maxHeight: .infinity)
                 .zIndex(0)
@@ -72,7 +59,7 @@ struct MenuBarPanelView: View {
                     .padding(.top, 10)
                     .padding(.bottom, 10)
                     .frame(width: Self.panelWidth, alignment: .leading)
-                    .zIndex(isOpenAgentDropdownExpanded ? 10 : 1)
+                    .zIndex(1)
             }
         }
         .frame(width: Self.panelWidth, height: Self.panelHeight)
@@ -160,21 +147,6 @@ struct MenuBarPanelView: View {
         )
     }
 
-    private var visibleOpenAgentSessions: [SessionStatus] {
-        allVisibleAgentSessions.filter { session in
-            switch ActivityPresentation.normalizedAgentKey(session.agent, fallback: session.sessionID) {
-            case "codex", "claude":
-                return true
-            default:
-                return false
-            }
-        }
-    }
-
-    private var allVisibleAgentSessions: [SessionStatus] {
-        ActivityPresentation.visibleSessions(from: viewState.activitySnapshot)
-    }
-
     private var menuRecentEvents: [RecentSignalEvent] {
         ActivityPresentation.recentEvents(
             from: viewState.activitySnapshot,
@@ -184,29 +156,22 @@ struct MenuBarPanelView: View {
     }
 
     private var menuRecentEventLimit: Int {
-        visibleAgentSessions.count == 1 ? 2 : 1
+        switch visibleAgentSessions.count {
+        case 0, 1:
+            return 3
+        case 2:
+            return 2
+        case 3:
+            return 1
+        default:
+            return 0
+        }
     }
 
     private var mainActions: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: Self.actionColumnSpacing) {
-                openAgentAction
-
                 Button {
-                    closeOpenAgentDropdown()
-                    model.clearWarnings()
-                } label: {
-                    actionSurface(model.text("清除提醒", "Clear Warning"), systemImage: "xmark.circle")
-                }
-                .buttonStyle(.plain)
-                .frame(width: actionButtonWidth, height: actionButtonHeight)
-            }
-            .frame(maxWidth: .infinity, alignment: .center)
-            .zIndex(isOpenAgentDropdownExpanded ? 1000 : 0)
-
-            HStack(alignment: .top, spacing: Self.actionColumnSpacing) {
-                Button {
-                    closeOpenAgentDropdown()
                     model.toggleMonitoring()
                 } label: {
                     actionSurface(
@@ -218,7 +183,6 @@ struct MenuBarPanelView: View {
                 .frame(width: actionButtonWidth, height: actionButtonHeight)
 
                 Button {
-                    closeOpenAgentDropdown()
                     onOpenSettings?()
                 } label: {
                     actionSurface(model.text("设置", "Settings"), systemImage: "gearshape")
@@ -240,86 +204,11 @@ struct MenuBarPanelView: View {
         }
     }
 
-    private var openAgentAction: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.12)) {
-                isOpenAgentDropdownExpanded.toggle()
-            }
-        } label: {
-            actionSurface(
-                model.text("打开 Agent", "Open Agent"),
-                systemImage: "app",
-                showsChevron: true,
-                isExpanded: isOpenAgentDropdownExpanded
-            )
-        }
-        .buttonStyle(.plain)
-        .frame(width: actionButtonWidth, height: actionButtonHeight, alignment: .leading)
-        .overlay(alignment: .bottomLeading) {
-            if isOpenAgentDropdownExpanded {
-                openAgentDropdown
-                    .offset(y: -(actionButtonHeight + 4))
-                    .shadow(color: .black.opacity(0.16), radius: 10, y: 5)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-                    .zIndex(1)
-            }
-        }
-        .zIndex(isOpenAgentDropdownExpanded ? 1000 : 0)
-    }
-
-    private var openAgentDropdown: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(model.text("正在运行", "Running Now"))
-                .font(.system(size: usesCompactLatinLayout ? 10.5 : 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .allowsTightening(true)
-                .padding(.horizontal, 9)
-                .frame(width: openAgentDropdownWidth, height: 22, alignment: .leading)
-
-            if visibleOpenAgentSessions.isEmpty {
-                Text(model.text("暂无运行中的 Agent", "No running agents"))
-                    .font(panelActionFont)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .allowsTightening(true)
-                    .minimumScaleFactor(0.72)
-                    .padding(.horizontal, 9)
-                    .frame(width: openAgentDropdownWidth, height: openAgentEmptyRowHeight, alignment: .leading)
-            } else {
-                ForEach(visibleOpenAgentSessions) { session in
-                    runningAgentOption(session)
-                }
-            }
-        }
-        .padding(.vertical, 2)
-        .frame(width: openAgentDropdownWidth)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(
-            openAgentDropdownBackground(cornerRadius: 8)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(solidControlStroke, lineWidth: 0.5)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
     private var actionButtonWidth: CGFloat {
         (Self.panelWidth - Self.contentInset * 2 - Self.actionColumnSpacing) / 2
     }
 
-    private var openAgentDropdownWidth: CGFloat { actionButtonWidth }
-
     private var actionButtonHeight: CGFloat {
-        28
-    }
-
-    private var openAgentRunningRowHeight: CGFloat {
-        28
-    }
-
-    private var openAgentEmptyRowHeight: CGFloat {
         28
     }
 
@@ -335,7 +224,8 @@ struct MenuBarPanelView: View {
         _ title: String,
         systemImage: String,
         showsChevron: Bool = false,
-        isExpanded: Bool = false
+        isExpanded: Bool = false,
+        width: CGFloat? = nil
     ) -> some View {
         HStack(spacing: 7) {
             Image(systemName: systemImage)
@@ -355,7 +245,7 @@ struct MenuBarPanelView: View {
         }
         .font(panelActionFont)
         .foregroundStyle(.primary)
-        .frame(width: actionButtonWidth, height: actionButtonHeight, alignment: .center)
+        .frame(width: width ?? actionButtonWidth, height: actionButtonHeight, alignment: .center)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(panelMenuBarFill)
@@ -367,137 +257,8 @@ struct MenuBarPanelView: View {
         .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
-    private func openAgentOption(
-        _ title: String,
-        systemImage: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.12)) {
-                isOpenAgentDropdownExpanded = false
-            }
-            action()
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 13, weight: .semibold))
-                    .frame(width: 16)
-                Text(title)
-                    .lineLimit(1)
-                    .allowsTightening(true)
-                    .minimumScaleFactor(0.72)
-                Spacer(minLength: 4)
-            }
-            .font(panelActionFont)
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 9)
-            .frame(width: openAgentDropdownWidth, height: 28)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func runningAgentOption(_ session: SessionStatus) -> some View {
-        Button {
-            closeOpenAgentDropdown()
-            openAgent(for: session)
-        } label: {
-            HStack(alignment: .center, spacing: 7) {
-                Circle()
-                    .fill(signalColor(session.signal))
-                    .frame(width: 6, height: 6)
-
-                Text(shortAgentName(for: session))
-                    .font(panelActionFont)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .allowsTightening(true)
-                    .minimumScaleFactor(0.78)
-
-                Spacer(minLength: 4)
-            }
-            .padding(.horizontal, 9)
-            .frame(width: openAgentDropdownWidth, height: openAgentRunningRowHeight, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!canOpenAgent(for: session))
-    }
-
-    private func shortAgentName(for session: SessionStatus) -> String {
-        switch ActivityPresentation.normalizedAgentKey(session.agent, fallback: session.sessionID) {
-        case "codex":
-            return "Codex"
-        case "claude":
-            return "Claude"
-        default:
-            return model.friendlyAgentName(session.agent)
-        }
-    }
-
-    private func openAgent(for session: SessionStatus) {
-        switch ActivityPresentation.normalizedAgentKey(session.agent, fallback: session.sessionID) {
-        case "codex":
-            model.openCodex()
-        case "claude":
-            model.openClaude()
-        default:
-            break
-        }
-    }
-
-    private func canOpenAgent(for session: SessionStatus) -> Bool {
-        switch ActivityPresentation.normalizedAgentKey(session.agent, fallback: session.sessionID) {
-        case "codex", "claude":
-            return true
-        default:
-            return false
-        }
-    }
-
-    private func closeOpenAgentDropdown() {
-        guard isOpenAgentDropdownExpanded else { return }
-        withAnimation(.easeInOut(duration: 0.12)) {
-            isOpenAgentDropdownExpanded = false
-        }
-    }
-
-    private var solidControlFill: Color {
-        colorScheme == .dark
-            ? Color(nsColor: NSColor(calibratedWhite: 0.24, alpha: 1))
-            : Color(nsColor: NSColor(calibratedWhite: 0.92, alpha: 1))
-    }
-
     private var panelMenuBarFill: some ShapeStyle {
         .tertiary.opacity(0.08)
-    }
-
-    private var solidDropdownFill: Color {
-        colorScheme == .dark
-            ? Color(nsColor: NSColor(calibratedWhite: 0.18, alpha: 1))
-            : Color(nsColor: NSColor(calibratedWhite: 0.97, alpha: 1))
-    }
-
-    private func openAgentDropdownBackground(cornerRadius: CGFloat) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(.ultraThinMaterial)
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(panelDropdownTint)
-        }
-    }
-
-    private var panelDropdownTint: Color {
-        switch (colorScheme, model.settingsGlassEffect) {
-        case (.dark, .reduced):
-            return Color.white.opacity(0.09)
-        case (.dark, .standard):
-            return Color.white.opacity(0.065)
-        case (_, .reduced):
-            return Color.white.opacity(0.26)
-        case (_, .standard):
-            return Color.white.opacity(0.18)
-        }
     }
 
     private var solidControlStroke: Color {
@@ -543,7 +304,7 @@ private final class MenuBarPanelViewState: ObservableObject {
             }
             .store(in: &cancellables)
 
-        model.$signalLightAgentScope
+        model.$signalLightAgentScopes
             .sink { [weak self, weak model] _ in
                 guard let model else { return }
                 self?.refreshSnapshots(from: model)
@@ -688,7 +449,7 @@ private struct EventRowView: View {
                 Text(title)
                     .font(.caption2)
                     .lineLimit(1)
-                Text("\(model.displayName(for: event.signal)) · \(event.updatedAt.formatted(date: .omitted, time: .shortened))")
+                Text("\(model.activityEventSubtitle(for: event)) · \(event.updatedAt.formatted(date: .omitted, time: .shortened))")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)

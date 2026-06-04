@@ -2,6 +2,7 @@
 set -euo pipefail
 
 APP_NAME="AgentSignalLight"
+RELEASE_BASENAME="AgentSignalBar"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 
@@ -64,10 +65,10 @@ lint_shell_scripts() {
 
 verify_required_artifacts() {
   [[ -d "$ROOT_DIR/dist/$APP_NAME.app" ]] || die "missing dist/$APP_NAME.app"
-  [[ -f "$ROOT_DIR/dist/$APP_NAME-local.zip" ]] || die "missing dist/$APP_NAME-local.zip"
-  [[ -f "$ROOT_DIR/dist/$APP_NAME-local.dmg" ]] || die "missing dist/$APP_NAME-local.dmg"
-  [[ -f "$ROOT_DIR/dist/$APP_NAME-release-manifest.json" ]] || die "missing release manifest"
-  [[ -f "$ROOT_DIR/dist/$APP_NAME-SHA256SUMS.txt" ]] || die "missing SHA256SUMS file"
+  [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME.zip" ]] || die "missing dist/$RELEASE_BASENAME.zip"
+  [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME.dmg" ]] || die "missing dist/$RELEASE_BASENAME.dmg"
+  [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME-release-manifest.json" ]] || die "missing release manifest"
+  [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME-SHA256SUMS.txt" ]] || die "missing SHA256SUMS file"
 }
 
 verify_status_json() {
@@ -146,7 +147,7 @@ fi
 
 run_step "required release artifacts exist" verify_required_artifacts
 run_step "Swift test suite" swift_tool test
-run_step "release checksums verify" shasum -a 256 -c "$ROOT_DIR/dist/$APP_NAME-SHA256SUMS.txt"
+run_step "release checksums verify" shasum -a 256 -c "$ROOT_DIR/dist/$RELEASE_BASENAME-SHA256SUMS.txt"
 run_step "CLI status JSON parses" verify_status_json
 run_step "local script integrations verify" "$ROOT_DIR/script/verify_local_integrations.sh"
 

@@ -8,6 +8,7 @@ INSTALL_DIR="${AGENT_SIGNAL_APP_INSTALL_DIR:-$HOME/Applications}"
 INSTALLED_APP="$INSTALL_DIR/$APP_NAME.app"
 LAUNCH_AGENT_PLIST="$HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
 STATE_DIR="${AGENT_SIGNAL_LIGHT_STATE_DIR:-/tmp/agent-signal}"
+HOOK_PROJECT_ROOT="${AGENT_SIGNAL_CODEX_PROJECT_ROOT:-$ROOT_DIR}"
 PURGE_STATE=0
 REMOVE_HOOKS=0
 KILL_RUNNING_APP=1
@@ -97,7 +98,21 @@ if [[ "$REMOVE_HOOKS" -eq 1 ]]; then
   fi
 
   if [[ -n "$HOOK_INSTALLER" ]]; then
-    /usr/bin/python3 "$HOOK_INSTALLER" --target all --remove --install
+    /usr/bin/python3 "$HOOK_INSTALLER" \
+      --target all \
+      --codex-scope both \
+      --project-root "$HOOK_PROJECT_ROOT" \
+      --remove \
+      --install
+
+    if [[ "$PWD" != "$HOOK_PROJECT_ROOT" && -f "$PWD/.codex/hooks.json" ]]; then
+      /usr/bin/python3 "$HOOK_INSTALLER" \
+        --target codex \
+        --codex-scope project \
+        --project-root "$PWD" \
+        --remove \
+        --install
+    fi
   else
     echo "No hook installer found; skipping hook removal." >&2
   fi

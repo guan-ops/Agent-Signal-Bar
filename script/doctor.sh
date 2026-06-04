@@ -5,13 +5,14 @@ MODE="quick"
 STRICT_WARNINGS=0
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="AgentSignalLight"
+RELEASE_BASENAME="AgentSignalBar"
 BUNDLE_ID="com.agentsignallight.AgentSignalLight"
 STATE_DIR="${AGENT_SIGNAL_LIGHT_STATE_DIR:-/tmp/agent-signal}"
 STATE_FILE="${AGENT_SIGNAL_LIGHT_STATE_FILE:-$STATE_DIR/status.json}"
 APP_BUNDLE="$ROOT_DIR/dist/$APP_NAME.app"
 CLI_BIN="$ROOT_DIR/dist/bin/agent-signal"
-DMG="$ROOT_DIR/dist/$APP_NAME-local.dmg"
-RELEASE_MANIFEST="$ROOT_DIR/dist/$APP_NAME-release-manifest.json"
+DMG="$ROOT_DIR/dist/$RELEASE_BASENAME.dmg"
+RELEASE_MANIFEST="$ROOT_DIR/dist/$RELEASE_BASENAME-release-manifest.json"
 LAUNCH_AGENT_PLIST="$HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
 CODEX_HOOKS_FILE="$HOME/.codex/hooks.json"
 CODEX_PROJECT_HOOKS_FILE="$ROOT_DIR/.codex/hooks.json"
@@ -1090,8 +1091,8 @@ fi
 
 if [[ -f "$ROOT_DIR/dist/.packaged-release" ]]; then
   pass "running from packaged release payload"
-elif [[ -f "$ROOT_DIR/dist/$APP_NAME-local.zip" && -f "$ROOT_DIR/dist/$APP_NAME-SHA256SUMS.txt" ]]; then
-  if (cd "$ROOT_DIR" && shasum -a 256 -c "dist/$APP_NAME-SHA256SUMS.txt" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"); then
+elif [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME.zip" && -f "$ROOT_DIR/dist/$RELEASE_BASENAME-SHA256SUMS.txt" ]]; then
+  if (cd "$ROOT_DIR" && shasum -a 256 -c "dist/$RELEASE_BASENAME-SHA256SUMS.txt" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"); then
     pass "release artifact checksums verify"
   else
     fail "release artifact checksum failed"
@@ -1109,7 +1110,7 @@ if [[ "$MODE" == "full" ]]; then
     sed -n '1,8p' "$DOCTOR_ERR"
   fi
 
-  if [[ -f "$ROOT_DIR/dist/$APP_NAME-local.zip" ]]; then
+  if [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME.zip" ]]; then
     if "$ROOT_DIR/script/verify_release_zip.sh" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
       pass "release zip install verifies"
     else

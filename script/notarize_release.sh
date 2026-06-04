@@ -3,8 +3,9 @@ set -euo pipefail
 
 MODE="readiness"
 APP_NAME="AgentSignalLight"
+RELEASE_BASENAME="AgentSignalBar"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DMG_PATH="$ROOT_DIR/dist/$APP_NAME-local.dmg"
+DMG_PATH="$ROOT_DIR/dist/$RELEASE_BASENAME.dmg"
 PROFILE="${AGENT_SIGNAL_LIGHT_NOTARY_PROFILE:-${NOTARYTOOL_PROFILE:-}}"
 
 while [[ $# -gt 0 ]]; do
@@ -53,6 +54,14 @@ EOF
       ;;
   esac
 done
+
+DMG_PATH="$(/usr/bin/python3 - "$DMG_PATH" <<'PY'
+from pathlib import Path
+import sys
+
+print(Path(sys.argv[1]).expanduser().resolve(strict=False))
+PY
+)"
 
 developer_id_count() {
   security find-identity -v -p codesigning 2>/dev/null \
@@ -104,8 +113,8 @@ print_readiness() {
 }
 
 refresh_release_metadata_after_staple() {
-  local manifest="$ROOT_DIR/dist/$APP_NAME-release-manifest.json"
-  local checksums="$ROOT_DIR/dist/$APP_NAME-SHA256SUMS.txt"
+  local manifest="$ROOT_DIR/dist/$RELEASE_BASENAME-release-manifest.json"
+  local checksums="$ROOT_DIR/dist/$RELEASE_BASENAME-SHA256SUMS.txt"
 
   if [[ -f "$manifest" ]]; then
     /usr/bin/python3 - "$ROOT_DIR" "$manifest" "$DMG_PATH" <<'PY'
@@ -150,11 +159,16 @@ PY
   if [[ -f "$checksums" ]]; then
     (
       cd "$ROOT_DIR"
+      if [[ "$DMG_PATH" == "$ROOT_DIR/"* ]]; then
+        dmg_checksum_target="${DMG_PATH#$ROOT_DIR/}"
+      else
+        dmg_checksum_target="$DMG_PATH"
+      fi
       checksum_targets=()
       for candidate in \
-        "dist/$APP_NAME-local.zip" \
-        "dist/$APP_NAME-local.dmg" \
-        "dist/$APP_NAME-release-manifest.json"; do
+        "dist/$RELEASE_BASENAME.zip" \
+        "$dmg_checksum_target" \
+        "dist/$RELEASE_BASENAME-release-manifest.json"; do
         if [[ -f "$candidate" ]]; then
           checksum_targets+=("$candidate")
         fi

@@ -23,6 +23,9 @@ struct DebugWindowView: View {
                     .padding(.bottom, 16)
                     .fixedSize(horizontal: false, vertical: true)
                     .layoutPriority(2)
+                    .overlay {
+                        SettingsWindowDragRegionView()
+                    }
 
                 Divider()
 
@@ -236,9 +239,16 @@ struct DebugWindowView: View {
     private enum SettingsDropdownID: Hashable {
         case language
         case theme
+        case signalLightAgents
         case thinkingEffect
         case workingEffect
         case doneEffect
+    }
+
+    private struct SignalLightAgentDropdownSection: Identifiable {
+        let id: String
+        let title: String
+        let scopes: [SignalLightAgentScope]
     }
 
     private var settingsHeaderTitleFont: Font {
@@ -283,6 +293,14 @@ struct DebugWindowView: View {
 
     private var settingsDetailStrongFont: Font {
         .system(size: usesCompactLatinLayout ? 11.5 : 12, weight: .semibold)
+    }
+
+    private var agentScopeSectionFont: Font {
+        .system(size: usesCompactLatinLayout ? 10 : 10.5, weight: .semibold)
+    }
+
+    private var agentScopeOptionFont: Font {
+        .system(size: usesCompactLatinLayout ? 10.5 : 11, weight: .semibold)
     }
 
     private var settingsTinyIconFont: Font {
@@ -484,17 +502,78 @@ struct DebugWindowView: View {
         }
     }
 
+    private var signalLightAgentMenu: some View {
+        inlineDropdown(
+            id: .signalLightAgents,
+            title: model.displayName(for: model.signalLightAgentScopes),
+            width: agentScopeMenuWidth
+        ) {
+            dropdownOptions(width: agentScopeMenuWidth) {
+                ForEach(signalLightAgentDropdownSections) { section in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(section.title)
+                            .font(agentScopeSectionFont)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.top, 5)
+                            .padding(.bottom, 2)
+
+                        ForEach(section.scopes, id: \.self) { scope in
+                            signalLightAgentOption(
+                                scope,
+                                isSelected: model.signalLightAgentScopes.contains(scope),
+                                isRunning: model.activeSignalLightAgentScopes.contains(scope),
+                                width: agentScopeMenuWidth
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var signalLightAgentDropdownSections: [SignalLightAgentDropdownSection] {
+        let runningScopes = model.activeSignalLightAgentScopes
+        var sections: [SignalLightAgentDropdownSection] = []
+        let runningOptions = SignalLightAgentScope.selectableCases
+            .filter { runningScopes.contains($0) }
+            .sorted { $0.sortOrder < $1.sortOrder }
+
+        if !runningOptions.isEmpty {
+            sections.append(
+                SignalLightAgentDropdownSection(
+                    id: "running",
+                    title: model.text("正在运行", "Running"),
+                    scopes: runningOptions
+                )
+            )
+        }
+
+        for group in SignalLightAgentScopeGroup.allCases {
+            let groupOptions = SignalLightAgentScope.selectableCases
+                .filter { $0.group == group && !runningScopes.contains($0) }
+                .sorted { $0.sortOrder < $1.sortOrder }
+
+            guard !groupOptions.isEmpty else { continue }
+            sections.append(
+                SignalLightAgentDropdownSection(
+                    id: "group-\(group.rawValue)",
+                    title: model.displayName(for: group),
+                    scopes: groupOptions
+                )
+            )
+        }
+
+        return sections
+    }
+
     private var activitySettings: some View {
         settingsSection(model.text("运行详情", "Agent Activity")) {
             VStack(alignment: .leading, spacing: 14) {
                 settingRow(model.text("灯效 Agent", "Light Agent")) {
-                    compactSegmentedControl(
-                        options: SignalLightAgentScope.allCases,
-                        selection: signalLightAgentScopeBinding
-                    ) { scope in
-                        model.displayName(for: scope)
-                    }
+                    signalLightAgentMenu
                 }
+                .zIndex(expandedSettingsDropdown == .signalLightAgents ? 1000 : 0)
 
                 activitySummaryCard
 
@@ -864,10 +943,10 @@ struct DebugWindowView: View {
     private var automaticConnectionSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
             connectionItem(
-                title: model.text("Codex Desktop", "Codex Desktop"),
+                title: model.text("Codex", "Codex"),
                 subtitle: model.text(
-                    "默认读取本机 Codex Desktop 日志；无需安装 Hook",
-                    "Reads local Codex Desktop logs by default; no hook required"
+                    "支持 Codex Desktop、CLI、VS Code、Xcode、IDEA",
+                    "Supports Codex Desktop, CLI, VS Code, Xcode, and IDEA"
                 ),
                 systemImage: "desktopcomputer"
             ) {
@@ -878,66 +957,69 @@ struct DebugWindowView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
                     settingsSwitch(codexDesktopMonitoringBinding)
-                        .help(model.text("自动识别本机 Codex Desktop 活动", "Automatically detect local Codex Desktop activity"))
+                        .help(model.text(
+                            "自动识别 Codex Desktop、CLI、VS Code、Xcode、IDEA 活动",
+                            "Automatically detect Codex Desktop, CLI, VS Code, Xcode, and IDEA activity"
+                        ))
                 }
             }
 
             Divider()
 
             connectionItem(
-                title: model.text("Codex CLI / IDE Hook", "Codex CLI / IDE Hook"),
+                title: model.text("Codex Hook（可选）", "Codex Hook (Optional)"),
                 subtitle: model.text(
-                    "可选增强：用于 CLI / IDE、权限请求和更低延迟",
-                    "Optional enhancement for CLI / IDE, permission requests, and lower latency"
+                    "可选增强：用于权限请求、低延迟和兼容旧版本",
+                    "Optional enhancement for permission requests, lower latency, and compatibility"
                 ),
                 systemImage: "terminal"
             ) {
-                HStack(spacing: 8) {
-                    connectionActionButton(
-                        model.text("检查", "Check"),
-                        systemImage: "checkmark.circle",
-                        disabled: model.isHookInstallRunning
-                    ) {
-                        model.previewCodexHookInstall()
-                    }
-
-                    connectionActionButton(
-                        model.text("安装", "Install"),
-                        systemImage: "wrench.and.screwdriver",
-                        disabled: model.isHookInstallRunning
-                    ) {
-                        model.installCodexHooks()
-                    }
-                }
+                hookActionButtons(
+                    preview: { model.previewCodexHookInstall() },
+                    install: { model.installCodexHooks() },
+                    uninstall: { model.uninstallCodexHooks() }
+                )
             }
 
             Divider()
 
             connectionItem(
-                title: model.text("Claude Code", "Claude Code"),
+                title: model.text("Claude（尚未测试）", "Claude (Untested)"),
                 subtitle: model.text(
-                    "Claude Code 全局 Hook 可单独检查或安装",
-                    "Claude Code global hooks can be checked or installed separately"
+                    "支持 Claude Desktop",
+                    "Supports Claude Desktop"
                 ),
                 systemImage: "sparkles"
             ) {
                 HStack(spacing: 8) {
-                    connectionActionButton(
-                        model.text("检查", "Check"),
-                        systemImage: "checkmark.circle",
-                        disabled: model.isHookInstallRunning
-                    ) {
-                        model.previewClaudeHookInstall()
-                    }
-
-                    connectionActionButton(
-                        model.text("安装", "Install"),
-                        systemImage: "wrench.and.screwdriver",
-                        disabled: model.isHookInstallRunning
-                    ) {
-                        model.installClaudeHooks()
-                    }
+                    Text(model.text("自动监控", "Auto monitor"))
+                        .font(settingsDetailStrongFont)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    settingsSwitch(claudeDesktopMonitoringBinding)
+                        .help(model.text(
+                            "自动识别 Claude Desktop 活动",
+                            "Automatically detect Claude Desktop activity"
+                        ))
                 }
+            }
+
+            Divider()
+
+            connectionItem(
+                title: model.text("Claude Hook（可选）", "Claude Hook (Optional)"),
+                subtitle: model.text(
+                    "Claude Code 全局 Hook 可单独检查或安装",
+                    "Claude Code global hooks can be checked or installed separately"
+                ),
+                systemImage: "terminal"
+            ) {
+                hookActionButtons(
+                    preview: { model.previewClaudeHookInstall() },
+                    install: { model.installClaudeHooks() },
+                    uninstall: { model.uninstallClaudeHooks() }
+                )
             }
 
             if model.isHookInstallRunning {
@@ -1201,6 +1283,49 @@ struct DebugWindowView: View {
         .buttonStyle(.plain)
     }
 
+    private func signalLightAgentOption(
+        _ scope: SignalLightAgentScope,
+        isSelected: Bool,
+        isRunning: Bool,
+        width: CGFloat
+    ) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.12)) {
+                model.toggleSignalLightAgentScope(scope)
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(isRunning ? Color.green : Color.clear)
+                    .frame(width: 6, height: 6)
+                    .frame(width: 12)
+
+                Text(model.displayName(for: scope))
+                    .lineLimit(1)
+                    .allowsTightening(true)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 4)
+
+                Image(systemName: "checkmark")
+                    .font(settingsTinyIconFont)
+                    .foregroundStyle(isSelected ? Color.white : Color.accentColor)
+                    .frame(width: 13)
+                    .opacity(isSelected ? 1 : 0)
+            }
+            .font(agentScopeOptionFont)
+            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .padding(.horizontal, 7)
+            .frame(width: width, height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(isSelected ? Color.accentColor : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func diagnosticActionButton(
         _ title: String,
         systemImage: String,
@@ -1226,6 +1351,42 @@ struct DebugWindowView: View {
         }
         .buttonStyle(.plain)
         .disabled(disabled)
+    }
+
+    private func hookActionButtons(
+        preview: @escaping () -> Void,
+        install: @escaping () -> Void,
+        uninstall: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            HStack(spacing: 8) {
+                connectionActionButton(
+                    model.text("检查", "Check"),
+                    systemImage: "checkmark.circle",
+                    disabled: model.isHookInstallRunning,
+                    action: preview
+                )
+
+                connectionActionButton(
+                    model.text("安装", "Install"),
+                    systemImage: "wrench.and.screwdriver",
+                    disabled: model.isHookInstallRunning,
+                    action: install
+                )
+            }
+
+            HStack(spacing: 8) {
+                Color.clear
+                    .frame(width: connectionActionButtonWidth, height: 1)
+
+                connectionActionButton(
+                    model.text("卸载", "Uninstall"),
+                    systemImage: "trash",
+                    disabled: model.isHookInstallRunning,
+                    action: uninstall
+                )
+            }
+        }
     }
 
     private func settingsActionSurface(
@@ -1452,6 +1613,10 @@ struct DebugWindowView: View {
         settingsControlWidth
     }
 
+    private var agentScopeMenuWidth: CGFloat {
+        settingsControlWidth
+    }
+
     private var settingsControlWidth: CGFloat {
         usesCompactLatinLayout ? 162 : 150
     }
@@ -1513,7 +1678,7 @@ struct DebugWindowView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
 
-                Text(model.displayName(for: event.signal))
+                Text(model.activityEventSubtitle(for: event))
                     .font(settingsDetailFont)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -1598,7 +1763,7 @@ struct DebugWindowView: View {
     @ViewBuilder
     private func connectionResult(message: String) -> some View {
         if let summary = HookConnectionSummary.parse(message) {
-            connectionSummary(summary)
+            connectionSummary(summary, operation: model.hookInstallOperation)
         } else {
             connectionMessage(
                 title: model.text("连接结果", "Connection result"),
@@ -1608,7 +1773,7 @@ struct DebugWindowView: View {
         }
     }
 
-    private func connectionSummary(_ summary: HookConnectionSummary) -> some View {
+    private func connectionSummary(_ summary: HookConnectionSummary, operation: HookInstallOperation) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Image(systemName: summary.isReady ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
@@ -1616,7 +1781,7 @@ struct DebugWindowView: View {
                 Text(model.text("连接结果", "Connection result"))
                     .font(settingsBodyStrongFont)
                 Spacer()
-                Text(summary.mode == .dryRun ? model.text("检查完成", "Check complete") : model.text("安装完成", "Install complete"))
+                Text(connectionCompletionText(summary: summary, operation: operation))
                     .font(settingsDetailStrongFont)
                     .foregroundStyle(.secondary)
             }
@@ -1632,7 +1797,7 @@ struct DebugWindowView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.name)
                                 .font(settingsBodyStrongFont)
-                            Text(connectionStatusText(item.status, mode: summary.mode))
+                            Text(connectionStatusText(item.status, mode: summary.mode, operation: operation))
                                 .font(settingsBodyFont)
                                 .foregroundStyle(.secondary)
                             if let file = item.file {
@@ -1668,7 +1833,7 @@ struct DebugWindowView: View {
                 }
             }
 
-            if let note = connectionSummaryNote(summary) {
+            if let note = connectionSummaryNote(summary, operation: operation) {
                 Text(note)
                     .font(settingsDetailFont)
                     .foregroundStyle(.secondary)
@@ -1715,7 +1880,31 @@ struct DebugWindowView: View {
         }
     }
 
-    private func connectionStatusText(_ status: HookConnectionStatus, mode: HookConnectionMode) -> String {
+    private func connectionCompletionText(summary: HookConnectionSummary, operation: HookInstallOperation) -> String {
+        if operation == .uninstall {
+            return model.text("卸载完成", "Uninstall complete")
+        }
+        return summary.mode == .dryRun
+            ? model.text("检查完成", "Check complete")
+            : model.text("安装完成", "Install complete")
+    }
+
+    private func connectionStatusText(
+        _ status: HookConnectionStatus,
+        mode: HookConnectionMode,
+        operation: HookInstallOperation
+    ) -> String {
+        if operation == .uninstall {
+            switch status {
+            case .ready:
+                return model.text("无需卸载", "Nothing to remove")
+            case .installed:
+                return model.text("已移除", "Removed")
+            case .needsInstall, .unknown:
+                return model.text("已完成", "Completed")
+            }
+        }
+
         switch status {
         case .ready:
             return model.text("已连接", "Connected")
@@ -1728,7 +1917,10 @@ struct DebugWindowView: View {
         }
     }
 
-    private func connectionSummaryNote(_ summary: HookConnectionSummary) -> String? {
+    private func connectionSummaryNote(_ summary: HookConnectionSummary, operation: HookInstallOperation) -> String? {
+        if operation == .uninstall {
+            return model.text("Hook 已移除。", "Hooks removed.")
+        }
         if summary.mode == .dryRun && summary.items.contains(where: { $0.status == .needsInstall }) {
             return model.text("未写入文件，点击安装连接应用更改。", "No files were written. Click Install to apply changes.")
         }
@@ -1770,17 +1962,17 @@ struct DebugWindowView: View {
         )
     }
 
-    private var signalLightAgentScopeBinding: Binding<SignalLightAgentScope> {
-        Binding(
-            get: { model.signalLightAgentScope },
-            set: { model.setSignalLightAgentScope($0) }
-        )
-    }
-
     private var codexDesktopMonitoringBinding: Binding<Bool> {
         Binding(
             get: { model.isCodexDesktopMonitoringEnabled },
             set: { model.setCodexDesktopMonitoringEnabled($0) }
+        )
+    }
+
+    private var claudeDesktopMonitoringBinding: Binding<Bool> {
+        Binding(
+            get: { model.isClaudeDesktopMonitoringEnabled },
+            set: { model.setClaudeDesktopMonitoringEnabled($0) }
         )
     }
 
@@ -1911,6 +2103,20 @@ private struct SettingsGlassBackdropView: NSViewRepresentable {
             return .sidebar
         case .standard:
             return .popover
+        }
+    }
+}
+
+private struct SettingsWindowDragRegionView: NSViewRepresentable {
+    func makeNSView(context: Context) -> DragRegionView {
+        DragRegionView()
+    }
+
+    func updateNSView(_ nsView: DragRegionView, context: Context) {}
+
+    final class DragRegionView: NSView {
+        override func mouseDown(with event: NSEvent) {
+            window?.performDrag(with: event)
         }
     }
 }

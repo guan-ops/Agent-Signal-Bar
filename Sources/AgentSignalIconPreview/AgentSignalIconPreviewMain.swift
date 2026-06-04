@@ -470,8 +470,8 @@ struct AgentSignalIconPreview {
     }
 
     private static func renderEffectGallery(language: EffectGalleryLanguage, to outputURL: URL) throws {
-        let gallerySize = NSSize(width: 1000, height: 1840)
-        let renderScale: CGFloat = 1.6
+        let gallerySize = NSSize(width: 1600, height: 1280)
+        let renderScale: CGFloat = 1
         let bitmapSize = NSSize(width: gallerySize.width * renderScale, height: gallerySize.height * renderScale)
         let frameCount = 16
         guard let destination = CGImageDestinationCreateWithURL(
@@ -540,26 +540,31 @@ struct AgentSignalIconPreview {
         NSColor.white.withAlphaComponent(0.018).setFill()
         NSRect(origin: .zero, size: gallerySize).fill()
 
+        let outerPadding: CGFloat = 52
+        let topReserved: CGFloat = 128
+        let bottomPadding: CGFloat = 52
+
         drawText(
             language.title,
-            in: NSRect(x: 48, y: gallerySize.height - 82, width: 760, height: 42),
+            in: NSRect(x: outerPadding, y: gallerySize.height - 78, width: 920, height: 42),
             font: .systemFont(ofSize: language == .english ? 30 : 32, weight: .bold),
             color: .white
         )
         drawText(
             language.subtitle,
-            in: NSRect(x: 50, y: gallerySize.height - 114, width: 760, height: 24),
+            in: NSRect(x: outerPadding + 2, y: gallerySize.height - 110, width: 920, height: 24),
             font: .systemFont(ofSize: 18, weight: .semibold),
             color: NSColor.white.withAlphaComponent(0.62)
         )
 
-        let columns = 2
-        let cardWidth: CGFloat = 440
-        let cardHeight: CGFloat = 190
-        let gapX: CGFloat = 40
-        let gapY: CGFloat = 14
-        let startX: CGFloat = 40
-        let startY: CGFloat = gallerySize.height - 144 - cardHeight
+        let columns = 3
+        let rows = Int(ceil(Double(effectGalleryItems.count) / Double(columns)))
+        let gapX: CGFloat = 24
+        let gapY: CGFloat = 18
+        let cardWidth = (gallerySize.width - outerPadding * 2 - gapX * CGFloat(columns - 1)) / CGFloat(columns)
+        let cardHeight = (gallerySize.height - topReserved - bottomPadding - gapY * CGFloat(rows - 1)) / CGFloat(rows)
+        let startX = outerPadding
+        let startY = gallerySize.height - topReserved - cardHeight
 
         for (index, item) in effectGalleryItems.enumerated() {
             let column = index % columns
@@ -594,42 +599,34 @@ struct AgentSignalIconPreview {
         border.lineWidth = 1
         border.stroke()
 
+        let contentInsetX: CGFloat = 22
+        let halfWidth = rect.width / 2
+        let textX = rect.minX + contentInsetX
+        let iconAreaWidth: CGFloat = min(170, max(118, halfWidth - contentInsetX * 2))
+        let iconAreaX = rect.midX + (halfWidth - iconAreaWidth) / 2
+        let textColumnWidth = max(130, iconAreaX - textX - 14)
+
         drawText(
             item.title(for: language),
-            in: NSRect(x: rect.minX + 20, y: rect.maxY - 42, width: rect.width - 40, height: 26),
-            font: .systemFont(ofSize: language == .english ? 20 : 21, weight: .bold),
+            in: NSRect(x: textX, y: rect.midY + 8, width: textColumnWidth, height: 38),
+            font: .systemFont(ofSize: language == .english ? 27 : 30, weight: .bold),
             color: NSColor.white.withAlphaComponent(0.96)
         )
         drawText(
             item.detail(for: language),
-            in: NSRect(x: rect.minX + 20, y: rect.maxY - 70, width: rect.width - 40, height: 18),
-            font: .systemFont(ofSize: 13, weight: .semibold),
+            in: NSRect(x: textX, y: rect.midY - 22, width: textColumnWidth, height: 24),
+            font: .systemFont(ofSize: language == .english ? 16 : 18, weight: .semibold),
             color: NSColor.white.withAlphaComponent(0.58)
         )
 
         let rowHeight: CGFloat = 36
-        let iconAreaWidth: CGFloat = 260
-        let iconAreaX = rect.midX - iconAreaWidth / 2
         let rowGap: CGFloat = 10
         let groupHeight = rowHeight * 2 + rowGap
-        let groupMinY = rect.midY - groupHeight / 2 - 2
+        let groupMinY = rect.midY - groupHeight / 2
         let minimalRect = NSRect(x: iconAreaX, y: groupMinY, width: iconAreaWidth, height: rowHeight)
         let classicRect = NSRect(x: iconAreaX, y: groupMinY + rowHeight + rowGap, width: iconAreaWidth, height: rowHeight)
 
-        drawText(
-            language.classicLabel,
-            in: NSRect(x: rect.minX + 20, y: classicRect.minY - 18, width: 64, height: 18),
-            font: .systemFont(ofSize: 10, weight: .semibold),
-            color: NSColor.white.withAlphaComponent(0.48)
-        )
         drawAnimatedPreviewIcon(item, style: .trafficLight, frameIndex: frameIndex, in: classicRect)
-
-        drawText(
-            language.minimalLabel,
-            in: NSRect(x: rect.minX + 20, y: minimalRect.minY - 18, width: 64, height: 18),
-            font: .systemFont(ofSize: 10, weight: .semibold),
-            color: NSColor.white.withAlphaComponent(0.48)
-        )
         drawAnimatedPreviewIcon(item, style: .macOS, frameIndex: frameIndex, in: minimalRect)
     }
 
@@ -982,23 +979,6 @@ private enum EffectGalleryLanguage {
         }
     }
 
-    var classicLabel: String {
-        switch self {
-        case .english:
-            return "Classic"
-        case .simplifiedChinese:
-            return "经典"
-        }
-    }
-
-    var minimalLabel: String {
-        switch self {
-        case .english:
-            return "Minimal"
-        case .simplifiedChinese:
-            return "极简"
-        }
-    }
 }
 
 private struct EffectGalleryItem {

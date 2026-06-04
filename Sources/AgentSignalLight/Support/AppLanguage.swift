@@ -245,9 +245,15 @@ extension MenuBarStatusModel {
             .replacingOccurrences(of: " ", with: "-")
 
         switch normalized {
-        case "codex", "codex-desktop", "codex-cli", "codex-ide":
+        case "codex", "codex-desktop", "codex-cli", "codex-ide", "codex-xcode",
+             "codex-terminal", "terminal-codex", "codex-tui", "codex-shell",
+             "idea-codex", "intellij-codex", "jetbrains-codex", "codex-idea",
+             "codex-intellij", "codex-jetbrains", "codex-vscode", "vscode-codex",
+             "xcode-codex":
             return "Codex"
-        case "claude", "claude-code", "claude-desktop":
+        case "claude", "claude-code", "claude-desktop", "claude-cli",
+             "claude-terminal", "terminal-claude", "claude-ide",
+             "idea-claude", "intellij-claude", "jetbrains-claude":
             return "Claude"
         case "manual":
             return text("手动", "Manual")
@@ -262,6 +268,57 @@ extension MenuBarStatusModel {
             return "Codex"
         case .claude:
             return "Claude"
+        case .codexDesktop:
+            return text("Codex 桌面版", "Codex Desktop")
+        case .codexCLI:
+            return text("Codex 终端", "Codex CLI")
+        case .codexVSCode:
+            return "Codex VS Code"
+        case .codexXcode:
+            return "Codex Xcode"
+        case .codexIDEA:
+            return "Codex IDEA"
+        case .claudeCode:
+            return text("Claude 桌面版", "Claude Desktop")
+        case .claudeDesktop:
+            return "Claude Desktop"
+        case .localScript:
+            return text("本地脚本", "Local Script")
+        }
+    }
+
+    func displayName(for scopes: Set<SignalLightAgentScope>) -> String {
+        let selectableScopes = Set(SignalLightAgentScope.selectableCases)
+        let normalizedScopes = scopes.intersection(selectableScopes)
+
+        if normalizedScopes == selectableScopes {
+            return text("全部 Agent", "All Agents")
+        }
+
+        if normalizedScopes == SignalLightAgentScope.codexCases {
+            return "Codex"
+        }
+
+        if normalizedScopes == SignalLightAgentScope.claudeCases {
+            return "Claude"
+        }
+
+        if normalizedScopes.count == 1,
+           let scope = normalizedScopes.first {
+            return displayName(for: scope)
+        }
+
+        return text("已选 \(normalizedScopes.count) 个", "\(normalizedScopes.count) selected")
+    }
+
+    func displayName(for group: SignalLightAgentScopeGroup) -> String {
+        switch group {
+        case .codex:
+            return "Codex"
+        case .claude:
+            return "Claude"
+        case .other:
+            return text("其他 Agent", "Other Agents")
         }
     }
 
@@ -517,10 +574,14 @@ private enum AppLocalization {
         "Completed": localized(zhHant: "已完成", ja: "完了", ko: "완료", es: "Completado", fr: "Termine", de: "Abgeschlossen", pt: "Concluido"),
         "Check complete": localized(zhHant: "檢查完成", ja: "確認完了", ko: "검사 완료", es: "Comprobacion lista", fr: "Verification terminee", de: "Pruefung abgeschlossen", pt: "Verificacao concluida"),
         "Install complete": localized(zhHant: "安裝完成", ja: "インストール完了", ko: "설치 완료", es: "Instalacion lista", fr: "Installation terminee", de: "Installation abgeschlossen", pt: "Instalacao concluida"),
+        "Uninstall complete": localized(zhHant: "卸載完成", ja: "アンインストール完了", ko: "제거 완료", es: "Desinstalacion lista", fr: "Desinstallation terminee", de: "Deinstallation abgeschlossen", pt: "Desinstalacao concluida"),
+        "Removed": localized(zhHant: "已移除", ja: "削除済み", ko: "제거됨", es: "Eliminado", fr: "Supprime", de: "Entfernt", pt: "Removido"),
+        "Nothing to remove": localized(zhHant: "無需卸載", ja: "削除不要", ko: "제거할 항목 없음", es: "Nada que eliminar", fr: "Rien a supprimer", de: "Nichts zu entfernen", pt: "Nada para remover"),
         "Config file": localized(zhHant: "設定檔", ja: "設定ファイル", ko: "설정 파일", es: "Archivo de configuracion", fr: "Fichier de configuration", de: "Konfigurationsdatei", pt: "Arquivo de configuracao"),
         "No files were written. Click Install to apply changes.": localized(zhHant: "尚未寫入檔案，點擊安裝連接套用更改。", ja: "ファイルは未変更です。インストールで変更を適用します。", ko: "파일은 아직 쓰지 않았습니다. 설치를 눌러 적용하세요.", es: "No se escribieron archivos. Haz clic en Instalar para aplicar.", fr: "Aucun fichier ecrit. Cliquez Installer pour appliquer.", de: "Keine Dateien geschrieben. Mit Installieren anwenden.", pt: "Nenhum arquivo foi escrito. Clique em Instalar para aplicar."),
         "Connections are ready.": localized(zhHant: "連接已準備好。", ja: "接続は準備できています。", ko: "연결이 준비되었습니다.", es: "Las conexiones estan listas.", fr: "Les connexions sont pretes.", de: "Verbindungen sind bereit.", pt: "Conexoes prontas."),
         "Hooks are up to date.": localized(zhHant: "Hook 已是最新。", ja: "Hooks は最新です。", ko: "Hook이 최신 상태입니다.", es: "Los hooks estan actualizados.", fr: "Les hooks sont a jour.", de: "Hooks sind aktuell.", pt: "Hooks atualizados."),
+        "Hooks removed.": localized(zhHant: "Hook 已移除。", ja: "Hooks を削除しました。", ko: "Hook이 제거되었습니다.", es: "Hooks eliminados.", fr: "Hooks supprimes.", de: "Hooks entfernt.", pt: "Hooks removidos."),
         "Language": localized(zhHant: "語言", ja: "言語", ko: "언어", es: "Idioma", fr: "Langue", de: "Sprache", pt: "Idioma"),
         "Theme": localized(zhHant: "主題", ja: "テーマ", ko: "테마", es: "Tema", fr: "Theme", de: "Theme", pt: "Tema"),
         "Liquid glass": localized(zhHant: "液態玻璃", ja: "リキッドグラス", ko: "리퀴드 글래스", es: "Cristal liquido", fr: "Verre liquide", de: "Liquid Glass", pt: "Vidro liquido"),
@@ -564,16 +625,20 @@ private enum AppLocalization {
         "Codex and Claude Code": localized(zhHant: "Codex 和 Claude Code", ja: "Codex と Claude Code", ko: "Codex 및 Claude Code", es: "Codex y Claude Code", fr: "Codex et Claude Code", de: "Codex und Claude Code", pt: "Codex e Claude Code"),
         "Connect Codex CLI / Codex IDE events with project hooks": localized(zhHant: "透過專案 Hook 接入 Codex CLI / Codex IDE 事件", ja: "プロジェクト Hook で Codex CLI / Codex IDE イベントを接続", ko: "프로젝트 Hook으로 Codex CLI / Codex IDE 이벤트 연결", es: "Conecta eventos de Codex CLI / Codex IDE con hooks del proyecto", fr: "Connecte les evenements Codex CLI / Codex IDE avec les hooks projet", de: "Codex CLI / Codex IDE Events ueber Projekt Hooks verbinden", pt: "Conecta eventos do Codex CLI / Codex IDE com hooks do projeto"),
         "Codex Hook": localized(zhHant: "Codex Hook", ja: "Codex Hook", ko: "Codex Hook", es: "Hook de Codex", fr: "Hook Codex", de: "Codex Hook", pt: "Hook do Codex"),
-        "Codex Desktop can be monitored automatically; Codex CLI / IDE hooks can be checked or installed separately": localized(zhHant: "Codex Desktop 可自動監控；Codex CLI / IDE Hook 可單獨檢查或安裝", ja: "Codex Desktop は自動監視、Codex CLI / IDE Hook は個別に確認またはインストールできます", ko: "Codex Desktop은 자동 모니터링되며 Codex CLI / IDE Hook은 별도로 확인하거나 설치할 수 있습니다", es: "Codex Desktop se puede supervisar automaticamente; los hooks de Codex CLI / IDE se comprueban o instalan por separado", fr: "Codex Desktop peut etre surveille automatiquement; les hooks Codex CLI / IDE se verifient ou s'installent separement", de: "Codex Desktop kann automatisch ueberwacht werden; Codex CLI / IDE Hooks lassen sich separat pruefen oder installieren", pt: "Codex Desktop pode ser monitorado automaticamente; hooks do Codex CLI / IDE podem ser verificados ou instalados separadamente"),
-        "Codex Desktop does not need a hook; Codex CLI / IDE hooks can be checked or installed separately": localized(zhHant: "Codex Desktop 不需要安裝 Hook；Codex CLI / IDE Hook 可單獨檢查或安裝", ja: "Codex Desktop に Hook は不要です。Codex CLI / IDE Hook は個別に確認またはインストールできます", ko: "Codex Desktop은 Hook이 필요 없으며 Codex CLI / IDE Hook은 별도로 확인하거나 설치할 수 있습니다", es: "Codex Desktop no necesita hook; los hooks de Codex CLI / IDE se comprueban o instalan por separado", fr: "Codex Desktop n'a pas besoin de hook; les hooks Codex CLI / IDE se verifient ou s'installent separement", de: "Codex Desktop braucht keinen Hook; Codex CLI / IDE Hooks lassen sich separat pruefen oder installieren", pt: "Codex Desktop nao precisa de hook; hooks do Codex CLI / IDE podem ser verificados ou instalados separadamente"),
-        "Codex Desktop auto monitor": localized(zhHant: "Codex Desktop 自動監控", ja: "Codex Desktop 自動監視", ko: "Codex Desktop 자동 모니터링", es: "Monitor automatico de Codex Desktop", fr: "Surveillance auto Codex Desktop", de: "Codex Desktop automatisch ueberwachen", pt: "Monitor automatico do Codex Desktop"),
         "Codex Desktop": localized(zhHant: "Codex Desktop", ja: "Codex Desktop", ko: "Codex Desktop", es: "Codex Desktop", fr: "Codex Desktop", de: "Codex Desktop", pt: "Codex Desktop"),
-        "Reads local Codex Desktop logs by default; no hook required": localized(zhHant: "預設讀取本機 Codex Desktop 日誌；無需安裝 Hook", ja: "標準でローカルの Codex Desktop ログを読み取ります。Hook は不要です", ko: "기본적으로 로컬 Codex Desktop 로그를 읽으며 Hook은 필요 없습니다", es: "Lee los registros locales de Codex Desktop por defecto; no requiere hook", fr: "Lit les journaux locaux de Codex Desktop par defaut; aucun hook requis", de: "Liest standardmaessig lokale Codex Desktop Logs; kein Hook erforderlich", pt: "Le logs locais do Codex Desktop por padrao; nao requer hook"),
+        "Supports Codex Desktop, CLI, VS Code, Xcode, and IDEA": localized(zhHant: "支援 Codex Desktop、CLI、VS Code、Xcode、IDEA", ja: "Codex Desktop、CLI、VS Code、Xcode、IDEA に対応", ko: "Codex Desktop, CLI, VS Code, Xcode, IDEA 지원", es: "Compatible con Codex Desktop, CLI, VS Code, Xcode e IDEA", fr: "Prend en charge Codex Desktop, CLI, VS Code, Xcode et IDEA", de: "Unterstuetzt Codex Desktop, CLI, VS Code, Xcode und IDEA", pt: "Suporta Codex Desktop, CLI, VS Code, Xcode e IDEA"),
+        "Automatically detect Codex Desktop, CLI, VS Code, Xcode, and IDEA activity": localized(zhHant: "自動識別 Codex Desktop、CLI、VS Code、Xcode、IDEA 活動", ja: "Codex Desktop、CLI、VS Code、Xcode、IDEA の活動を自動検出", ko: "Codex Desktop, CLI, VS Code, Xcode, IDEA 활동 자동 감지", es: "Detectar automaticamente actividad de Codex Desktop, CLI, VS Code, Xcode e IDEA", fr: "Detecter automatiquement l'activite Codex Desktop, CLI, VS Code, Xcode et IDEA", de: "Aktivitaet von Codex Desktop, CLI, VS Code, Xcode und IDEA automatisch erkennen", pt: "Detectar automaticamente atividade do Codex Desktop, CLI, VS Code, Xcode e IDEA"),
         "Auto monitor": localized(zhHant: "自動監控", ja: "自動監視", ko: "자동 모니터링", es: "Monitor automatico", fr: "Surveillance auto", de: "Auto-Ueberwachung", pt: "Monitor automatico"),
-        "Codex CLI / IDE Hook": localized(zhHant: "Codex CLI / IDE Hook", ja: "Codex CLI / IDE Hook", ko: "Codex CLI / IDE Hook", es: "Hook de Codex CLI / IDE", fr: "Hook Codex CLI / IDE", de: "Codex CLI / IDE Hook", pt: "Hook do Codex CLI / IDE"),
-        "Optional enhancement for CLI / IDE, permission requests, and lower latency": localized(zhHant: "可選增強：用於 CLI / IDE、權限請求和更低延遲", ja: "任意の拡張: CLI / IDE、権限リクエスト、低遅延向け", ko: "선택적 확장: CLI / IDE, 권한 요청, 낮은 지연 시간용", es: "Mejora opcional para CLI / IDE, solicitudes de permiso y menor latencia", fr: "Extension facultative pour CLI / IDE, demandes d'autorisation et latence reduite", de: "Optionale Erweiterung fuer CLI / IDE, Berechtigungsanfragen und geringere Latenz", pt: "Melhoria opcional para CLI / IDE, pedidos de permissao e menor latencia"),
+        "Codex Hook (Optional)": localized(zhHant: "Codex Hook（可選）", ja: "Codex Hook（任意）", ko: "Codex Hook(선택 사항)", es: "Hook de Codex (opcional)", fr: "Hook Codex (facultatif)", de: "Codex Hook (optional)", pt: "Hook do Codex (opcional)"),
+        "Optional enhancement for permission requests, lower latency, and compatibility": localized(zhHant: "可選增強：用於權限請求、低延遲和相容舊版本", ja: "任意の拡張: 権限リクエスト、低遅延、互換性向け", ko: "선택적 확장: 권한 요청, 낮은 지연 시간, 호환성용", es: "Mejora opcional para permisos, menor latencia y compatibilidad", fr: "Extension facultative pour autorisations, latence reduite et compatibilite", de: "Optionale Erweiterung fuer Berechtigungen, geringere Latenz und Kompatibilitaet", pt: "Melhoria opcional para permissoes, menor latencia e compatibilidade"),
+        "Claude (Untested)": localized(zhHant: "Claude（尚未測試）", ja: "Claude（未テスト）", ko: "Claude(아직 테스트 안 됨)", es: "Claude (sin probar)", fr: "Claude (non teste)", de: "Claude (ungetestet)", pt: "Claude (nao testado)"),
+        "Claude Code (Untested)": localized(zhHant: "Claude Code（尚未測試）", ja: "Claude Code（未テスト）", ko: "Claude Code(아직 테스트 안 됨)", es: "Claude Code (sin probar)", fr: "Claude Code (non teste)", de: "Claude Code (ungetestet)", pt: "Claude Code (nao testado)"),
+        "Supports Claude Desktop": localized(zhHant: "支援 Claude Desktop", ja: "Claude Desktop に対応", ko: "Claude Desktop 지원", es: "Compatible con Claude Desktop", fr: "Prend en charge Claude Desktop", de: "Unterstuetzt Claude Desktop", pt: "Suporta Claude Desktop"),
+        "Automatically detect Claude Desktop activity": localized(zhHant: "自動識別 Claude Desktop 活動", ja: "Claude Desktop の活動を自動検出", ko: "Claude Desktop 활동 자동 감지", es: "Detectar automaticamente actividad de Claude Desktop", fr: "Detecter automatiquement l'activite Claude Desktop", de: "Claude Desktop Aktivitaet automatisch erkennen", pt: "Detectar automaticamente atividade do Claude Desktop"),
+        "Claude Hook (Optional)": localized(zhHant: "Claude Hook（可選）", ja: "Claude Hook（任意）", ko: "Claude Hook(선택 사항)", es: "Hook de Claude (opcional)", fr: "Hook Claude (facultatif)", de: "Claude Hook (optional)", pt: "Hook do Claude (opcional)"),
         "Check Codex": localized(zhHant: "檢查 Codex", ja: "Codex を確認", ko: "Codex 확인", es: "Comprobar Codex", fr: "Verifier Codex", de: "Codex pruefen", pt: "Verificar Codex"),
         "Install Codex": localized(zhHant: "安裝 Codex", ja: "Codex をインストール", ko: "Codex 설치", es: "Instalar Codex", fr: "Installer Codex", de: "Codex installieren", pt: "Instalar Codex"),
+        "Uninstall": localized(zhHant: "解除安裝", ja: "アンインストール", ko: "제거", es: "Desinstalar", fr: "Desinstaller", de: "Deinstallieren", pt: "Desinstalar"),
         "Global Claude Code hooks for tools, permissions, notifications, subtasks, and stop failures": localized(zhHant: "透過 Claude Code Hook 全域接入，支援工具、權限、通知、子任務和停止失敗", ja: "Claude Code のグローバル Hook でツール、権限、通知、サブタスク、停止失敗に対応", ko: "Claude Code 전역 Hook으로 도구, 권한, 알림, 하위 작업, 중지 실패 지원", es: "Hooks globales de Claude Code para herramientas, permisos, notificaciones, subtareas y fallos al detener", fr: "Hooks globaux Claude Code pour outils, autorisations, notifications, sous-taches et echecs d'arret", de: "Globale Claude Code Hooks fuer Tools, Berechtigungen, Hinweise, Unteraufgaben und Stop Fehler", pt: "Hooks globais do Claude Code para ferramentas, permissoes, notificacoes, subtarefas e falhas ao parar"),
         "Claude Code global hooks can be checked or installed separately": localized(zhHant: "Claude Code 全域 Hook 可單獨檢查或安裝", ja: "Claude Code のグローバル Hook は個別に確認またはインストールできます", ko: "Claude Code 전역 Hook은 별도로 확인하거나 설치할 수 있습니다", es: "Los hooks globales de Claude Code se comprueban o instalan por separado", fr: "Les hooks globaux Claude Code se verifient ou s'installent separement", de: "Globale Claude Code Hooks lassen sich separat pruefen oder installieren", pt: "Hooks globais do Claude Code podem ser verificados ou instalados separadamente"),
         "Install Claude": localized(zhHant: "安裝 Claude", ja: "Claude をインストール", ko: "Claude 설치", es: "Instalar Claude", fr: "Installer Claude", de: "Claude installieren", pt: "Instalar Claude"),
@@ -667,7 +732,7 @@ private enum AppLocalization {
         "Strong": localized(zhHant: "強", ja: "強", ko: "강함", es: "Fuerte", fr: "Fort", de: "Stark", pt: "Forte"),
         "Horizontal dot size: Small": localized(zhHant: "圓點橫向尺寸：小", ja: "横向きドットサイズ: 小", ko: "가로 점 크기: 작게", es: "Tamano horizontal del punto: pequeno", fr: "Taille horizontale du point : petit", de: "Horizontale Punktgroesse: klein", pt: "Tamanho horizontal do ponto: pequeno"),
         "Vertical lamp size: Large": localized(zhHant: "燈牌直向尺寸：大", ja: "縦向きランプサイズ: 大", ko: "세로 램프 크기: 크게", es: "Tamano vertical de la lampara: grande", fr: "Taille verticale du feu : grand", de: "Vertikale Lampengroesse: gross", pt: "Tamanho vertical da lampada: grande"),
-        "Codex Desktop monitoring is on": localized(zhHant: "Codex Desktop 監控已開啟", ja: "Codex Desktop 監視はオン", ko: "Codex Desktop 모니터링 켜짐", es: "Supervision de Codex Desktop activa", fr: "Surveillance Codex Desktop active", de: "Codex Desktop Ueberwachung ist an", pt: "Monitoramento do Codex Desktop ativo"),
+        "Codex auto monitoring is on": localized(zhHant: "Codex 自動監控已開啟", ja: "Codex 自動監視はオン", ko: "Codex 자동 모니터링 켜짐", es: "Supervision automatica de Codex activa", fr: "Surveillance automatique Codex active", de: "Codex Auto-Ueberwachung ist an", pt: "Monitoramento automatico do Codex ativo"),
         "Release info file was not found.": localized(zhHant: "找不到版本資訊檔案。", ja: "リリース情報ファイルが見つかりません。", ko: "릴리스 정보 파일을 찾을 수 없습니다.", es: "No se encontro el archivo de version.", fr: "Fichier d'information de version introuvable.", de: "Release Info Datei wurde nicht gefunden.", pt: "Arquivo de informacoes da versao nao encontrado."),
         "Generic agent hook script was not found.": localized(zhHant: "找不到通用 Agent hook 腳本。", ja: "汎用 Agent hook スクリプトが見つかりません。", ko: "일반 Agent hook 스크립트를 찾을 수 없습니다.", es: "No se encontro el script hook generico.", fr: "Script hook generique introuvable.", de: "Generisches Agent Hook Skript wurde nicht gefunden.", pt: "Script hook generico nao encontrado."),
         "Generic agent hook command copied.": localized(zhHant: "已複製通用 Agent Hook 命令。", ja: "汎用 Agent Hook コマンドをコピーしました。", ko: "일반 Agent Hook 명령을 복사했습니다.", es: "Comando hook generico copiado.", fr: "Commande hook generique copiee.", de: "Generischer Agent Hook Befehl kopiert.", pt: "Comando hook generico copiado."),

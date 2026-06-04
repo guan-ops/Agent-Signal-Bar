@@ -47,10 +47,10 @@ Pushing the tag starts:
 
 The release workflow runs tests, packages the app, verifies checksums, and uploads:
 
-- `AgentSignalLight-local.zip`
-- `AgentSignalLight-local.dmg`
-- `AgentSignalLight-release-manifest.json`
-- `AgentSignalLight-SHA256SUMS.txt`
+- `AgentSignalBar.zip`
+- `AgentSignalBar.dmg`
+- `AgentSignalBar-release-manifest.json`
+- `AgentSignalBar-SHA256SUMS.txt`
 
 The release body is read from:
 

@@ -90,12 +90,16 @@ struct AgentSignalCLI {
                 let eventName = parsed.positionals.first
                     ?? stringValue(payload, keys: ["hook_event_name", "event_name", "event", "hook", "type"])
                 let signal = CodexHookAdapter.chooseSignal(eventName: eventName, payload: payload)
-                let sessionID = parsed.sessionID
+                let agent = parsed.agent
+                    ?? CodexHookAdapter.agentName(payload: payload, environment: ProcessInfo.processInfo.environment)
+                let rawSessionID = parsed.sessionID
                     ?? CodexHookAdapter.sessionKey(payload: payload, environment: ProcessInfo.processInfo.environment)
+                let sessionID = parsed.sessionID
+                    ?? CodexHookAdapter.sourceScopedSessionKey(rawSessionID, agent: agent)
                 _ = try store.applySessionSignal(
                     signal,
                     sessionID: sessionID,
-                    agent: parsed.agent ?? "codex",
+                    agent: agent,
                     lastEvent: parsed.event ?? eventName
                 )
             case "claude-hook":

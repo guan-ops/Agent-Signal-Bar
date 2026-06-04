@@ -425,7 +425,7 @@ struct AgentSignalChecks {
         try expect(doneActivity?.signal == .done, "Desktop task_complete should map to done")
         try expect(userActivity == nil, "Desktop user messages should not map to responding")
         try expect(startedActivity?.signal == .thinking, "Desktop task_started should map to thinking")
-        try expect(heartbeatActivity?.signal == .thinking, "Desktop token_count heartbeat should keep Codex active")
+        try expect(heartbeatActivity == nil, "Desktop token_count metadata should not keep Codex active")
         try expect(compactedActivity?.signal == .thinking, "Desktop compacted event should map to thinking")
     }
 
@@ -678,8 +678,8 @@ struct AgentSignalChecks {
 
     private static func makeStore(
         sessionTTLSeconds: Double = 60,
-        completedTTLSeconds: Double = 90,
-        eventLimit: Int = 30
+        completedTTLSeconds: Double = 30,
+        eventLimit: Int = 50
     ) -> SignalStateStore {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
