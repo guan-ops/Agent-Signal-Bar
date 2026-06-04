@@ -2075,6 +2075,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         let cliSession = try XCTUnwrap(visible.first { $0.sessionID == "platform-presence:codex-cli" })
         let model = MenuBarStatusModel()
+        model.appLanguage = .zhHans
         XCTAssertEqual(model.activitySessionTitle(for: cliSession), "Codex · 终端运行中")
         XCTAssertEqual(model.activitySessionStatusSubtitle(for: cliSession), "空闲")
     }
@@ -2082,6 +2083,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
     @MainActor
     func testActivityPresentationEventTitleIncludesCodexEntrypoint() {
         let model = MenuBarStatusModel()
+        model.appLanguage = .zhHans
         let xcodeEvent = RecentSignalEvent(
             id: "xcode-event",
             sessionID: "codex-xcode:thread",
@@ -2108,6 +2110,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
     @MainActor
     func testActivityPresenceSubtitleDoesNotExposeInternalEventName() {
         let model = MenuBarStatusModel()
+        model.appLanguage = .zhHans
         let session = SessionStatus(
             sessionID: "platform-presence:codex-vscode",
             signal: .idle,
@@ -2155,6 +2158,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
     @MainActor
     func testActivitySessionSubtitleUsesSameRealEventTextAsRecentEvents() {
         let model = MenuBarStatusModel()
+        model.appLanguage = .zhHans
         let session = SessionStatus(
             sessionID: "codex-xcode:thread",
             signal: .working,
@@ -2282,6 +2286,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
     @MainActor
     func testCodexCLISessionKeepsTerminalRuntimeForDesktopNamedEvents() {
         let model = MenuBarStatusModel()
+        model.appLanguage = .zhHans
         let session = SessionStatus(
             sessionID: "codex-cli:terminal-thread",
             signal: .thinking,
