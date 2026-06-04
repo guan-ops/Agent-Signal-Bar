@@ -476,7 +476,7 @@ from pathlib import Path
 data = json.loads(Path(sys.argv[1]).read_text())
 assert data["aggregate"] == "blocked"
 assert data["sessions"]["doctor-normalized-claude"]["signal"] == "blocked"
-assert data["sessions"]["doctor-normalized-codex"]["signal"] == "working"
+assert data["sessions"]["codex-cli:doctor-normalized-codex"]["signal"] == "working"
 PY
   then
     pass "normalized hook event names map correctly"
@@ -500,7 +500,7 @@ from pathlib import Path
 
 data = json.loads(Path(sys.argv[1]).read_text())
 assert data["aggregate"] == "done"
-assert data["sessions"]["doctor-codex-stop"]["signal"] == "done"
+assert data["sessions"]["codex-cli:doctor-codex-stop"]["signal"] == "done"
 assert data["sessions"]["doctor-claude-stop"]["signal"] == "done"
 PY
   then
@@ -525,7 +525,7 @@ from pathlib import Path
 
 data = json.loads(Path(sys.argv[1]).read_text())
 assert data["aggregate"] == "done"
-assert data["sessions"]["doctor-stop-end"]["signal"] == "done"
+assert data["sessions"]["codex-cli:doctor-stop-end"]["signal"] == "done"
 assert data["events"][-1]["signal"] == "session_end"
 PY
   then
