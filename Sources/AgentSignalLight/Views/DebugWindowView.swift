@@ -1015,21 +1015,6 @@ struct DebugWindowView: View {
                     }
                 }
 
-                Divider()
-
-                settingsSubsection(model.text("调试", "Debug")) {
-                    settingRow(model.text("灯效调试", "Light debug")) {
-                        settingsSwitch(signalLightDebugEnabledBinding)
-                    }
-
-                    Text(model.text(
-                        "打开后三颗灯会同时点亮，便于截图和检查灯效。",
-                        "Turns all three lights on for screenshots and light checks."
-                    ))
-                    .font(settingsDetailFont)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
             }
         }
     }
@@ -2222,13 +2207,6 @@ struct DebugWindowView: View {
         Binding(
             get: { model.isMonitoringPaused },
             set: { model.setMonitoringPaused($0) }
-        )
-    }
-
-    private var signalLightDebugEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { model.isSignalLightDebugEnabled },
-            set: { model.setSignalLightDebugEnabled($0) }
         )
     }
 

@@ -348,14 +348,6 @@ private final class MenuBarPanelViewState: ObservableObject {
             }
             .store(in: &cancellables)
 
-        model.$isSignalLightDebugEnabled
-            .removeDuplicates()
-            .sink { [weak self, weak model] _ in
-                guard let model else { return }
-                self?.refreshSnapshots(from: model)
-            }
-            .store(in: &cancellables)
-
         model.$lastError
             .removeDuplicates()
             .sink { [weak self] lastError in
