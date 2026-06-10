@@ -1475,20 +1475,55 @@ private enum FloatingSignalSoundAsset {
     case defaultPulse
 }
 
-private final class FloatingSignalSoundPlayer {
-    private var player: AVAudioPlayer?
+@MainActor
+private final class FloatingSignalSoundPlayer: NSObject, AVAudioPlayerDelegate {
+    private var players: [ObjectIdentifier: AVAudioPlayer] = [:]
     private static let wavData = makeCrossingPulseWAV()
 
     func play(asset: FloatingSignalSoundAsset, level: FloatingSignalSoundLevel) {
         do {
             let player = try makePlayer(asset: asset)
+            player.delegate = self
             player.volume = level.volume
             player.prepareToPlay()
-            player.play()
-            self.player = player
+            retain(player)
+            if !player.play() {
+                release(ObjectIdentifier(player))
+            }
         } catch {
             NSSound.beep()
         }
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        releaseOnMain(ObjectIdentifier(player))
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        releaseOnMain(ObjectIdentifier(player))
+    }
+
+    private func retain(_ player: AVAudioPlayer) {
+        let id = ObjectIdentifier(player)
+        players[id] = player
+
+        let releaseDelay = max(player.duration + 2.0, 3.0)
+        let releaseNanoseconds = UInt64(releaseDelay * 1_000_000_000)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: releaseNanoseconds)
+            self?.release(id)
+        }
+    }
+
+    nonisolated private func releaseOnMain(_ id: ObjectIdentifier) {
+        Task { @MainActor [weak self] in
+            self?.release(id)
+        }
+    }
+
+    private func release(_ id: ObjectIdentifier) {
+        players[id]?.delegate = nil
+        players.removeValue(forKey: id)
     }
 
     private func makePlayer(asset: FloatingSignalSoundAsset) throws -> AVAudioPlayer {
