@@ -372,12 +372,6 @@ struct DebugWindowView: View {
                     }
                 }
 
-                settingRow(model.text("开机自启动", "Start at login")) {
-                    settingsSwitch(launchAtLoginBinding)
-                        .disabled(model.isLaunchAtLoginChangeRunning)
-                        .help(model.text("登录 macOS 后自动打开 Agent Signal Bar", "Open Agent Signal Bar automatically after macOS login"))
-                }
-
                 settingRow(model.text("新西兰原版模式", "New Zealand original mode")) {
                     settingsSwitch(newZealandTrafficLightModeBinding)
                         .help(model.text(
@@ -396,7 +390,7 @@ struct DebugWindowView: View {
             Divider()
                 .zIndex(0)
 
-            monitoringPauseSetting
+            runtimeBehaviorSettings
         }
     }
 
@@ -678,11 +672,31 @@ struct DebugWindowView: View {
 
     private var monitoringPauseSetting: some View {
         settingRow(model.text("暂停监控", "Pause Monitoring")) {
-            settingsSwitch(monitoringPausedBinding)
+            settingsSwitch(monitoringPausedBinding, tint: .red)
                 .help(model.text(
                     "暂停后状态栏灯会熄灭，Agent 事件暂不刷新。",
                     "When paused, the status bar light turns off and agent events stop refreshing."
                 ))
+        }
+    }
+
+    private var runtimeBehaviorSettings: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            settingRow(model.text("开机自启动", "Start at login")) {
+                settingsSwitch(launchAtLoginBinding)
+                    .disabled(model.isLaunchAtLoginChangeRunning)
+                    .help(model.text("登录 macOS 后自动打开 Agent Signal Bar", "Open Agent Signal Bar automatically after macOS login"))
+            }
+
+            settingRow(model.text("低功耗模式", "Low Power Mode")) {
+                settingsSwitch(lowPowerModeBinding)
+                    .help(model.text(
+                        "降低后台轮询和动画刷新频率，适合长时间常驻。",
+                        "Reduce background polling and animation refresh while the app stays running."
+                    ))
+            }
+
+            monitoringPauseSetting
         }
     }
 
@@ -1337,10 +1351,11 @@ struct DebugWindowView: View {
         }
     }
 
-    private func settingsSwitch(_ isOn: Binding<Bool>) -> some View {
+    private func settingsSwitch(_ isOn: Binding<Bool>, tint: Color? = nil) -> some View {
         Toggle("", isOn: isOn)
             .toggleStyle(.switch)
             .labelsHidden()
+            .tint(tint)
             .fixedSize()
     }
 
@@ -2237,6 +2252,13 @@ struct DebugWindowView: View {
         Binding(
             get: { model.isMonitoringPaused },
             set: { model.setMonitoringPaused($0) }
+        )
+    }
+
+    private var lowPowerModeBinding: Binding<Bool> {
+        Binding(
+            get: { model.isLowPowerModeEnabled },
+            set: { model.setLowPowerModeEnabled($0) }
         )
     }
 

@@ -242,6 +242,45 @@ struct StatusLightOverrideFrame: Equatable {
     }
 }
 
+struct RuntimeTimingProfile: Equatable {
+    let statePollInterval: TimeInterval
+    let statePollTolerance: TimeInterval
+    let animationTickInterval: TimeInterval
+    let animationTickTolerance: TimeInterval
+    let agentPollInterval: TimeInterval
+    let agentPollTolerance: TimeInterval
+    let desktopAppPresencePollInterval: TimeInterval
+    let desktopAppPresencePollTolerance: TimeInterval
+    let automaticUpdateCheckTimerInterval: TimeInterval
+    let automaticUpdateCheckTimerTolerance: TimeInterval
+
+    static let standard = RuntimeTimingProfile(
+        statePollInterval: 5.0,
+        statePollTolerance: 1.0,
+        animationTickInterval: 0.45,
+        animationTickTolerance: 0.15,
+        agentPollInterval: 2.0,
+        agentPollTolerance: 0.75,
+        desktopAppPresencePollInterval: 20.0,
+        desktopAppPresencePollTolerance: 5.0,
+        automaticUpdateCheckTimerInterval: 60 * 60,
+        automaticUpdateCheckTimerTolerance: 5 * 60
+    )
+
+    static let lowPower = RuntimeTimingProfile(
+        statePollInterval: 15.0,
+        statePollTolerance: 4.0,
+        animationTickInterval: 0.9,
+        animationTickTolerance: 0.3,
+        agentPollInterval: 6.0,
+        agentPollTolerance: 2.0,
+        desktopAppPresencePollInterval: 60.0,
+        desktopAppPresencePollTolerance: 15.0,
+        automaticUpdateCheckTimerInterval: 60 * 60,
+        automaticUpdateCheckTimerTolerance: 5 * 60
+    )
+}
+
 enum HookInstallOperation: Hashable {
     case preview
     case install
@@ -272,6 +311,7 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var appTheme: AppTheme
     @Published var isSettingsGlassEnabled: Bool
     @Published var settingsGlassEffect: SettingsGlassEffect
+    @Published var isLowPowerModeEnabled: Bool
     @Published var isNewZealandTrafficLightModeEnabled: Bool
     @Published var isMonitoringPaused = false
     @Published var isFloatingSignalEnabled: Bool
@@ -346,11 +386,6 @@ final class MenuBarStatusModel: ObservableObject {
     private static let effectDefaultsVersion = 2
     private static let floatingSignalScaleDefaultsVersion = 3
     private static let preferenceDefaultsVersion = 1
-    private static let statePollInterval: TimeInterval = 5.0
-    private static let animationTickInterval: TimeInterval = 0.45
-    private static let agentPollInterval: TimeInterval = 2.0
-    private static let desktopAppPresencePollInterval: TimeInterval = 20.0
-    private static let automaticUpdateCheckTimerInterval: TimeInterval = 60 * 60
     private static let automaticUpdateCheckInterval: TimeInterval = 24 * 60 * 60
     private static let activeDisplayWindow: TimeInterval = SignalStateStore.defaultSessionTTL()
 
@@ -362,6 +397,8 @@ final class MenuBarStatusModel: ObservableObject {
     private struct AnimationTickCadence {
         let timerFramesPerAdvance: Int
         let tickAdvance: Int
+
+        static let everyFrame = AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 1)
     }
 
     init(
@@ -394,9 +431,10 @@ final class MenuBarStatusModel: ObservableObject {
         let storedSettingsGlassEffect =
             UserDefaults.standard.string(forKey: "settingsGlassEffect")
             ?? UserDefaults.standard.string(forKey: "settingsMenuGlassEffect")
+        let storedLowPowerModeEnabled =
+            UserDefaults.standard.object(forKey: "isLowPowerModeEnabled") as? Bool
         let storedNewZealandTrafficLightModeEnabled =
             UserDefaults.standard.object(forKey: "isNewZealandTrafficLightModeEnabled") as? Bool
-            ?? UserDefaults.standard.object(forKey: "isLowPowerModeEnabled") as? Bool
         let storedSignalLightAgentScope = UserDefaults.standard.string(forKey: "signalLightAgentScope")
         let storedSignalLightAgentScopes = UserDefaults.standard.stringArray(forKey: "signalLightAgentScopes")
         let storedSignalLightAgentSelectionMode = UserDefaults.standard.string(forKey: "signalLightAgentSelectionMode")
@@ -465,14 +503,14 @@ final class MenuBarStatusModel: ObservableObject {
         isSettingsGlassEnabled = storedSettingsGlassEnabled ?? true
         settingsGlassEffect =
             SettingsGlassEffect.preferenceValue(for: storedSettingsGlassEffect) ?? .reduced
-        isNewZealandTrafficLightModeEnabled = storedNewZealandTrafficLightModeEnabled ?? false
-        if UserDefaults.standard.object(forKey: "isNewZealandTrafficLightModeEnabled") == nil,
-           let storedNewZealandTrafficLightModeEnabled {
+        isLowPowerModeEnabled = storedLowPowerModeEnabled ?? false
+        let resolvedNewZealandTrafficLightModeEnabled = storedNewZealandTrafficLightModeEnabled ?? true
+        isNewZealandTrafficLightModeEnabled = resolvedNewZealandTrafficLightModeEnabled
+        if storedNewZealandTrafficLightModeEnabled == nil {
             UserDefaults.standard.set(
-                storedNewZealandTrafficLightModeEnabled,
+                resolvedNewZealandTrafficLightModeEnabled,
                 forKey: "isNewZealandTrafficLightModeEnabled"
             )
-            UserDefaults.standard.removeObject(forKey: "isLowPowerModeEnabled")
         }
         isFloatingSignalEnabled =
             UserDefaults.standard.object(forKey: "isFloatingSignalEnabled") as? Bool ?? true
@@ -721,6 +759,10 @@ final class MenuBarStatusModel: ObservableObject {
         return statusLightOverride?.effectCustomization ?? signalEffectCustomization
     }
 
+    var runtimeTimingProfile: RuntimeTimingProfile {
+        isLowPowerModeEnabled ? .lowPower : .standard
+    }
+
     func setMacOSHorizontalUsesTrafficLightSize(_ enabled: Bool) {
         macOSHorizontalUsesTrafficLightSize = enabled
         UserDefaults.standard.set(enabled, forKey: "macOSHorizontalUsesTrafficLightSize")
@@ -920,11 +962,22 @@ final class MenuBarStatusModel: ObservableObject {
         UserDefaults.standard.set(effect.rawValue, forKey: "settingsGlassEffect")
     }
 
+    func setLowPowerModeEnabled(_ enabled: Bool) {
+        guard enabled != isLowPowerModeEnabled else { return }
+        isLowPowerModeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isLowPowerModeEnabled")
+        animationFrameSkipCounter = 0
+        animationClock.reset()
+        restartTimers()
+        reload()
+        pollCodexDesktopActivity()
+        pollDesktopAppPresence()
+    }
+
     func setNewZealandTrafficLightModeEnabled(_ enabled: Bool) {
         guard enabled != isNewZealandTrafficLightModeEnabled else { return }
         isNewZealandTrafficLightModeEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isNewZealandTrafficLightModeEnabled")
-        UserDefaults.standard.removeObject(forKey: "isLowPowerModeEnabled")
         if enabled {
             setFloatingSignalCompletionSound(.newZealandCrossing)
             setFloatingSignalWaitingSound(.newZealandCrossing)
@@ -1445,16 +1498,18 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private func startTimers() {
-        let pollTimer = Timer(timeInterval: Self.statePollInterval, repeats: true) { [weak self] _ in
+        let timingProfile = runtimeTimingProfile
+
+        let pollTimer = Timer(timeInterval: timingProfile.statePollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.reloadFromWatcher()
             }
         }
-        pollTimer.tolerance = 1.0
+        pollTimer.tolerance = timingProfile.statePollTolerance
         RunLoop.main.add(pollTimer, forMode: .common)
         self.pollTimer = pollTimer
 
-        let animationTimer = Timer(timeInterval: Self.animationTickInterval, repeats: true) { [weak self] _ in
+        let animationTimer = Timer(timeInterval: timingProfile.animationTickInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 if self.advanceStatusLightSequenceIfNeeded() {
@@ -1475,42 +1530,60 @@ final class MenuBarStatusModel: ObservableObject {
                 self.animationClock.advance(by: cadence.tickAdvance)
             }
         }
-        animationTimer.tolerance = 0.15
+        animationTimer.tolerance = timingProfile.animationTickTolerance
         RunLoop.main.add(animationTimer, forMode: .common)
         self.animationTimer = animationTimer
 
-        let codexDesktopTimer = Timer(timeInterval: Self.agentPollInterval, repeats: true) { [weak self] _ in
+        let codexDesktopTimer = Timer(timeInterval: timingProfile.agentPollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.pollCodexDesktopActivity()
             }
         }
-        codexDesktopTimer.tolerance = 0.75
+        codexDesktopTimer.tolerance = timingProfile.agentPollTolerance
         RunLoop.main.add(codexDesktopTimer, forMode: .common)
         self.codexDesktopTimer = codexDesktopTimer
 
         let desktopAppTimer = Timer(
-            timeInterval: Self.desktopAppPresencePollInterval,
+            timeInterval: timingProfile.desktopAppPresencePollInterval,
             repeats: true
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.pollDesktopAppPresence()
             }
         }
-        desktopAppTimer.tolerance = 5.0
+        desktopAppTimer.tolerance = timingProfile.desktopAppPresencePollTolerance
         RunLoop.main.add(desktopAppTimer, forMode: .common)
         self.desktopAppTimer = desktopAppTimer
 
         let automaticUpdateCheckTimer = Timer(
-            timeInterval: Self.automaticUpdateCheckTimerInterval,
+            timeInterval: timingProfile.automaticUpdateCheckTimerInterval,
             repeats: true
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.performAutomaticUpdateCheckIfNeeded()
             }
         }
-        automaticUpdateCheckTimer.tolerance = 5 * 60
+        automaticUpdateCheckTimer.tolerance = timingProfile.automaticUpdateCheckTimerTolerance
         RunLoop.main.add(automaticUpdateCheckTimer, forMode: .common)
         self.automaticUpdateCheckTimer = automaticUpdateCheckTimer
+    }
+
+    private func restartTimers() {
+        stopTimers()
+        startTimers()
+    }
+
+    private func stopTimers() {
+        pollTimer?.invalidate()
+        animationTimer?.invalidate()
+        codexDesktopTimer?.invalidate()
+        desktopAppTimer?.invalidate()
+        automaticUpdateCheckTimer?.invalidate()
+        pollTimer = nil
+        animationTimer = nil
+        codexDesktopTimer = nil
+        desktopAppTimer = nil
+        automaticUpdateCheckTimer = nil
     }
 
     private func startMonitoringResumeLightSequence() {
@@ -1638,10 +1711,47 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private var animationTickCadenceForCurrentSignal: AnimationTickCadence {
-        if !isNewZealandTrafficLightModeEnabled {
-            return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 1)
+        if isNewZealandTrafficLightModeEnabled {
+            return newZealandAnimationTickCadenceForCurrentSignal
         }
 
+        guard isLowPowerModeEnabled else {
+            return .everyFrame
+        }
+
+        return lowPowerAnimationTickCadenceForCurrentSignal
+    }
+
+    private var lowPowerAnimationTickCadenceForCurrentSignal: AnimationTickCadence {
+        let aggregate = lightSnapshot.aggregate
+        switch aggregate.displayState {
+        case .active:
+            let effect = aggregate == .thinking ? thinkingSignalEffect : activeSignalEffect
+            switch effect {
+            case .greenBreathing, .greenSlowFlash, .trafficCycle:
+                return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 2)
+            case .greenFastFlash:
+                return .everyFrame
+            case .greenSteady:
+                return .everyFrame
+            }
+        case .completed:
+            switch completedSignalEffect {
+            case .greenPulse, .yellowPulse, .allPulse:
+                return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 2)
+            case .greenSteady, .yellowSteady, .allSteady:
+                return .everyFrame
+            }
+        case .needsReview, .permission, .stale:
+            return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 2)
+        case .blocked:
+            return .everyFrame
+        case .ready, .paused:
+            return .everyFrame
+        }
+    }
+
+    private var newZealandAnimationTickCadenceForCurrentSignal: AnimationTickCadence {
         let aggregate = lightSnapshot.aggregate
         switch aggregate.displayState {
         case .active:
@@ -1649,25 +1759,38 @@ final class MenuBarStatusModel: ObservableObject {
             switch effect {
             case .greenSlowFlash:
                 // New Zealand original mode: 0.9s on / 0.9s off, one green flash every 1.8s.
-                return AnimationTickCadence(timerFramesPerAdvance: 2, tickAdvance: 3)
+                return AnimationTickCadence(
+                    timerFramesPerAdvance: isLowPowerModeEnabled ? 1 : 2,
+                    tickAdvance: 3
+                )
             case .trafficCycle:
-                return AnimationTickCadence(timerFramesPerAdvance: 4, tickAdvance: 4)
+                return AnimationTickCadence(
+                    timerFramesPerAdvance: isLowPowerModeEnabled ? 2 : 4,
+                    tickAdvance: 4
+                )
             case .greenBreathing:
-                return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 1)
+                return isLowPowerModeEnabled
+                    ? AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 2)
+                    : .everyFrame
             case .greenFastFlash:
-                return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 1)
+                return .everyFrame
             case .greenSteady:
-                return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 1)
+                return .everyFrame
             }
         case .completed:
             switch completedSignalEffect {
             case .greenPulse, .yellowPulse, .allPulse:
-                return AnimationTickCadence(timerFramesPerAdvance: 2, tickAdvance: 2)
+                return AnimationTickCadence(
+                    timerFramesPerAdvance: isLowPowerModeEnabled ? 1 : 2,
+                    tickAdvance: 2
+                )
             case .greenSteady, .yellowSteady, .allSteady:
-                return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 1)
+                return .everyFrame
             }
         case .ready, .needsReview, .permission, .blocked, .stale, .paused:
-            return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 1)
+            return isLowPowerModeEnabled
+                ? lowPowerAnimationTickCadenceForCurrentSignal
+                : .everyFrame
         }
     }
 

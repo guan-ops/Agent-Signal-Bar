@@ -2430,7 +2430,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testNewZealandTrafficLightModeDefaultsOffAndPersists() {
+    func testNewZealandTrafficLightModeDefaultsOnAndPersists() {
         let defaults = UserDefaults.standard
         let keys = [
             "isNewZealandTrafficLightModeEnabled",
@@ -2453,14 +2453,22 @@ final class AgentSignalLightCoreTests: XCTestCase {
         }
 
         let model = MenuBarStatusModel()
+        XCTAssertTrue(model.isNewZealandTrafficLightModeEnabled)
+        XCTAssertTrue(defaults.bool(forKey: "isNewZealandTrafficLightModeEnabled"))
+        XCTAssertNil(defaults.object(forKey: "isLowPowerModeEnabled"))
+
+        model.setNewZealandTrafficLightModeEnabled(false)
+        XCTAssertFalse(model.isNewZealandTrafficLightModeEnabled)
+        XCTAssertFalse(defaults.bool(forKey: "isNewZealandTrafficLightModeEnabled"))
+
         model.setFloatingSignalCompletionSound(.aiGlow)
         model.setFloatingSignalWaitingSound(.aiTick)
 
-        XCTAssertFalse(model.isNewZealandTrafficLightModeEnabled)
         model.setNewZealandTrafficLightModeEnabled(true)
         XCTAssertTrue(model.isNewZealandTrafficLightModeEnabled)
         XCTAssertTrue(defaults.bool(forKey: "isNewZealandTrafficLightModeEnabled"))
         XCTAssertNil(defaults.object(forKey: "isLowPowerModeEnabled"))
+        XCTAssertFalse(model.isLowPowerModeEnabled)
         XCTAssertEqual(model.floatingSignalCompletionSound, .newZealandCrossing)
         XCTAssertEqual(model.floatingSignalWaitingSound, .newZealandCrossing)
         XCTAssertEqual(defaults.string(forKey: "floatingSignalCompletionSound"), FloatingSignalCompletionSound.newZealandCrossing.rawValue)
@@ -2469,6 +2477,67 @@ final class AgentSignalLightCoreTests: XCTestCase {
         model.setNewZealandTrafficLightModeEnabled(false)
         XCTAssertFalse(model.isNewZealandTrafficLightModeEnabled)
         XCTAssertFalse(defaults.bool(forKey: "isNewZealandTrafficLightModeEnabled"))
+    }
+
+    @MainActor
+    func testLowPowerModeDefaultsOffPersistsAndKeepsNewZealandModeIndependent() {
+        let defaults = UserDefaults.standard
+        let keys = [
+            "isLowPowerModeEnabled",
+            "isNewZealandTrafficLightModeEnabled",
+            "floatingSignalCompletionSound",
+            "isFloatingSignalCompletionSoundEnabled",
+            "floatingSignalWaitingSound",
+            "isFloatingSignalWaitingSoundEnabled"
+        ]
+        let previousValues = keys.map { defaults.object(forKey: $0) }
+        keys.forEach(defaults.removeObject(forKey:))
+        defer {
+            for (key, value) in zip(keys, previousValues) {
+                if let value {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let model = MenuBarStatusModel()
+        model.setFloatingSignalCompletionSound(.aiGlow)
+        model.setFloatingSignalWaitingSound(.aiTick)
+
+        XCTAssertFalse(model.isLowPowerModeEnabled)
+        XCTAssertEqual(model.runtimeTimingProfile, .standard)
+
+        model.setLowPowerModeEnabled(true)
+
+        XCTAssertTrue(model.isLowPowerModeEnabled)
+        XCTAssertTrue(defaults.bool(forKey: "isLowPowerModeEnabled"))
+        XCTAssertTrue(model.isNewZealandTrafficLightModeEnabled)
+        XCTAssertTrue(defaults.bool(forKey: "isNewZealandTrafficLightModeEnabled"))
+        XCTAssertEqual(model.runtimeTimingProfile, .lowPower)
+        XCTAssertEqual(model.floatingSignalCompletionSound, .aiGlow)
+        XCTAssertEqual(model.floatingSignalWaitingSound, .aiTick)
+
+        model.setNewZealandTrafficLightModeEnabled(false)
+
+        XCTAssertTrue(model.isLowPowerModeEnabled)
+        XCTAssertFalse(model.isNewZealandTrafficLightModeEnabled)
+        XCTAssertEqual(model.floatingSignalCompletionSound, .aiGlow)
+        XCTAssertEqual(model.floatingSignalWaitingSound, .aiTick)
+
+        model.setNewZealandTrafficLightModeEnabled(true)
+
+        XCTAssertTrue(model.isLowPowerModeEnabled)
+        XCTAssertTrue(model.isNewZealandTrafficLightModeEnabled)
+        XCTAssertEqual(model.floatingSignalCompletionSound, .newZealandCrossing)
+        XCTAssertEqual(model.floatingSignalWaitingSound, .newZealandCrossing)
+
+        model.setLowPowerModeEnabled(false)
+
+        XCTAssertFalse(model.isLowPowerModeEnabled)
+        XCTAssertTrue(model.isNewZealandTrafficLightModeEnabled)
+        XCTAssertEqual(model.runtimeTimingProfile, .standard)
     }
 
     @MainActor
