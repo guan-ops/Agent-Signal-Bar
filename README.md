@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/release-v1.3.1-111827.svg" alt="Latest release: v1.3.1"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/release-v1.3.2-111827.svg" alt="Latest release: v1.3.2"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-111827.svg" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Swift-6.0-F05138.svg" alt="Swift 6.0">
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/download-DMG-0ea5e9.svg" alt="Download DMG"></a>
