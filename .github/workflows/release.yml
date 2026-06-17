@@ -51,6 +51,8 @@ jobs:
 
       - name: Package release
         run: ./script/package_release.sh
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
 
       - name: Verify release artifacts
         run: ./script/verify_release_all.sh --skip-package
@@ -101,5 +103,6 @@ jobs:
           files: |
             dist/AgentSignalBar.zip
             dist/AgentSignalBar.dmg
+            dist/appcast.xml
             dist/AgentSignalBar-release-manifest.json
             dist/AgentSignalBar-SHA256SUMS.txt

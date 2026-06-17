@@ -7,6 +7,7 @@ import SwiftUI
 @MainActor
 final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NSWindowDelegate {
     private let model: MenuBarStatusModel
+    private let updater: SparkleUpdaterService
     private var statusItem: NSStatusItem?
     private lazy var nativeStatusMenu: NSMenu = {
         let menu = NSMenu()
@@ -61,8 +62,9 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         }
     }
 
-    init(model: MenuBarStatusModel) {
+    init(model: MenuBarStatusModel, updater: SparkleUpdaterService) {
         self.model = model
+        self.updater = updater
         super.init()
         bind()
         floatingSignalController.start()
@@ -823,7 +825,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
         window.contentViewController = NSHostingController(
-            rootView: DebugWindowView(model: model)
+            rootView: DebugWindowView(model: model, updater: updater)
         )
         window.delegate = self
         window.center()

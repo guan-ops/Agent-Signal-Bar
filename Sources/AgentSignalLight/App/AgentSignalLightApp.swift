@@ -54,7 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 enum AgentSignalAppServices {
     static let model = MenuBarStatusModel()
-    static let statusBarController = StatusBarController(model: model)
+    static let sparkleUpdater = SparkleUpdaterService()
+    static let statusBarController = StatusBarController(model: model, updater: sparkleUpdater)
 }
 
 @MainActor
@@ -62,6 +63,7 @@ enum AgentSignalAppServices {
 struct AgentSignalLightApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model: MenuBarStatusModel
+    @StateObject private var sparkleUpdater: SparkleUpdaterService
     private let statusBarController: StatusBarController
 
     init() {
@@ -71,6 +73,7 @@ struct AgentSignalLightApp: App {
 
         let sharedModel = AgentSignalAppServices.model
         _model = StateObject(wrappedValue: sharedModel)
+        _sparkleUpdater = StateObject(wrappedValue: AgentSignalAppServices.sparkleUpdater)
         statusBarController = AgentSignalAppServices.statusBarController
     }
 
@@ -85,13 +88,10 @@ struct AgentSignalLightApp: App {
                 }
                 .keyboardShortcut(",", modifiers: .command)
 
-                Button(model.isUpdateCheckRunning
-                    ? model.text("检查中...", "Checking...")
-                    : model.text("检查更新...", "Check for Updates...")
-                ) {
-                    model.checkForUpdatesFromAppMenu()
+                Button(model.text("检查更新...", "Check for Updates...")) {
+                    sparkleUpdater.checkForUpdates()
                 }
-                .disabled(model.isUpdateCheckRunning)
+                .disabled(sparkleUpdater.isConfigured && !sparkleUpdater.canCheckForUpdates)
             }
         }
     }

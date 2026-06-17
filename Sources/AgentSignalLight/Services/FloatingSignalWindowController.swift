@@ -133,7 +133,10 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
             model.$snapshot.map { _ in () }.eraseToAnyPublisher(),
             model.$desktopAppSessions.map { _ in () }.eraseToAnyPublisher(),
             model.$statusLightOverride.map { _ in () }.eraseToAnyPublisher(),
-            model.$isMonitoringPaused.map { _ in () }.eraseToAnyPublisher()
+            model.$isMonitoringPaused.map { _ in () }.eraseToAnyPublisher(),
+            model.$isStatusBarIconEnabled.map { _ in () }.eraseToAnyPublisher(),
+            model.$isFloatingSignalEnabled.map { _ in () }.eraseToAnyPublisher(),
+            model.$isFloatingSignalSoundEnabled.map { _ in () }.eraseToAnyPublisher()
         ]
 
         for publisher in soundStatePublishers {
@@ -361,7 +364,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
     }
 
     private func evaluateAlertSound() {
-        guard model.isFloatingSignalEnabled, model.isFloatingSignalSoundEnabled else {
+        guard model.isSignalSoundSurfaceEnabled, model.isFloatingSignalSoundEnabled else {
             return
         }
 
@@ -409,7 +412,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
     }
 
     private func evaluateActiveGreenPulseSound(tickOverride: Int? = nil) {
-        guard model.isFloatingSignalEnabled, isSoundEnabled(for: .waiting) else {
+        guard model.isSignalSoundSurfaceEnabled, isSoundEnabled(for: .waiting) else {
             wasActiveGreenLitForSound = false
             return
         }

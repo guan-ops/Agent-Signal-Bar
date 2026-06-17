@@ -33,6 +33,7 @@ STAGING_DIR="$(mktemp -d)"
 STAGED_APP_BUNDLE="$STAGING_DIR/$APP_NAME.app"
 APP_CONTENTS="$STAGED_APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
+APP_FRAMEWORKS="$APP_CONTENTS/Frameworks"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
@@ -40,6 +41,8 @@ APP_ICON="$APP_RESOURCES/AppIcon.icns"
 RELEASE_INFO="$APP_RESOURCES/$APP_NAME-release-info.json"
 VERSION_FILE="$ROOT_DIR/VERSION"
 VERSION_RESOURCE="$APP_RESOURCES/$APP_NAME-version.env"
+SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/appcast.xml}"
+SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-lEr2AUplk4vAvH+IwB4DygGqobWmBkbyy1YYr1nRy70=}"
 trap 'rm -rf "$STAGING_DIR"' EXIT
 
 cd "$ROOT_DIR"
@@ -75,6 +78,38 @@ swift_tool() {
   fi
 }
 
+clear_extended_attributes() {
+  local path="$1"
+  local pass
+  [[ -e "$path" ]] || return 0
+  xattr -cr "$path" 2>/dev/null || true
+  while IFS= read -r item; do
+    xattr -d com.apple.FinderInfo "$item" 2>/dev/null || true
+    xattr -d com.apple.ResourceFork "$item" 2>/dev/null || true
+    xattr -d "com.apple.fileprovider.fpfs#P" "$item" 2>/dev/null || true
+  done < <(find "$path" -print)
+  while IFS= read -r item; do
+    xattr -d com.apple.FinderInfo "$item" 2>/dev/null || true
+    xattr -d com.apple.ResourceFork "$item" 2>/dev/null || true
+    xattr -d "com.apple.fileprovider.fpfs#P" "$item" 2>/dev/null || true
+  done < <(find -L "$path" -print 2>/dev/null)
+
+  for pass in 1 2 3 4 5; do
+    local found=0
+    while IFS= read -r item; do
+      found=1
+      xattr -d com.apple.FinderInfo "$item" 2>/dev/null || true
+      xattr -d com.apple.ResourceFork "$item" 2>/dev/null || true
+      xattr -d "com.apple.fileprovider.fpfs#P" "$item" 2>/dev/null || true
+    done < <(
+      xattr -lr "$path" 2>/dev/null \
+        | awk -F': ' '/com[.]apple[.](FinderInfo|ResourceFork|fileprovider[.]fpfs#P)/ { print $1 }' \
+        | sort -u
+    )
+    [[ "$found" -eq 0 ]] && break
+  done
+}
+
 BUILD_ARGS=(--product "$APP_NAME")
 CLI_BUILD_ARGS=(--product agent-signal)
 if [[ "$CONFIGURATION" == "release" ]]; then
@@ -84,13 +119,24 @@ fi
 
 swift_tool build "${BUILD_ARGS[@]}" >&2
 swift_tool build "${CLI_BUILD_ARGS[@]}" >&2
-BUILD_BINARY="$(swift_tool build "${BUILD_ARGS[@]}" --show-bin-path)/$APP_NAME"
-CLI_BINARY="$(swift_tool build "${CLI_BUILD_ARGS[@]}" --show-bin-path)/agent-signal"
+BUILD_BIN_DIR="$(swift_tool build "${BUILD_ARGS[@]}" --show-bin-path)"
+CLI_BIN_DIR="$(swift_tool build "${CLI_BUILD_ARGS[@]}" --show-bin-path)"
+BUILD_BINARY="$BUILD_BIN_DIR/$APP_NAME"
+CLI_BINARY="$CLI_BIN_DIR/agent-signal"
+SPARKLE_FRAMEWORK="$BUILD_BIN_DIR/Sparkle.framework"
+if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
+  SPARKLE_FRAMEWORK="$(find "$ROOT_DIR/.build" -path '*/Sparkle.framework' -type d -print | head -n 1 || true)"
+fi
+if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
+  echo "missing Sparkle.framework; run swift build --product $APP_NAME" >&2
+  exit 1
+fi
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS" "$APP_RESOURCES" "$APP_RESOURCES/script" "$APP_RESOURCES/scripts" "$APP_RESOURCES/dist/bin"
+mkdir -p "$APP_MACOS" "$APP_FRAMEWORKS" "$APP_RESOURCES" "$APP_RESOURCES/script" "$APP_RESOURCES/scripts" "$APP_RESOURCES/dist/bin"
 cp "$BUILD_BINARY" "$APP_BINARY"
 cp "$CLI_BINARY" "$APP_RESOURCES/dist/bin/agent-signal"
+ditto --norsrc "$SPARKLE_FRAMEWORK" "$APP_FRAMEWORKS/Sparkle.framework"
 cp "$ROOT_DIR/script/export_diagnostics.sh" "$APP_RESOURCES/script/export_diagnostics.sh"
 cp "$ROOT_DIR/script/install_hooks.py" "$APP_RESOURCES/script/install_hooks.py"
 cp "$ROOT_DIR/scripts/agent-signal" "$APP_RESOURCES/scripts/agent-signal"
@@ -116,6 +162,10 @@ chmod +x "$APP_RESOURCES/dist/bin/agent-signal" \
   "$APP_RESOURCES/scripts/codex-signal-hook" \
   "$APP_RESOURCES/scripts/claude-code-signal-hook" \
   "$APP_RESOURCES/scripts/generic-agent-signal-hook"
+
+if ! otool -l "$APP_BINARY" | grep -q "@executable_path/../Frameworks"; then
+  install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_BINARY"
+fi
 
 "$ROOT_DIR/script/generate_app_icon.py" "$APP_ICON"
 
@@ -148,6 +198,10 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$MIN_SYSTEM_VERSION</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <key>SUFeedURL</key>
+  <string>$SPARKLE_FEED_URL</string>
+  <key>SUPublicEDKey</key>
+  <string>$SPARKLE_PUBLIC_ED_KEY</string>
 </dict>
 </plist>
 PLIST
@@ -201,17 +255,20 @@ data = {
 release_info.write_text(json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
 PY
 
-find "$APP_BUNDLE" -exec xattr -c {} + 2>/dev/null || true
-find "$STAGED_APP_BUNDLE" -exec xattr -c {} + 2>/dev/null || true
+clear_extended_attributes "$APP_BUNDLE"
+clear_extended_attributes "$STAGED_APP_BUNDLE"
 if [[ -n "$SIGN_IDENTITY" ]]; then
+  codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_FRAMEWORKS/Sparkle.framework" >/dev/null
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_RESOURCES/dist/bin/agent-signal" >/dev/null
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$STAGED_APP_BUNDLE" >/dev/null
 else
+  codesign --force --deep --sign - "$APP_FRAMEWORKS/Sparkle.framework" >/dev/null
   codesign --force --sign - "$STAGED_APP_BUNDLE" >/dev/null
 fi
-find "$STAGED_APP_BUNDLE" -exec xattr -c {} + 2>/dev/null || true
+clear_extended_attributes "$STAGED_APP_BUNDLE"
 
 mkdir -p "$DIST_DIR"
 ditto --norsrc "$STAGED_APP_BUNDLE" "$APP_BUNDLE"
+clear_extended_attributes "$APP_BUNDLE"
 
 echo "$APP_BUNDLE"

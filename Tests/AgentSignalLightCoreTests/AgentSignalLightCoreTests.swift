@@ -2540,6 +2540,40 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(model.runtimeTimingProfile, .standard)
     }
 
+    @MainActor
+    func testSignalSoundSurfaceFollowsStatusBarOrFloatingSignal() {
+        let defaults = UserDefaults.standard
+        let keys = [
+            "isStatusBarIconEnabled",
+            "isFloatingSignalEnabled"
+        ]
+        let previousValues = keys.map { defaults.object(forKey: $0) }
+        keys.forEach(defaults.removeObject(forKey:))
+        defer {
+            for (key, value) in zip(keys, previousValues) {
+                if let value {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let model = MenuBarStatusModel()
+
+        model.setStatusBarIconEnabled(false)
+        model.setFloatingSignalEnabled(false)
+        XCTAssertFalse(model.isSignalSoundSurfaceEnabled)
+
+        model.setStatusBarIconEnabled(true)
+        model.setFloatingSignalEnabled(false)
+        XCTAssertTrue(model.isSignalSoundSurfaceEnabled)
+
+        model.setStatusBarIconEnabled(false)
+        model.setFloatingSignalEnabled(true)
+        XCTAssertTrue(model.isSignalSoundSurfaceEnabled)
+    }
+
     func testFloatingSignalSoundResolverFindsWAVWhenM4AIsMissing() throws {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("agent-signal-light-sound-resources-\(UUID().uuidString)", isDirectory: true)

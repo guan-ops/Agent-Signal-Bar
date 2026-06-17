@@ -49,8 +49,31 @@ The release workflow runs tests, packages the app, verifies checksums, and uploa
 
 - `AgentSignalBar.zip`
 - `AgentSignalBar.dmg`
+- `appcast.xml`
 - `AgentSignalBar-release-manifest.json`
 - `AgentSignalBar-SHA256SUMS.txt`
+
+`appcast.xml` is the Sparkle update feed used by installed apps. The app points to:
+
+```text
+https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/appcast.xml
+```
+
+Before publishing Sparkle-enabled releases from GitHub Actions, configure the repository secret:
+
+```text
+SPARKLE_PRIVATE_KEY
+```
+
+Export the private key locally with:
+
+```bash
+.build/artifacts/sparkle/Sparkle/bin/generate_keys \
+  --account com.agentsignallight.AgentSignalLight \
+  -x /tmp/AgentSignalBar-sparkle-private-key.txt
+```
+
+Paste that file's contents into the GitHub Actions secret, then delete the exported file. Do not commit Sparkle private keys.
 
 The release body is read from:
 
@@ -88,6 +111,7 @@ Before tagging a new version, confirm:
 - `VERSION` has the intended `VERSION=x.y.z` and monotonically increasing `BUILD=n`.
 - `docs/releases/<tag>.md` exists and includes clear Chinese and English release notes.
 - `README.md` and `README.zh-CN.md` describe the current behavior.
+- `SPARKLE_PRIVATE_KEY` is configured for GitHub Actions before pushing a tag.
 - `./script/verify_release_all.sh --skip-package` passes if artifacts already exist.
 - `./script/verify_release_all.sh` passes for a full local release gate.
 

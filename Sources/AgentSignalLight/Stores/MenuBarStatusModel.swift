@@ -599,9 +599,9 @@ final class MenuBarStatusModel: ObservableObject {
             UserDefaults.standard.object(forKey: "isCodexDesktopMonitoringEnabled") as? Bool ?? true
         isClaudeDesktopMonitoringEnabled =
             UserDefaults.standard.object(forKey: "isClaudeDesktopMonitoringEnabled") as? Bool ?? true
-        let resolvedAutomaticUpdateCheckEnabled = storedAutomaticUpdateCheckEnabled ?? true
+        let resolvedAutomaticUpdateCheckEnabled = false
         isAutomaticUpdateCheckEnabled = resolvedAutomaticUpdateCheckEnabled
-        if storedAutomaticUpdateCheckEnabled == nil {
+        if storedAutomaticUpdateCheckEnabled != resolvedAutomaticUpdateCheckEnabled {
             UserDefaults.standard.set(resolvedAutomaticUpdateCheckEnabled, forKey: "isAutomaticUpdateCheckEnabled")
         }
         lastAutomaticUpdateCheckAt = storedLastAutomaticUpdateCheckAt
@@ -618,7 +618,6 @@ final class MenuBarStatusModel: ObservableObject {
         }
         watcher?.start()
         startTimers()
-        performAutomaticUpdateCheckIfNeeded()
         startMonitoringResumeLightSequence()
     }
 
@@ -737,6 +736,10 @@ final class MenuBarStatusModel: ObservableObject {
         }
 
         return baseSnapshot
+    }
+
+    var isSignalSoundSurfaceEnabled: Bool {
+        isStatusBarIconEnabled || isFloatingSignalEnabled
     }
 
     var lightTick: Int {

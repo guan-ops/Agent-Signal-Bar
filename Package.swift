@@ -15,6 +15,9 @@ let package = Package(
         .library(name: "AgentSignalLightCore", targets: ["AgentSignalLightCore"]),
         .library(name: "AgentSignalLightUI", targets: ["AgentSignalLightUI"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.3")
+    ],
     targets: [
         .target(name: "AgentSignalLightCore"),
         .target(
@@ -25,7 +28,8 @@ let package = Package(
             name: "AgentSignalLight",
             dependencies: [
                 "AgentSignalLightCore",
-                "AgentSignalLightUI"
+                "AgentSignalLightUI",
+                .product(name: "Sparkle", package: "Sparkle")
             ],
             resources: [
                 .process("Resources")

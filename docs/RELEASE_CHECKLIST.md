@@ -14,6 +14,7 @@ The all-in-one release gate replaces the old manual command chain. It packages r
 - shell scripts parse
 - Swift tests pass
 - release checksums match
+- Sparkle `appcast.xml` exists and is included in release checksums
 - `./scripts/agent-signal status --json` parses
 - release zip extracts, contains the expected app/scripts/docs/previews, and installs without rebuilding
 - release DMG verifies, mounts, copies to a temporary Applications directory, and preserves code signing
@@ -63,6 +64,7 @@ The all-in-one release gate replaces the old manual command chain. It packages r
   - `关闭灯` gray paused, not all black/off
 - Use `./scripts/agent-signal stale --session smoke --agent script --event StaleCheck` and confirm stale uses the gray/yellow stale display.
 - Open `连接`, click `导出诊断`, confirm Finder selects a new zip under `dist/diagnostics/`, and confirm the settings window shows the archive path.
+- Open `关于`, click `检查更新`, and confirm the Sparkle update UI opens or reports the current build correctly. Confirm the `自动检查更新` switch maps to Sparkle rather than the legacy GitHub notification checker.
 
 ## Hook Smoke Test
 
@@ -108,3 +110,4 @@ For wider distribution:
 - Package with `AGENT_SIGNAL_LIGHT_CODE_SIGN_IDENTITY="Developer ID Application: ..."` so the app is signed with hardened runtime and timestamp.
 - Submit with `AGENT_SIGNAL_LIGHT_NOTARY_PROFILE=<profile> ./script/notarize_release.sh --submit`.
 - Optionally add a polished DMG background or pkg installer.
+- Keep the Sparkle private key in Keychain locally and in the GitHub Actions `SPARKLE_PRIVATE_KEY` secret for CI. Never commit the private key.

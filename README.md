@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/release-v1.3.3-111827.svg" alt="Latest release: v1.3.3"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/release-v1.4.0-111827.svg" alt="Latest release: v1.4.0"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-111827.svg" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Swift-6.0-F05138.svg" alt="Swift 6.0">
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/download-DMG-0ea5e9.svg" alt="Download DMG"></a>
@@ -69,6 +69,8 @@ For normal use, download the app from [GitHub Releases](https://github.com/guan-
 2. Download `AgentSignalBar.dmg`.
 3. Open the DMG and drag `AgentSignalLight.app` to `Applications`.
 4. Open Agent Signal Bar from `Applications`.
+
+After the first install, use `Agent Signal Bar > Check for Updates...` or `Settings > About > Updates` to let Sparkle download and install future releases.
 
 If macOS blocks the first launch because the build is not notarized yet, right-click the app and choose `Open`, or use `System Settings > Privacy & Security > Open Anyway`.
 
@@ -197,6 +199,8 @@ Build local zip and DMG artifacts:
 ```bash
 ./script/package_release.sh
 ```
+
+Sparkle update feeds are generated as `dist/appcast.xml`. Local packaging uses the Sparkle signing key from Keychain; GitHub Actions requires the private key in the `SPARKLE_PRIVATE_KEY` secret.
 
 ## CLI
 

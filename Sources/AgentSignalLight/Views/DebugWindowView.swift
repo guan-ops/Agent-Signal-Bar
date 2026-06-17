@@ -6,6 +6,7 @@ import SwiftUI
 
 struct DebugWindowView: View {
     @ObservedObject var model: MenuBarStatusModel
+    @ObservedObject var updater: SparkleUpdaterService
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedSettingsTab: SettingsTab = .activity
     @State private var expandedSettingsDropdown: SettingsDropdownID?
@@ -379,6 +380,8 @@ struct DebugWindowView: View {
                             "Use the original New Zealand pedestrian crossing cadence and switch completion and blink sounds to New Zealand."
                         ))
                 }
+
+                soundAlertSettings
             }
             .zIndex(isGeneralDropdownExpanded ? 10 : 1)
 
@@ -396,16 +399,7 @@ struct DebugWindowView: View {
 
     private var isGeneralDropdownExpanded: Bool {
         switch expandedSettingsDropdown {
-        case .language, .theme:
-            return true
-        default:
-            return false
-        }
-    }
-
-    private var isFloatingSignalDropdownExpanded: Bool {
-        switch expandedSettingsDropdown {
-        case .completionSound, .waitingSound, .alertSound:
+        case .language, .theme, .completionSound, .waitingSound, .alertSound:
             return true
         default:
             return false
@@ -923,7 +917,11 @@ struct DebugWindowView: View {
                     "Restore the medium (default) floating signal size."
                 ))
             }
+        }
+    }
 
+    private var soundAlertSettings: some View {
+        Group {
             settingRow(model.text("声音提醒", "Sound alert")) {
                 settingsSwitch(floatingSignalSoundEnabledBinding)
             }
@@ -984,7 +982,6 @@ struct DebugWindowView: View {
             Divider()
 
             floatingSignalSettings
-                .zIndex(isFloatingSignalDropdownExpanded ? 10 : 0)
 
             Divider()
 
@@ -1238,68 +1235,37 @@ struct DebugWindowView: View {
                     .textSelection(.enabled)
             }
 
+            settingRow(model.text("自动检查更新", "Automatically check for updates")) {
+                settingsSwitch(automaticUpdateCheckBinding)
+                    .help(model.text(
+                        "由 Sparkle 定期检查更新，可直接下载并重启安装。",
+                        "Sparkle checks periodically and can download the update, then relaunch to install."
+                    ))
+            }
+
             settingRow(model.text("更新", "Updates")) {
-                HStack(spacing: 8) {
+                VStack(alignment: .trailing, spacing: 8) {
                     Button {
-                        model.checkForUpdates()
+                        updater.checkForUpdates()
                     } label: {
                         settingsActionSurface(
-                            model.isUpdateCheckRunning
-                                ? model.text("检查中", "Checking")
-                                : model.text("检查更新", "Check for Updates"),
+                            model.text("检查更新", "Check for Updates"),
                             systemImage: "arrow.triangle.2.circlepath"
                         )
                     }
                     .buttonStyle(.plain)
-                    .disabled(model.isUpdateCheckRunning)
+                    .disabled(updater.isConfigured && !updater.canCheckForUpdates)
 
-                    if model.updateReleasePageURL != nil {
-                        Button {
-                            model.openLatestReleasePage()
-                        } label: {
-                            settingsActionSurface(
-                                model.text("打开下载页面", "Open Download Page"),
-                                systemImage: "arrow.up.forward.app",
-                                width: 180
-                            )
-                        }
-                        .buttonStyle(.plain)
+                    Button {
+                        model.openLatestReleasePage()
+                    } label: {
+                        settingsActionSurface(
+                            model.text("打开下载页面", "Open Download Page"),
+                            systemImage: "arrow.up.forward.app"
+                        )
                     }
+                    .buttonStyle(.plain)
                 }
-            }
-
-            settingRow(model.text("自动检查更新", "Automatically check for updates")) {
-                settingsSwitch(automaticUpdateCheckBinding)
-                    .help(model.text(
-                        "检测到新版本时发送 macOS 通知，不会自动安装。",
-                        "Send a macOS notification when a newer release is available. Updates are not installed automatically."
-                    ))
-            }
-
-            if model.isAutomaticUpdateCheckEnabled {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.text(
-                        "检测到新版本时发送通知，不会自动安装。",
-                        "Sends a notification when a newer release is available. Updates are not installed automatically."
-                    ))
-
-                    if let lastAutomaticUpdateCheckAt = model.lastAutomaticUpdateCheckAt {
-                        Text(model.text(
-                            "上次自动检查 \(lastAutomaticUpdateCheckAt.formatted(date: .omitted, time: .shortened))",
-                            "Last automatic check \(lastAutomaticUpdateCheckAt.formatted(date: .omitted, time: .shortened))"
-                        ))
-                    }
-                }
-                .font(settingsBodyFont)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let updateCheckMessage = model.updateCheckMessage {
-                Text(updateCheckMessage)
-                    .font(settingsBodyFont)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider()
@@ -2271,8 +2237,8 @@ struct DebugWindowView: View {
 
     private var automaticUpdateCheckBinding: Binding<Bool> {
         Binding(
-            get: { model.isAutomaticUpdateCheckEnabled },
-            set: { model.setAutomaticUpdateCheckEnabled($0) }
+            get: { updater.automaticallyChecksForUpdates },
+            set: { updater.setAutomaticallyChecksForUpdates($0) }
         )
     }
 

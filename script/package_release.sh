@@ -9,6 +9,7 @@ RELEASE_ROOT="$DIST_DIR/release"
 PAYLOAD_DIR="$RELEASE_ROOT/$APP_NAME"
 ARCHIVE="$DIST_DIR/${RELEASE_BASENAME}.zip"
 DMG="$DIST_DIR/${RELEASE_BASENAME}.dmg"
+APPCAST="$DIST_DIR/appcast.xml"
 CHECKSUMS="$DIST_DIR/${RELEASE_BASENAME}-SHA256SUMS.txt"
 MANIFEST="$DIST_DIR/${RELEASE_BASENAME}-release-manifest.json"
 XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
@@ -103,15 +104,16 @@ VERIFY_APP="$(mktemp -d)/$APP_NAME.app"
 ditto --norsrc "$PAYLOAD_DIR/dist/$APP_NAME.app" "$VERIFY_APP"
 codesign --verify --deep --strict --verbose=2 "$VERIFY_APP" >/dev/null
 
-rm -f "$ARCHIVE" "$DMG" "$CHECKSUMS" "$MANIFEST"
+rm -f "$ARCHIVE" "$DMG" "$APPCAST" "$CHECKSUMS" "$MANIFEST"
 (
   cd "$RELEASE_ROOT"
   ditto -c -k --norsrc --keepParent "$APP_NAME" "$ARCHIVE"
 )
 
 "$ROOT_DIR/script/package_dmg.sh" --use-existing-app --output "$DMG" >/dev/null
+"$ROOT_DIR/script/generate_appcast.sh" >/dev/null
 
-/usr/bin/python3 - "$ROOT_DIR" "$APP_NAME" "$APP_BUNDLE" "$ARCHIVE" "$DMG" "$MANIFEST" <<'PY'
+/usr/bin/python3 - "$ROOT_DIR" "$APP_NAME" "$APP_BUNDLE" "$ARCHIVE" "$DMG" "$APPCAST" "$MANIFEST" <<'PY'
 import hashlib
 import json
 import os
@@ -126,7 +128,8 @@ app_name = sys.argv[2]
 app_bundle = Path(sys.argv[3])
 archive = Path(sys.argv[4])
 dmg = Path(sys.argv[5])
-manifest_path = Path(sys.argv[6])
+appcast = Path(sys.argv[6])
+manifest_path = Path(sys.argv[7])
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -155,7 +158,7 @@ git_commit = run_output(["git", "rev-parse", "--short", "HEAD"])
 git_dirty = run_output(["git", "status", "--short"])
 
 artifacts = []
-for role, path in [("source_zip", archive), ("installer_dmg", dmg)]:
+for role, path in [("source_zip", archive), ("installer_dmg", dmg), ("sparkle_appcast", appcast)]:
     artifacts.append(
         {
             "role": role,
@@ -200,10 +203,12 @@ PY
   shasum -a 256 \
     "dist/$(basename "$ARCHIVE")" \
     "dist/$(basename "$DMG")" \
+    "dist/$(basename "$APPCAST")" \
     "dist/$(basename "$MANIFEST")" >"$CHECKSUMS"
 )
 
 echo "Release archive: $ARCHIVE"
 echo "Release DMG: $DMG"
+echo "Sparkle appcast: $APPCAST"
 echo "Release manifest: $MANIFEST"
 echo "Checksums: $CHECKSUMS"

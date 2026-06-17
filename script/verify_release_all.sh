@@ -67,6 +67,7 @@ verify_required_artifacts() {
   [[ -d "$ROOT_DIR/dist/$APP_NAME.app" ]] || die "missing dist/$APP_NAME.app"
   [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME.zip" ]] || die "missing dist/$RELEASE_BASENAME.zip"
   [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME.dmg" ]] || die "missing dist/$RELEASE_BASENAME.dmg"
+  [[ -f "$ROOT_DIR/dist/appcast.xml" ]] || die "missing dist/appcast.xml"
   [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME-release-manifest.json" ]] || die "missing release manifest"
   [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME-SHA256SUMS.txt" ]] || die "missing SHA256SUMS file"
 }
