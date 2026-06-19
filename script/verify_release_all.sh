@@ -73,10 +73,12 @@ verify_required_artifacts() {
 }
 
 verify_status_json() {
-  local state_file
+  local state_file status_file
   state_file="$(mktemp "${TMPDIR:-/tmp}/agent-signal-release-json.XXXXXX")"
-  AGENT_SIGNAL_LIGHT_STATE_FILE="$state_file" "$ROOT_DIR/scripts/agent-signal" status --json >/tmp/agent-signal-release-status.json
-  /usr/bin/python3 - /tmp/agent-signal-release-status.json <<'PY'
+  status_file="$(mktemp "${TMPDIR:-/tmp}/agent-signal-release-status.XXXXXX")"
+  trap 'rm -f "$state_file" "$status_file"; trap - RETURN' RETURN
+  AGENT_SIGNAL_LIGHT_STATE_FILE="$state_file" "$ROOT_DIR/scripts/agent-signal" status --json >"$status_file"
+  /usr/bin/python3 - "$status_file" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -85,7 +87,6 @@ data = json.loads(Path(sys.argv[1]).read_text())
 if "aggregate" not in data or "sessions" not in data:
     raise SystemExit("status JSON missing aggregate or sessions")
 PY
-  rm -f "$state_file" /tmp/agent-signal-release-status.json
 }
 
 prepare_running_app_for_strict_doctor() {

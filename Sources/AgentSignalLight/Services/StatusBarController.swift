@@ -356,6 +356,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         model.reload()
+        model.pollCodexRateLimitsIfNeeded()
         rebuildNativeStatusMenu(menu)
     }
 
@@ -383,6 +384,9 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         }
 
         menu.addItem(.separator())
+        addNativeQuotaMenuItems(to: menu)
+
+        menu.addItem(.separator())
         addOpenAgentMenuItems(to: menu, snapshot: activitySnapshot)
         menu.addItem(actionMenuItem(
             model.isMonitoringPaused ? model.text("继续监控", "Resume Monitoring") : model.text("暂停监控", "Pause Monitoring"),
@@ -402,6 +406,18 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         menu.addItem(.separator())
         menu.addItem(actionMenuItem(model.text("设置", "Settings"), imageName: "gearshape", action: #selector(openSettingsFromMenu)))
         menu.addItem(actionMenuItem(model.text("退出", "Quit"), imageName: "power", action: #selector(quitFromMenu)))
+    }
+
+    private func addNativeQuotaMenuItems(to menu: NSMenu) {
+        menu.addItem(infoMenuItem(title: model.text("Codex 额度", "Codex Quota")))
+
+        guard let quota = model.latestAgentQuota else {
+            menu.addItem(infoMenuItem(title: model.text("暂无额度数据", "No quota data yet")))
+            return
+        }
+
+        menu.addItem(infoMenuItem(title: model.quotaTitleLine(for: .fiveHours, quota: quota)))
+        menu.addItem(infoMenuItem(title: model.quotaTitleLine(for: .weekly, quota: quota)))
     }
 
     private func infoMenuItem(

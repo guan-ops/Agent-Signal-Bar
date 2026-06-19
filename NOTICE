@@ -13,6 +13,12 @@ and marketing artwork.
 The bundled New Zealand crossing sounds in
 Sources/AgentSignalLight/Resources/ were recorded by XiongYang Guan.
 
+This product includes token-usage JSONL scanning, pricing estimate, and usage
+visualization techniques adapted from CodexBar
+(https://github.com/steipete/CodexBar).
+Copyright (c) 2026 Peter Steinberger. CodexBar is licensed under the MIT
+License.
+
 The Agent Signal Bar name, app icon, logo, and visual identity are provided
 for identification and documentation purposes only. The Apache License 2.0
 does not grant permission to use those brand assets to present a competing,

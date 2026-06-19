@@ -8,13 +8,13 @@ import SwiftUI
 private enum FloatingSignalPanelLayout {
     static func outerSize(contentSize: CGSize, scale: CGFloat) -> NSSize {
         return NSSize(
-            width: contentSize.width + trailingOutset(for: scale),
+            width: leadingOutset(for: scale) + contentSize.width + trailingOutset(for: scale),
             height: contentSize.height + topOutset(for: scale) + bottomOutset(for: scale)
         )
     }
 
     static func contentOrigin(scale: CGFloat) -> CGPoint {
-        CGPoint(x: 0, y: topOutset(for: scale))
+        CGPoint(x: leadingOutset(for: scale), y: topOutset(for: scale))
     }
 
     static func badgeSize(for _: CGFloat) -> CGFloat {
@@ -38,6 +38,10 @@ private enum FloatingSignalPanelLayout {
     }
 
     private static func topOutset(for scale: CGFloat) -> CGFloat {
+        badgeSize(for: scale) + controlGap(for: scale)
+    }
+
+    private static func leadingOutset(for scale: CGFloat) -> CGFloat {
         badgeSize(for: scale) + controlGap(for: scale)
     }
 
@@ -100,6 +104,51 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         .store(in: &cancellables)
 
         model.$floatingSignalLayout.sink { [weak self] _ in
+            Task { @MainActor in self?.resizePanelForCurrentScale(keepingCenter: true) }
+        }
+        .store(in: &cancellables)
+
+        model.$isFloatingSignalInfoBadgeEnabled.sink { [weak self] _ in
+            Task { @MainActor in self?.resizePanelForCurrentScale(keepingCenter: true) }
+        }
+        .store(in: &cancellables)
+
+        model.$isFloatingSignalQuotaBadgeEnabled.sink { [weak self] _ in
+            Task { @MainActor in self?.resizePanelForCurrentScale(keepingCenter: true) }
+        }
+        .store(in: &cancellables)
+
+        model.$isFloatingSignalTokenBadgeEnabled.sink { [weak self] _ in
+            Task { @MainActor in self?.resizePanelForCurrentScale(keepingCenter: true) }
+        }
+        .store(in: &cancellables)
+
+        model.$floatingSignalInfoBadgeCorner.sink { [weak self] _ in
+            Task { @MainActor in self?.resizePanelForCurrentScale(keepingCenter: true) }
+        }
+        .store(in: &cancellables)
+
+        model.$floatingSignalQuotaBadgeCorner.sink { [weak self] _ in
+            Task { @MainActor in self?.resizePanelForCurrentScale(keepingCenter: true) }
+        }
+        .store(in: &cancellables)
+
+        model.$floatingSignalTokenBadgeCorner.sink { [weak self] _ in
+            Task { @MainActor in self?.resizePanelForCurrentScale(keepingCenter: true) }
+        }
+        .store(in: &cancellables)
+
+        model.$floatingSignalQuotaBadgeWindow.sink { [weak self] _ in
+            Task { @MainActor in self?.resizePanelForCurrentScale(keepingCenter: true) }
+        }
+        .store(in: &cancellables)
+
+        model.$latestAgentQuota.sink { [weak self] _ in
+            Task { @MainActor in self?.resizePanelForCurrentScale(keepingCenter: true) }
+        }
+        .store(in: &cancellables)
+
+        model.$latestAgentTokenUsage.sink { [weak self] _ in
             Task { @MainActor in self?.resizePanelForCurrentScale(keepingCenter: true) }
         }
         .store(in: &cancellables)
@@ -537,6 +586,12 @@ private final class FloatingSignalCursorPush {
 }
 
 private struct FloatingSignalPanelView: View {
+    private enum BadgeKind {
+        case info
+        case quota
+        case token
+    }
+
     @ObservedObject var model: MenuBarStatusModel
     let animationClock: SignalAnimationClock
     let hide: () -> Void
@@ -550,12 +605,21 @@ private struct FloatingSignalPanelView: View {
     let openSettings: () -> Void
     @State private var isHoveringResizeHandle = false
     @State private var isDraggingResizeHandle = false
+    @State private var isDraggingInfoBadge = false
+    @State private var isDraggingQuotaBadge = false
+    @State private var isDraggingTokenBadge = false
+    @State private var infoBadgeDragTranslation = CGSize.zero
+    @State private var quotaBadgeDragTranslation = CGSize.zero
+    @State private var tokenBadgeDragTranslation = CGSize.zero
     @State private var isShowingInfoPanel = false
+    @State private var isShowingQuotaPanel = false
+    @State private var isShowingTokenPanel = false
     @State private var resizeStartVisualScale: CGFloat?
     @State private var resizeTargetVisualScale: CGFloat?
     @State private var resizeStartTick: Int?
     @State private var cachedLightSnapshot: SignalSnapshot
     @State private var cachedFloatingInfoSessions: [SessionStatus]
+    @State private var lastPersistedVisibleBadgeCornerSignature: String?
 
     init(
         model: MenuBarStatusModel,
@@ -606,7 +670,6 @@ private struct FloatingSignalPanelView: View {
         )
         let contentOrigin = FloatingSignalPanelLayout.contentOrigin(scale: scale)
         let handleHotspotInset = FloatingSignalPanelLayout.resizeHandleHotspotInset(for: scale)
-        let badgeOverlap = FloatingSignalPanelLayout.infoBadgeOverlap(for: scale)
         let panelSize = FloatingSignalPanelLayout.outerSize(contentSize: contentSize, scale: scale)
 
         ZStack(alignment: .topLeading) {
@@ -622,8 +685,60 @@ private struct FloatingSignalPanelView: View {
             .offset(x: contentOrigin.x, y: contentOrigin.y)
 
             if shouldShowInfoBadge {
-                infoBadge(scale: scale)
-                    .offset(x: contentSize.width - badgeOverlap, y: 0)
+                let badgeOffset = infoBadgeOffset(
+                    for: model.floatingSignalInfoBadgeCorner,
+                    contentOrigin: contentOrigin,
+                    contentSize: contentSize,
+                    scale: scale
+                )
+                infoBadge(scale: scale, contentOrigin: contentOrigin, contentSize: contentSize)
+                    .offset(
+                        x: badgeOffset.width + infoBadgeDragTranslation.width,
+                        y: badgeOffset.height + infoBadgeDragTranslation.height
+                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.88, anchor: .topLeading)))
+            }
+
+            if let quotaStatus = floatingQuotaStatus {
+                let corner = resolvedQuotaBadgeCorner
+                let badgeOffset = infoBadgeOffset(
+                    for: corner,
+                    contentOrigin: contentOrigin,
+                    contentSize: contentSize,
+                    scale: scale
+                )
+                quotaBadge(
+                    quotaStatus,
+                    corner: corner,
+                    contentOrigin: contentOrigin,
+                    contentSize: contentSize,
+                    scale: scale
+                )
+                    .offset(
+                        x: badgeOffset.width + quotaBadgeDragTranslation.width,
+                        y: badgeOffset.height + quotaBadgeDragTranslation.height
+                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.88, anchor: .topLeading)))
+            }
+
+            if shouldShowTokenBadge {
+                let corner = resolvedTokenBadgeCorner
+                let badgeOffset = infoBadgeOffset(
+                    for: corner,
+                    contentOrigin: contentOrigin,
+                    contentSize: contentSize,
+                    scale: scale
+                )
+                tokenBadge(
+                    corner: corner,
+                    contentOrigin: contentOrigin,
+                    contentSize: contentSize,
+                    scale: scale
+                )
+                    .offset(
+                        x: badgeOffset.width + tokenBadgeDragTranslation.width,
+                        y: badgeOffset.height + tokenBadgeDragTranslation.height
+                    )
                     .transition(.opacity.combined(with: .scale(scale: 0.88, anchor: .topLeading)))
             }
 
@@ -637,13 +752,20 @@ private struct FloatingSignalPanelView: View {
         .background(Color.clear)
         .contentShape(Rectangle())
         .transaction { transaction in
-            if isDraggingResizeHandle {
+            if isDraggingResizeHandle || isDraggingInfoBadge || isDraggingQuotaBadge || isDraggingTokenBadge {
                 transaction.animation = nil
                 transaction.disablesAnimations = true
             }
         }
         .animation(.easeInOut(duration: 0.12), value: showsResizeHandle)
         .animation(.easeInOut(duration: 0.12), value: shouldShowInfoBadge)
+        .animation(.easeInOut(duration: 0.12), value: shouldShowTokenBadge)
+        .animation(.easeInOut(duration: 0.12), value: model.floatingSignalInfoBadgeCorner)
+        .animation(.easeInOut(duration: 0.12), value: model.floatingSignalQuotaBadgeCorner)
+        .animation(.easeInOut(duration: 0.12), value: model.floatingSignalTokenBadgeCorner)
+        .animation(.easeInOut(duration: 0.12), value: model.floatingSignalTokenBadgeWindow)
+        .animation(.easeInOut(duration: 0.12), value: floatingQuotaStatus)
+        .animation(.easeInOut(duration: 0.12), value: model.latestAgentTokenUsage)
         .contextMenu {
             Button(model.text("隐藏悬浮灯", "Hide Floating Signal"), action: hide)
             Button(model.text("设置...", "Settings..."), action: openSettings)
@@ -674,21 +796,49 @@ private struct FloatingSignalPanelView: View {
         .accessibilityValue(model.displayName(for: cachedLightSnapshot.aggregate))
         .onReceive(model.$snapshot) { _ in
             refreshCachedSnapshots()
+            persistVisibleBadgeCornersSoon()
         }
         .onReceive(model.$desktopAppSessions) { _ in
             refreshCachedSnapshots()
+            persistVisibleBadgeCornersSoon()
         }
         .onReceive(model.$statusLightOverride) { _ in
             refreshCachedSnapshots()
         }
         .onReceive(model.$isMonitoringPaused) { _ in
             refreshCachedSnapshots()
+            persistVisibleBadgeCornersSoon()
+        }
+        .onReceive(model.$latestAgentQuota) { _ in
+            refreshCachedSnapshots()
+            persistVisibleBadgeCornersSoon()
+        }
+        .onReceive(model.$isFloatingSignalInfoBadgeEnabled) { _ in
+            refreshCachedSnapshots()
+            persistVisibleBadgeCornersSoon()
+        }
+        .onReceive(model.$isFloatingSignalQuotaBadgeEnabled) { _ in
+            refreshCachedSnapshots()
+            persistVisibleBadgeCornersSoon()
+        }
+        .onReceive(model.$isFloatingSignalTokenBadgeEnabled) { _ in
+            refreshCachedSnapshots()
+            persistVisibleBadgeCornersSoon()
+        }
+        .onReceive(model.$latestAgentTokenUsage) { _ in
+            refreshCachedSnapshots()
+            persistVisibleBadgeCornersSoon()
         }
         .onReceive(model.$signalLightAgentScopes) { _ in
             refreshCachedSnapshots()
+            persistVisibleBadgeCornersSoon()
         }
         .onReceive(model.$signalLightAgentSelectionMode) { _ in
             refreshCachedSnapshots()
+            persistVisibleBadgeCornersSoon()
+        }
+        .task {
+            persistVisibleBadgeCornersSoon()
         }
     }
 
@@ -701,16 +851,56 @@ private struct FloatingSignalPanelView: View {
     }
 
     private var shouldShowInfoBadge: Bool {
-        infoBadgeCount > 0
+        model.isFloatingSignalInfoBadgeEnabled && infoBadgeCount > 0
     }
 
-    private func infoBadge(scale: CGFloat) -> some View {
-        let badgeSize = FloatingSignalPanelLayout.badgeSize(for: scale)
-        let fontSize: CGFloat = infoBadgeText.count > 2 ? 9 : (infoBadgeText.count > 1 ? 11 : 13)
+    private var shouldShowTokenBadge: Bool {
+        model.isFloatingSignalTokenBadgeEnabled
+            && !model.isMonitoringPaused
+            && floatingTokenUsageTokens > 0
+    }
 
-        return Button {
-            isShowingInfoPanel.toggle()
-        } label: {
+    private var floatingQuotaStatus: AgentQuotaStatus? {
+        guard model.isFloatingSignalQuotaBadgeEnabled,
+              !model.isMonitoringPaused,
+              let quota = model.latestAgentQuota
+        else {
+            return nil
+        }
+
+        return quota
+    }
+
+    private var resolvedQuotaBadgeCorner: FloatingSignalInfoBadgeCorner {
+        var occupied: [FloatingSignalInfoBadgeCorner] = []
+        if shouldShowInfoBadge {
+            occupied.append(model.floatingSignalInfoBadgeCorner)
+        }
+        return firstAvailableBadgeCorner(
+            preferred: model.floatingSignalQuotaBadgeCorner,
+            avoiding: occupied
+        )
+    }
+
+    private var resolvedTokenBadgeCorner: FloatingSignalInfoBadgeCorner {
+        var occupied: [FloatingSignalInfoBadgeCorner] = []
+        if shouldShowInfoBadge {
+            occupied.append(model.floatingSignalInfoBadgeCorner)
+        }
+        if floatingQuotaStatus != nil {
+            occupied.append(resolvedQuotaBadgeCorner)
+        }
+        return firstAvailableBadgeCorner(
+            preferred: model.floatingSignalTokenBadgeCorner,
+            avoiding: occupied
+        )
+    }
+
+    private func infoBadge(scale: CGFloat, contentOrigin: CGPoint, contentSize: CGSize) -> some View {
+        let badgeSize = FloatingSignalPanelLayout.badgeSize(for: scale)
+        let fontSize = badgeFontSize(for: infoBadgeText)
+
+        return ZStack {
             Text(infoBadgeText)
                 .font(.system(size: fontSize, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
@@ -723,14 +913,405 @@ private struct FloatingSignalPanelView: View {
                 )
                 .clipShape(Circle())
                 .contentShape(Circle())
+                .accessibilityHidden(true)
+
+            FloatingSignalInfoBadgeDragControl(
+                badgeSize: badgeSize,
+                onClick: {
+                    isShowingQuotaPanel = false
+                    isShowingTokenPanel = false
+                    isShowingInfoPanel.toggle()
+                },
+                onDragChanged: { translation in
+                    isShowingInfoPanel = false
+                    isShowingQuotaPanel = false
+                    isShowingTokenPanel = false
+                    isDraggingInfoBadge = true
+                    infoBadgeDragTranslation = translation
+                },
+                onDragEnded: { translation in
+                    let currentInfoCorner = model.floatingSignalInfoBadgeCorner
+                    let nextCorner = nearestInfoBadgeCorner(
+                        from: currentInfoCorner,
+                        translation: translation,
+                        contentOrigin: contentOrigin,
+                        contentSize: contentSize,
+                        scale: scale
+                    )
+                    moveBadge(.info, from: currentInfoCorner, to: nextCorner)
+                    infoBadgeDragTranslation = .zero
+                    isDraggingInfoBadge = false
+                },
+                onDragCancelled: {
+                    infoBadgeDragTranslation = .zero
+                    isDraggingInfoBadge = false
+                }
+            )
+            .frame(width: badgeSize, height: badgeSize)
         }
-        .buttonStyle(.plain)
-        .focusable(false)
         .background(
             FloatingSignalInfoPanelAnchor(isPresented: $isShowingInfoPanel, model: model)
         )
-        .help(model.text("查看悬浮灯状态", "Show floating signal status"))
+        .help(model.text("点击查看悬浮灯状态，拖动可移动角标", "Click to show floating signal status; drag to move the badge"))
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(model.text("查看悬浮灯状态", "Show floating signal status"))
+    }
+
+    private func quotaBadge(
+        _ quota: AgentQuotaStatus,
+        corner: FloatingSignalInfoBadgeCorner,
+        contentOrigin: CGPoint,
+        contentSize: CGSize,
+        scale: CGFloat
+    ) -> some View {
+        let badgeSize = FloatingSignalPanelLayout.badgeSize(for: scale)
+        let text = quotaBadgeText(for: quota)
+        let fontSize = badgeFontSize(for: text)
+
+        return ZStack {
+            Text(text)
+                .font(.system(size: fontSize, weight: .bold, design: .rounded))
+                .foregroundStyle(quotaBadgeForeground(for: quota))
+                .monospacedDigit()
+                .minimumScaleFactor(0.55)
+                .lineLimit(1)
+                .frame(width: badgeSize, height: badgeSize)
+                .background(Circle().fill(Color.black))
+                .clipShape(Circle())
+                .contentShape(Circle())
+                .accessibilityHidden(true)
+
+            FloatingSignalInfoBadgeDragControl(
+                badgeSize: badgeSize,
+                onClick: {
+                    isShowingInfoPanel = false
+                    isShowingTokenPanel = false
+                    isShowingQuotaPanel.toggle()
+                },
+                onDragChanged: { translation in
+                    isShowingInfoPanel = false
+                    isShowingQuotaPanel = false
+                    isShowingTokenPanel = false
+                    isDraggingQuotaBadge = true
+                    quotaBadgeDragTranslation = translation
+                },
+                onDragEnded: { translation in
+                    let nextCorner = nearestInfoBadgeCorner(
+                        from: corner,
+                        translation: translation,
+                        contentOrigin: contentOrigin,
+                        contentSize: contentSize,
+                        scale: scale
+                    )
+                    moveBadge(.quota, from: corner, to: nextCorner)
+                    quotaBadgeDragTranslation = .zero
+                    isDraggingQuotaBadge = false
+                },
+                onDragCancelled: {
+                    quotaBadgeDragTranslation = .zero
+                    isDraggingQuotaBadge = false
+                }
+            )
+            .frame(width: badgeSize, height: badgeSize)
+        }
+        .background(
+            FloatingSignalQuotaPanelAnchor(
+                isPresented: $isShowingQuotaPanel,
+                model: model,
+                quota: quota
+            )
+        )
+        .help(model.text("点击查看 Agent 剩余额度，拖动可移动角标", "Click to show agent quota; drag to move the badge"))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(quotaBadgeHelp(for: quota))
+    }
+
+    private func tokenBadge(
+        corner: FloatingSignalInfoBadgeCorner,
+        contentOrigin: CGPoint,
+        contentSize: CGSize,
+        scale: CGFloat
+    ) -> some View {
+        let badgeSize = FloatingSignalPanelLayout.badgeSize(for: scale)
+        let text = tokenBadgeText
+        let fontSize = badgeFontSize(for: text)
+
+        return ZStack {
+            Text(text)
+                .font(.system(size: fontSize, weight: .bold, design: .rounded))
+                .foregroundStyle(Color(red: 0.42, green: 0.78, blue: 1.0))
+                .monospacedDigit()
+                .minimumScaleFactor(0.5)
+                .lineLimit(1)
+                .frame(width: badgeSize, height: badgeSize)
+                .background(Circle().fill(Color.black))
+                .clipShape(Circle())
+                .contentShape(Circle())
+                .accessibilityHidden(true)
+
+            FloatingSignalInfoBadgeDragControl(
+                badgeSize: badgeSize,
+                onClick: {
+                    isShowingInfoPanel = false
+                    isShowingQuotaPanel = false
+                    model.refreshTokenActivityIfNeeded(force: model.tokenActivityDays.isEmpty)
+                    isShowingTokenPanel.toggle()
+                },
+                onDragChanged: { translation in
+                    isShowingInfoPanel = false
+                    isShowingQuotaPanel = false
+                    isShowingTokenPanel = false
+                    isDraggingTokenBadge = true
+                    tokenBadgeDragTranslation = translation
+                },
+                onDragEnded: { translation in
+                    let nextCorner = nearestInfoBadgeCorner(
+                        from: corner,
+                        translation: translation,
+                        contentOrigin: contentOrigin,
+                        contentSize: contentSize,
+                        scale: scale
+                    )
+                    moveBadge(.token, from: corner, to: nextCorner)
+                    tokenBadgeDragTranslation = .zero
+                    isDraggingTokenBadge = false
+                },
+                onDragCancelled: {
+                    tokenBadgeDragTranslation = .zero
+                    isDraggingTokenBadge = false
+                }
+            )
+            .frame(width: badgeSize, height: badgeSize)
+        }
+        .background(
+            FloatingSignalTokenPanelAnchor(isPresented: $isShowingTokenPanel, model: model)
+        )
+        .help(tokenBadgeHelp)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(tokenBadgeHelp)
+    }
+
+    private func badgeFontSize(for text: String) -> CGFloat {
+        if text.count > 3 { return 7 }
+        if text.count > 2 { return 9 }
+        if text.count > 1 { return 11 }
+        return 13
+    }
+
+    private func quotaBadgeText(for quota: AgentQuotaStatus) -> String {
+        model.quotaPercentText(for: model.quotaWindow(for: model.floatingSignalQuotaBadgeWindow, quota: quota))
+    }
+
+    private func quotaBadgeForeground(for quota: AgentQuotaStatus) -> Color {
+        let remainingPercent = model.quotaWindow(
+            for: model.floatingSignalQuotaBadgeWindow,
+            quota: quota
+        )?.remainingPercent ?? quota.remainingPercent
+
+        if remainingPercent <= 15 {
+            return Color(red: 1.0, green: 0.26, blue: 0.22)
+        }
+        if remainingPercent <= 35 {
+            return Color(red: 1.0, green: 0.75, blue: 0.22)
+        }
+        return Color(red: 0.28, green: 0.92, blue: 0.46)
+    }
+
+    private func quotaBadgeHelp(for quota: AgentQuotaStatus) -> String {
+        let percent = quotaBadgeText(for: quota)
+        if let limitName = quota.limitName, !limitName.isEmpty {
+            return model.text(
+                "Agent 剩余额度 \(percent) · \(limitName)",
+                "Agent quota remaining \(percent) · \(limitName)"
+            )
+        }
+        return model.text(
+            "Agent 剩余额度 \(percent)",
+            "Agent quota remaining \(percent)"
+        )
+    }
+
+    private func infoBadgeOffset(
+        for corner: FloatingSignalInfoBadgeCorner,
+        contentOrigin: CGPoint,
+        contentSize: CGSize,
+        scale: CGFloat
+    ) -> CGSize {
+        let badgeSize = FloatingSignalPanelLayout.badgeSize(for: scale)
+        let overlap = FloatingSignalPanelLayout.infoBadgeOverlap(for: scale)
+        let leadingX = contentOrigin.x - badgeSize + overlap
+        let bottomY = contentOrigin.y + contentSize.height - FloatingSignalPanelLayout.controlGap(for: scale)
+
+        switch corner {
+        case .topLeft:
+            return CGSize(width: leadingX, height: 0)
+        case .topRight:
+            return CGSize(width: contentOrigin.x + contentSize.width - overlap, height: 0)
+        case .bottomLeft:
+            return CGSize(width: leadingX, height: bottomY)
+        }
+    }
+
+    private func nearestInfoBadgeCorner(
+        from corner: FloatingSignalInfoBadgeCorner,
+        translation: CGSize,
+        contentOrigin: CGPoint,
+        contentSize: CGSize,
+        scale: CGFloat
+    ) -> FloatingSignalInfoBadgeCorner {
+        let badgeSize = FloatingSignalPanelLayout.badgeSize(for: scale)
+        let startingOffset = infoBadgeOffset(
+            for: corner,
+            contentOrigin: contentOrigin,
+            contentSize: contentSize,
+            scale: scale
+        )
+        let targetCenter = CGPoint(
+            x: startingOffset.width + translation.width + badgeSize / 2,
+            y: startingOffset.height + translation.height + badgeSize / 2
+        )
+
+        return FloatingSignalInfoBadgeCorner.allCases.min { lhs, rhs in
+            let lhsCenter = infoBadgeCenter(
+                for: lhs,
+                contentOrigin: contentOrigin,
+                contentSize: contentSize,
+                scale: scale
+            )
+            let rhsCenter = infoBadgeCenter(
+                for: rhs,
+                contentOrigin: contentOrigin,
+                contentSize: contentSize,
+                scale: scale
+            )
+            return squaredDistance(lhsCenter, targetCenter) < squaredDistance(rhsCenter, targetCenter)
+        } ?? corner
+    }
+
+    private func firstAvailableBadgeCorner(
+        preferred: FloatingSignalInfoBadgeCorner,
+        avoiding occupiedCorners: [FloatingSignalInfoBadgeCorner]
+    ) -> FloatingSignalInfoBadgeCorner {
+        if !occupiedCorners.contains(preferred) {
+            return preferred
+        }
+        return FloatingSignalInfoBadgeCorner.allCases.first { !occupiedCorners.contains($0) } ?? preferred
+    }
+
+    private func moveBadge(
+        _ badge: BadgeKind,
+        from currentCorner: FloatingSignalInfoBadgeCorner,
+        to nextCorner: FloatingSignalInfoBadgeCorner
+    ) {
+        guard currentCorner != nextCorner else {
+            setBadgeCorner(badge, nextCorner)
+            return
+        }
+
+        if let occupyingBadge = visibleBadgeKinds(excluding: badge).first(where: {
+            resolvedBadgeCorner(for: $0) == nextCorner
+        }) {
+            setBadgeCorner(occupyingBadge, currentCorner)
+        }
+        setBadgeCorner(badge, nextCorner)
+        lastPersistedVisibleBadgeCornerSignature = nil
+        persistVisibleBadgeCornersSoon()
+    }
+
+    private func persistVisibleBadgeCornersSoon() {
+        Task { @MainActor in
+            persistVisibleBadgeCornersIfNeeded()
+        }
+    }
+
+    private func persistVisibleBadgeCornersIfNeeded() {
+        guard !isDraggingInfoBadge,
+              !isDraggingQuotaBadge,
+              !isDraggingTokenBadge
+        else {
+            return
+        }
+
+        var visibleCorners: [(BadgeKind, FloatingSignalInfoBadgeCorner)] = []
+        if shouldShowInfoBadge {
+            visibleCorners.append((.info, model.floatingSignalInfoBadgeCorner))
+        }
+        if floatingQuotaStatus != nil {
+            visibleCorners.append((.quota, resolvedQuotaBadgeCorner))
+        }
+        if shouldShowTokenBadge {
+            visibleCorners.append((.token, resolvedTokenBadgeCorner))
+        }
+
+        let signature = visibleCorners
+            .map { "\($0.0):\($0.1.rawValue)" }
+            .joined(separator: "|")
+        guard signature != lastPersistedVisibleBadgeCornerSignature else {
+            return
+        }
+        lastPersistedVisibleBadgeCornerSignature = signature
+
+        for (badge, corner) in visibleCorners {
+            setBadgeCorner(badge, corner)
+        }
+    }
+
+    private func visibleBadgeKinds(excluding excludedBadge: BadgeKind) -> [BadgeKind] {
+        var badges: [BadgeKind] = []
+        if shouldShowInfoBadge && excludedBadge != .info {
+            badges.append(.info)
+        }
+        if floatingQuotaStatus != nil && excludedBadge != .quota {
+            badges.append(.quota)
+        }
+        if shouldShowTokenBadge && excludedBadge != .token {
+            badges.append(.token)
+        }
+        return badges
+    }
+
+    private func resolvedBadgeCorner(for badge: BadgeKind) -> FloatingSignalInfoBadgeCorner {
+        switch badge {
+        case .info:
+            return model.floatingSignalInfoBadgeCorner
+        case .quota:
+            return resolvedQuotaBadgeCorner
+        case .token:
+            return resolvedTokenBadgeCorner
+        }
+    }
+
+    private func setBadgeCorner(_ badge: BadgeKind, _ corner: FloatingSignalInfoBadgeCorner) {
+        switch badge {
+        case .info:
+            model.setFloatingSignalInfoBadgeCorner(corner)
+        case .quota:
+            model.setFloatingSignalQuotaBadgeCorner(corner)
+        case .token:
+            model.setFloatingSignalTokenBadgeCorner(corner)
+        }
+    }
+
+    private func infoBadgeCenter(
+        for corner: FloatingSignalInfoBadgeCorner,
+        contentOrigin: CGPoint,
+        contentSize: CGSize,
+        scale: CGFloat
+    ) -> CGPoint {
+        let badgeSize = FloatingSignalPanelLayout.badgeSize(for: scale)
+        let offset = infoBadgeOffset(
+            for: corner,
+            contentOrigin: contentOrigin,
+            contentSize: contentSize,
+            scale: scale
+        )
+        return CGPoint(x: offset.width + badgeSize / 2, y: offset.height + badgeSize / 2)
+    }
+
+    private func squaredDistance(_ lhs: CGPoint, _ rhs: CGPoint) -> CGFloat {
+        let dx = lhs.x - rhs.x
+        let dy = lhs.y - rhs.y
+        return dx * dx + dy * dy
     }
 
     private var infoBadgeText: String {
@@ -740,6 +1321,25 @@ private struct FloatingSignalPanelView: View {
 
     private var infoBadgeCount: Int {
         cachedFloatingInfoSessions.count
+    }
+
+    private var tokenBadgeText: String {
+        model.compactTokenBadgeText(floatingTokenUsageTokens)
+    }
+
+    private var tokenBadgeHelp: String {
+        let tokenText = model.tokenUsageTitleLine(
+            for: model.floatingSignalTokenBadgeWindow,
+            tokens: floatingTokenUsageTokens
+        )
+        return model.text(
+            "Token 使用量 \(tokenText)",
+            "Token usage \(tokenText)"
+        )
+    }
+
+    private var floatingTokenUsageTokens: Int {
+        model.tokenActivityTotal(for: model.floatingSignalTokenBadgeWindow)
     }
 
     private func signalBody(
@@ -904,12 +1504,208 @@ private struct FloatingSignalResizeHandleControl: NSViewRepresentable {
     }
 }
 
+private struct FloatingSignalInfoBadgeDragControl: NSViewRepresentable {
+    let badgeSize: CGFloat
+    let onClick: () -> Void
+    let onDragChanged: (CGSize) -> Void
+    let onDragEnded: (CGSize) -> Void
+    let onDragCancelled: () -> Void
+
+    func makeNSView(context: Context) -> FloatingSignalInfoBadgeDragView {
+        let view = FloatingSignalInfoBadgeDragView()
+        view.badgeSize = badgeSize
+        view.onClick = onClick
+        view.onDragChanged = onDragChanged
+        view.onDragEnded = onDragEnded
+        view.onDragCancelled = onDragCancelled
+        return view
+    }
+
+    func updateNSView(_ nsView: FloatingSignalInfoBadgeDragView, context: Context) {
+        nsView.badgeSize = badgeSize
+        nsView.onClick = onClick
+        nsView.onDragChanged = onDragChanged
+        nsView.onDragEnded = onDragEnded
+        nsView.onDragCancelled = onDragCancelled
+    }
+}
+
 private struct FloatingSignalDragCursorRegion: NSViewRepresentable {
     func makeNSView(context: Context) -> FloatingSignalDragCursorView {
         FloatingSignalDragCursorView()
     }
 
     func updateNSView(_ nsView: FloatingSignalDragCursorView, context: Context) {}
+}
+
+@MainActor
+private final class FloatingSignalInfoBadgeDragView: NSView {
+    var badgeSize: CGFloat = 24 {
+        didSet {
+            needsLayout = true
+            invalidateCursorRects()
+        }
+    }
+    var onClick: (() -> Void)?
+    var onDragChanged: ((CGSize) -> Void)?
+    var onDragEnded: ((CGSize) -> Void)?
+    var onDragCancelled: (() -> Void)?
+
+    private var trackingArea: NSTrackingArea?
+    private var dragStartScreenPoint: NSPoint?
+    private var lastTranslation = CGSize.zero
+    private var isDragging = false
+    private let cursorPush = FloatingSignalCursorPush()
+    private let dragThreshold: CGFloat = 3
+
+    override var isFlipped: Bool {
+        true
+    }
+
+    override var acceptsFirstResponder: Bool {
+        true
+    }
+
+    override var mouseDownCanMoveWindow: Bool {
+        false
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            cancelDrag()
+        } else {
+            invalidateCursorRects()
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        invalidateCursorRects()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        badgeHitRect.contains(point) ? self : nil
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+
+        let nextTrackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved, .cursorUpdate, .enabledDuringMouseDrag],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(nextTrackingArea)
+        trackingArea = nextTrackingArea
+        invalidateCursorRects()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard !isDragging else { return }
+        cursorPush.pop()
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        updateCursor()
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(badgeHitRect, cursor: isDragging ? NSCursor.closedHand : NSCursor.pointingHand)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard badgeHitRect.contains(convert(event.locationInWindow, from: nil)) else { return }
+        window?.makeFirstResponder(self)
+        dragStartScreenPoint = NSEvent.mouseLocation
+        lastTranslation = .zero
+        isDragging = false
+        updateCursor()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let dragStartScreenPoint else { return }
+
+        let currentPoint = NSEvent.mouseLocation
+        let translation = CGSize(
+            width: currentPoint.x - dragStartScreenPoint.x,
+            height: dragStartScreenPoint.y - currentPoint.y
+        )
+        lastTranslation = translation
+        if !isDragging, hypot(translation.width, translation.height) < dragThreshold {
+            return
+        }
+
+        isDragging = true
+        updateCursor()
+        onDragChanged?(translation)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let didDrag = isDragging
+        let translation = lastTranslation
+        dragStartScreenPoint = nil
+        lastTranslation = .zero
+        isDragging = false
+        cursorPush.pop()
+        invalidateCursorRects()
+
+        if didDrag {
+            onDragEnded?(translation)
+        } else {
+            onClick?()
+        }
+        updateCursor()
+    }
+
+    private var badgeHitRect: NSRect {
+        let inset = max(0, (min(bounds.width, bounds.height) - badgeSize) / 2)
+        return bounds.insetBy(dx: inset, dy: inset)
+    }
+
+    private func cancelDrag() {
+        dragStartScreenPoint = nil
+        lastTranslation = .zero
+        isDragging = false
+        cursorPush.pop()
+        onDragCancelled?()
+    }
+
+    private func updateCursor() {
+        guard window != nil else {
+            cursorPush.pop()
+            return
+        }
+
+        if isDragging {
+            cursorPush.push(NSCursor.closedHand)
+        } else if isMouseInsideBadge() {
+            cursorPush.push(NSCursor.pointingHand)
+        } else {
+            cursorPush.pop()
+        }
+        invalidateCursorRects()
+    }
+
+    private func isMouseInsideBadge() -> Bool {
+        guard let window else { return false }
+        let localPoint = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        return badgeHitRect.contains(localPoint)
+    }
+
+    private func invalidateCursorRects() {
+        window?.invalidateCursorRects(for: self)
+    }
 }
 
 @MainActor
@@ -1484,6 +2280,527 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
             guard let view, event.window === view.window else { return false }
             return view.bounds.contains(view.convert(event.locationInWindow, from: nil))
         }
+    }
+}
+
+private struct FloatingSignalQuotaPanelAnchor: NSViewRepresentable {
+    @Binding var isPresented: Bool
+    @ObservedObject var model: MenuBarStatusModel
+    let quota: AgentQuotaStatus
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isPresented: $isPresented)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        view.postsFrameChangedNotifications = true
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.isPresented = $isPresented
+        context.coordinator.update(isPresented: isPresented, model: model, quota: quota, anchorView: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.close()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSWindowDelegate {
+        var isPresented: Binding<Bool>
+        private var panel: NSPanel?
+        private var hostingController: NSHostingController<FloatingSignalQuotaPopoverView>?
+        private var mouseMonitor: Any?
+        private weak var anchorView: NSView?
+
+        init(isPresented: Binding<Bool>) {
+            self.isPresented = isPresented
+        }
+
+        func update(isPresented: Bool, model: MenuBarStatusModel, quota: AgentQuotaStatus, anchorView: NSView) {
+            self.anchorView = anchorView
+
+            guard isPresented, anchorView.window != nil else {
+                close()
+                return
+            }
+
+            let contentView = FloatingSignalQuotaPopoverView(model: model, quota: quota)
+            if let hostingController {
+                hostingController.rootView = contentView
+            } else {
+                let hostingController = NSHostingController(rootView: contentView)
+                hostingController.view.wantsLayer = true
+                hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
+                self.hostingController = hostingController
+            }
+
+            let panel = ensurePanel()
+            if panel.contentViewController == nil {
+                panel.contentViewController = hostingController
+            }
+            position(panel, relativeTo: anchorView)
+            installMouseMonitorIfNeeded()
+            panel.orderFrontRegardless()
+        }
+
+        func close() {
+            panel?.orderOut(nil)
+            panel?.contentViewController = nil
+            panel = nil
+            hostingController = nil
+            removeMouseMonitor()
+        }
+
+        func windowWillClose(_ notification: Notification) {
+            isPresented.wrappedValue = false
+            close()
+        }
+
+        private func ensurePanel() -> NSPanel {
+            if let panel {
+                return panel
+            }
+
+            let panel = NSPanel(
+                contentRect: NSRect(origin: .zero, size: NSSize(width: 250, height: 96)),
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: false
+            )
+            panel.title = "Floating Signal Quota"
+            panel.isReleasedWhenClosed = false
+            panel.isFloatingPanel = true
+            panel.hidesOnDeactivate = false
+            panel.level = .floating
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+            panel.backgroundColor = .clear
+            panel.isOpaque = false
+            panel.hasShadow = true
+            panel.delegate = self
+            self.panel = panel
+            return panel
+        }
+
+        private func position(_ panel: NSPanel, relativeTo anchorView: NSView) {
+            guard let anchorWindow = anchorView.window,
+                  let hostingView = hostingController?.view
+            else {
+                return
+            }
+
+            hostingView.layoutSubtreeIfNeeded()
+            let fittingSize = hostingView.fittingSize
+            let size = NSSize(
+                width: max(250, fittingSize.width),
+                height: max(44, fittingSize.height)
+            )
+            panel.setContentSize(size)
+
+            let anchorBounds = anchorView.bounds.isEmpty
+                ? NSRect(origin: .zero, size: NSSize(width: FloatingSignalPanelLayout.badgeSize(for: 1), height: FloatingSignalPanelLayout.badgeSize(for: 1)))
+                : anchorView.bounds
+            let anchorInWindow = anchorView.convert(anchorBounds, to: nil)
+            let anchorOnScreen = anchorWindow.convertToScreen(anchorInWindow)
+            let desiredOrigin = NSPoint(
+                x: anchorOnScreen.maxX - size.width + 4,
+                y: anchorOnScreen.maxY - 2
+            )
+
+            panel.setFrame(NSRect(origin: clamped(desiredOrigin, size: size), size: size), display: true, animate: false)
+        }
+
+        private func clamped(_ origin: NSPoint, size: NSSize) -> NSPoint {
+            let visibleFrame = NSScreen.screens
+                .map(\.visibleFrame)
+                .first { $0.insetBy(dx: -8, dy: -8).contains(NSRect(origin: origin, size: size)) }
+                ?? NSScreen.main?.visibleFrame
+                ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+
+            return NSPoint(
+                x: min(max(origin.x, visibleFrame.minX + 8), visibleFrame.maxX - size.width - 8),
+                y: min(max(origin.y, visibleFrame.minY + 8), visibleFrame.maxY - size.height - 8)
+            )
+        }
+
+        private func installMouseMonitorIfNeeded() {
+            guard mouseMonitor == nil else { return }
+
+            mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                guard let self else { return event }
+                guard !self.contains(event, in: self.panel?.contentView),
+                      !self.contains(event, in: self.anchorView)
+                else {
+                    return event
+                }
+
+                self.isPresented.wrappedValue = false
+                self.close()
+                return event
+            }
+        }
+
+        private func removeMouseMonitor() {
+            if let mouseMonitor {
+                NSEvent.removeMonitor(mouseMonitor)
+            }
+            mouseMonitor = nil
+        }
+
+        private func contains(_ event: NSEvent, in view: NSView?) -> Bool {
+            guard let view, event.window === view.window else { return false }
+            return view.bounds.contains(view.convert(event.locationInWindow, from: nil))
+        }
+    }
+}
+
+private struct FloatingSignalTokenPanelAnchor: NSViewRepresentable {
+    @Binding var isPresented: Bool
+    @ObservedObject var model: MenuBarStatusModel
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isPresented: $isPresented)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        view.postsFrameChangedNotifications = true
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.isPresented = $isPresented
+        context.coordinator.update(isPresented: isPresented, model: model, anchorView: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.close()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSWindowDelegate {
+        var isPresented: Binding<Bool>
+        private var panel: NSPanel?
+        private var hostingController: NSHostingController<FloatingSignalTokenPopoverView>?
+        private var mouseMonitor: Any?
+        private weak var anchorView: NSView?
+
+        init(isPresented: Binding<Bool>) {
+            self.isPresented = isPresented
+        }
+
+        func update(isPresented: Bool, model: MenuBarStatusModel, anchorView: NSView) {
+            self.anchorView = anchorView
+
+            guard isPresented, anchorView.window != nil else {
+                close()
+                return
+            }
+
+            let contentView = FloatingSignalTokenPopoverView(model: model)
+            if let hostingController {
+                hostingController.rootView = contentView
+            } else {
+                let hostingController = NSHostingController(rootView: contentView)
+                hostingController.view.wantsLayer = true
+                hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
+                self.hostingController = hostingController
+            }
+
+            let panel = ensurePanel()
+            if panel.contentViewController == nil {
+                panel.contentViewController = hostingController
+            }
+            position(panel, relativeTo: anchorView)
+            installMouseMonitorIfNeeded()
+            panel.orderFrontRegardless()
+        }
+
+        func close() {
+            panel?.orderOut(nil)
+            panel?.contentViewController = nil
+            panel = nil
+            hostingController = nil
+            removeMouseMonitor()
+        }
+
+        func windowWillClose(_ notification: Notification) {
+            isPresented.wrappedValue = false
+            close()
+        }
+
+        private func ensurePanel() -> NSPanel {
+            if let panel {
+                return panel
+            }
+
+            let panel = NSPanel(
+                contentRect: NSRect(origin: .zero, size: NSSize(width: 250, height: 96)),
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: false
+            )
+            panel.title = "Floating Signal Token Usage"
+            panel.isReleasedWhenClosed = false
+            panel.isFloatingPanel = true
+            panel.hidesOnDeactivate = false
+            panel.level = .floating
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+            panel.backgroundColor = .clear
+            panel.isOpaque = false
+            panel.hasShadow = true
+            panel.delegate = self
+            self.panel = panel
+            return panel
+        }
+
+        private func position(_ panel: NSPanel, relativeTo anchorView: NSView) {
+            guard let anchorWindow = anchorView.window,
+                  let hostingView = hostingController?.view
+            else {
+                return
+            }
+
+            hostingView.layoutSubtreeIfNeeded()
+            let fittingSize = hostingView.fittingSize
+            let size = NSSize(
+                width: max(250, fittingSize.width),
+                height: max(44, fittingSize.height)
+            )
+            panel.setContentSize(size)
+
+            let anchorBounds = anchorView.bounds.isEmpty
+                ? NSRect(origin: .zero, size: NSSize(width: FloatingSignalPanelLayout.badgeSize(for: 1), height: FloatingSignalPanelLayout.badgeSize(for: 1)))
+                : anchorView.bounds
+            let anchorInWindow = anchorView.convert(anchorBounds, to: nil)
+            let anchorOnScreen = anchorWindow.convertToScreen(anchorInWindow)
+            let desiredOrigin = NSPoint(
+                x: anchorOnScreen.maxX - size.width + 4,
+                y: anchorOnScreen.maxY - 2
+            )
+
+            panel.setFrame(NSRect(origin: clamped(desiredOrigin, size: size), size: size), display: true, animate: false)
+        }
+
+        private func clamped(_ origin: NSPoint, size: NSSize) -> NSPoint {
+            let visibleFrame = NSScreen.screens
+                .map(\.visibleFrame)
+                .first { $0.insetBy(dx: -8, dy: -8).contains(NSRect(origin: origin, size: size)) }
+                ?? NSScreen.main?.visibleFrame
+                ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+
+            return NSPoint(
+                x: min(max(origin.x, visibleFrame.minX + 8), visibleFrame.maxX - size.width - 8),
+                y: min(max(origin.y, visibleFrame.minY + 8), visibleFrame.maxY - size.height - 8)
+            )
+        }
+
+        private func installMouseMonitorIfNeeded() {
+            guard mouseMonitor == nil else { return }
+
+            mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                guard let self else { return event }
+                guard !self.contains(event, in: self.panel?.contentView),
+                      !self.contains(event, in: self.anchorView)
+                else {
+                    return event
+                }
+
+                self.isPresented.wrappedValue = false
+                self.close()
+                return event
+            }
+        }
+
+        private func removeMouseMonitor() {
+            if let mouseMonitor {
+                NSEvent.removeMonitor(mouseMonitor)
+            }
+            mouseMonitor = nil
+        }
+
+        private func contains(_ event: NSEvent, in view: NSView?) -> Bool {
+            guard let view, event.window === view.window else { return false }
+            return view.bounds.contains(view.convert(event.locationInWindow, from: nil))
+        }
+    }
+}
+
+private struct FloatingSignalQuotaPopoverView: View {
+    @ObservedObject var model: MenuBarStatusModel
+    let quota: AgentQuotaStatus
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Codex")
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+
+            quotaRow(
+                quota: quota,
+                badgeWindow: .fiveHours
+            )
+
+            Divider()
+                .overlay(Color.white.opacity(0.12))
+
+            quotaRow(
+                quota: quota,
+                badgeWindow: .weekly
+            )
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .frame(width: 250, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.black.opacity(0.92))
+        )
+        .padding(8)
+    }
+
+    private func quotaRow(
+        quota: AgentQuotaStatus,
+        badgeWindow: FloatingSignalQuotaBadgeWindow
+    ) -> some View {
+        let window = model.quotaWindow(for: badgeWindow, quota: quota)
+
+        return Button {
+            model.setFloatingSignalQuotaBadgeWindow(badgeWindow)
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.quotaTitleLine(for: badgeWindow, quota: quota))
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Text(model.quotaResetText(for: window, badgeWindow: badgeWindow))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                Spacer(minLength: 8)
+
+                selectionCircle(isSelected: model.floatingSignalQuotaBadgeWindow == badgeWindow)
+            }
+            .frame(maxWidth: .infinity, minHeight: 31, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+    }
+
+    private func selectionCircle(isSelected: Bool) -> some View {
+        ZStack {
+            Circle()
+                .stroke(Color.white.opacity(isSelected ? 0.95 : 0.48), lineWidth: 1.4)
+
+            if isSelected {
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 6, height: 6)
+            }
+        }
+        .frame(width: 14, height: 14)
+        .accessibilityHidden(true)
+    }
+
+}
+
+private struct FloatingSignalTokenPopoverView: View {
+    @ObservedObject var model: MenuBarStatusModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Text("Codex")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                if model.isTokenActivityLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.58)
+                        .tint(.white.opacity(0.8))
+                }
+            }
+
+            tokenRow(.today)
+
+            Divider()
+                .overlay(Color.white.opacity(0.12))
+
+            tokenRow(.last30Days)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .frame(width: 250, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.black.opacity(0.92))
+        )
+        .padding(8)
+        .onAppear {
+            model.refreshTokenActivityIfNeeded(force: model.tokenActivityDays.isEmpty)
+        }
+    }
+
+    private func tokenRow(_ tokenWindow: FloatingSignalTokenBadgeWindow) -> some View {
+        let tokens = model.tokenActivityTotal(for: tokenWindow)
+        let cost = model.tokenActivityEstimatedCost(for: tokenWindow)
+
+        return Button {
+            model.setFloatingSignalTokenBadgeWindow(tokenWindow)
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.tokenUsageTitleLine(for: tokenWindow, tokens: tokens))
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Text(model.tokenUsageCostText(cost))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                Spacer(minLength: 8)
+
+                selectionCircle(isSelected: model.floatingSignalTokenBadgeWindow == tokenWindow)
+            }
+            .frame(maxWidth: .infinity, minHeight: 31, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+    }
+
+    private func selectionCircle(isSelected: Bool) -> some View {
+        ZStack {
+            Circle()
+                .stroke(Color.white.opacity(isSelected ? 0.95 : 0.48), lineWidth: 1.4)
+
+            if isSelected {
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 6, height: 6)
+            }
+        }
+        .frame(width: 14, height: 14)
+        .accessibilityHidden(true)
     }
 }
 

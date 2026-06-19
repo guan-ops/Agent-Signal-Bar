@@ -1,5 +1,8 @@
 import Foundation
 import XCTest
+#if canImport(SQLite3)
+import SQLite3
+#endif
 @testable import AgentSignalLight
 @testable import AgentSignalLightCore
 @testable import AgentSignalLightUI
@@ -123,6 +126,847 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertNil(heartbeatActivity)
         XCTAssert(compactedActivity?.signal == .thinking)
         XCTAssert(compactedActivity?.event == "DesktopContextCompacted")
+    }
+
+    func testCodexDesktopSessionParserMapsTokenCountToQuotaStatus() {
+        let line = """
+        {"timestamp":"2026-06-18T08:10:20.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"last_token_usage":{"input_tokens":34567,"cached_input_tokens":12000,"output_tokens":2345,"reasoning_output_tokens":567,"total_tokens":36912}},"rate_limits":{"limit_id":"codex_bengalfox","limit_name":"GPT-5.3-Codex-Spark","primary":{"used_percent":42.5,"window_minutes":300,"resets_at":1781788782},"secondary":{"used_percent":12.0,"window_minutes":10080,"resets_at":1782375582}}}}
+        """
+
+        let quotaUpdate = CodexDesktopSessionParser.quotaUpdate(
+            from: line,
+            defaultSessionID: "codex-desktop:thread"
+        )
+
+        XCTAssertEqual(quotaUpdate?.sessionID, "codex-desktop:thread")
+        XCTAssertEqual(quotaUpdate?.agent, "codex-desktop")
+        XCTAssertEqual(quotaUpdate?.quota.remainingPercent ?? -1, 57.5, accuracy: 0.01)
+        XCTAssertEqual(quotaUpdate?.quota.usedPercent ?? -1, 42.5, accuracy: 0.01)
+        XCTAssertEqual(quotaUpdate?.quota.limitName, "GPT-5.3-Codex-Spark")
+        XCTAssertEqual(quotaUpdate?.quota.windowMinutes, 300)
+        XCTAssertEqual(quotaUpdate?.quota.resetsAt, Date(timeIntervalSince1970: 1_781_788_782))
+        XCTAssertEqual(quotaUpdate?.quota.primaryWindow?.remainingPercent ?? -1, 57.5, accuracy: 0.01)
+        XCTAssertEqual(quotaUpdate?.quota.secondaryWindow?.remainingPercent ?? -1, 88.0, accuracy: 0.01)
+        XCTAssertEqual(quotaUpdate?.quota.secondaryWindow?.windowMinutes, 10_080)
+        XCTAssertEqual(quotaUpdate?.quota.secondaryWindow?.resetsAt, Date(timeIntervalSince1970: 1_782_375_582))
+        XCTAssertEqual(quotaUpdate?.quota.tokenUsage?.inputTokens, 34_567)
+        XCTAssertEqual(quotaUpdate?.quota.tokenUsage?.cachedInputTokens, 12_000)
+        XCTAssertEqual(quotaUpdate?.quota.tokenUsage?.outputTokens, 2_345)
+        XCTAssertEqual(quotaUpdate?.quota.tokenUsage?.reasoningOutputTokens, 567)
+        XCTAssertEqual(quotaUpdate?.quota.tokenUsage?.effectiveTotalTokens, 36_912)
+        XCTAssertEqual(quotaUpdate?.quota.tokenUsage?.contextWindowTokens, 258_400)
+    }
+
+    func testCodexDesktopSessionParserMapsTokenCountToActivityPoint() {
+        let line = """
+        {"timestamp":"2026-06-18T08:10:20.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":50000,"cached_input_tokens":18000,"output_tokens":4000,"reasoning_output_tokens":900,"total_tokens":54000},"last_token_usage":{"input_tokens":34567,"cached_input_tokens":12000,"output_tokens":2345,"reasoning_output_tokens":567,"total_tokens":36912}}}}
+        """
+
+        let point = CodexDesktopSessionParser.tokenActivityPoint(from: line)
+        let record = CodexDesktopSessionParser.tokenActivityRecord(from: line)
+
+        XCTAssertEqual(point?.timestamp, Date(timeIntervalSince1970: 1_781_770_220))
+        XCTAssertEqual(point?.usage.inputTokens, 34_567)
+        XCTAssertEqual(point?.usage.cachedInputTokens, 12_000)
+        XCTAssertEqual(point?.usage.outputTokens, 2_345)
+        XCTAssertEqual(point?.usage.reasoningOutputTokens, 567)
+        XCTAssertEqual(point?.usage.effectiveTotalTokens, 36_912)
+        XCTAssertEqual(point?.usage.contextWindowTokens, 258_400)
+        XCTAssertEqual(record?.totalUsage?.inputTokens, 50_000)
+        XCTAssertEqual(record?.totalUsage?.cachedInputTokens, 18_000)
+        XCTAssertEqual(record?.totalUsage?.outputTokens, 4_000)
+        XCTAssertEqual(record?.totalUsage?.reasoningOutputTokens, 900)
+        XCTAssertEqual(record?.totalUsage?.effectiveTotalTokens, 54_000)
+        XCTAssertEqual(record?.totalUsage?.contextWindowTokens, 258_400)
+    }
+
+    func testCodexTokenActivityScannerUsesTotalDeltasAndIncludesCachedInput() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines = [
+            #"{"timestamp":"2026-06-18T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#,
+            #"{"timestamp":"2026-06-18T08:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#,
+            #"{"timestamp":"2026-06-18T08:02:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":150,"output_tokens":150,"total_tokens":1650},"last_token_usage":{"input_tokens":500,"cached_input_tokens":50,"output_tokens":50,"total_tokens":550}}}}"#
+        ].joined(separator: "\n")
+        let sessionURL = root.appendingPathComponent("rollout-test.jsonl")
+        try lines.write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let cacheURL = root.appendingPathComponent("token-cache.json")
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: cacheURL
+        )
+
+        let days = scanner.scanDailyActivity(
+            now: Date(timeIntervalSince1970: 1_781_784_000),
+            days: 1
+        )
+
+        XCTAssertEqual(days.count, 1)
+        XCTAssertEqual(days.first?.totalTokens, 1_650)
+        XCTAssertNil(days.first?.modelTokenTotals["gpt-5.5"])
+        XCTAssertNil(days.first?.modelTokenTotals["gpt-5"])
+    }
+
+    func testCodexTokenActivityScannerSeparatesExactModelsFromTurnContext() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines = [
+            #"{"timestamp":"2026-06-18T08:00:00.000Z","type":"turn_context","payload":{"model":"gpt-5.4"}}"#,
+            #"{"timestamp":"2026-06-18T08:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#,
+            #"{"timestamp":"2026-06-18T08:02:00.000Z","type":"turn_context","payload":{"model":"gpt-5.5"}}"#,
+            #"{"timestamp":"2026-06-18T08:03:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":150,"output_tokens":150,"total_tokens":1650},"last_token_usage":{"input_tokens":500,"cached_input_tokens":50,"output_tokens":50,"total_tokens":550}}}}"#,
+            #"{"timestamp":"2026-06-18T08:04:00.000Z","type":"turn_context","payload":{"model":"codex-auto-review"}}"#,
+            #"{"timestamp":"2026-06-18T08:05:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1800,"cached_input_tokens":180,"output_tokens":200,"total_tokens":2000},"last_token_usage":{"input_tokens":300,"cached_input_tokens":30,"output_tokens":50,"total_tokens":350}}}}"#
+        ].joined(separator: "\n")
+        let sessionURL = root.appendingPathComponent("rollout-models.jsonl")
+        try lines.write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: root.appendingPathComponent("token-cache.json")
+        )
+
+        let days = scanner.scanDailyActivity(
+            now: Date(timeIntervalSince1970: 1_781_784_000),
+            days: 1
+        )
+
+        XCTAssertEqual(days.count, 1)
+        XCTAssertEqual(days.first?.totalTokens, 2_000)
+        XCTAssertEqual(days.first?.modelTokenTotals["gpt-5.4"], 1_100)
+        XCTAssertEqual(days.first?.modelTokenTotals["gpt-5.5"], 550)
+        XCTAssertEqual(days.first?.modelTokenTotals["codex-auto-review"], 350)
+        XCTAssertNil(days.first?.modelEstimatedCostTotals["codex-auto-review"])
+    }
+
+    func testCodexTokenActivityScannerSeparatesPriorityAndStandardModelUsage() throws {
+#if canImport(SQLite3)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines = [
+            #"{"timestamp":"2026-06-18T08:00:00.000Z","type":"turn_context","payload":{"model":"gpt-5.5","turn_id":"turn-fast"}}"#,
+            #"{"timestamp":"2026-06-18T08:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#,
+            #"{"timestamp":"2026-06-18T08:02:00.000Z","type":"turn_context","payload":{"model":"gpt-5.5","turn_id":"turn-standard"}}"#,
+            #"{"timestamp":"2026-06-18T08:03:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":150,"output_tokens":150,"total_tokens":1650},"last_token_usage":{"input_tokens":500,"cached_input_tokens":50,"output_tokens":50,"total_tokens":550}}}}"#
+        ].joined(separator: "\n")
+        let sessionURL = root.appendingPathComponent("rollout-priority-models.jsonl")
+        try (lines + "\n").write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let traceURL = root.appendingPathComponent("logs_2.sqlite")
+        try createPriorityTraceDatabase(at: traceURL, turnID: "turn-fast", model: "gpt-5.5")
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: root.appendingPathComponent("token-cache.json"),
+            priorityDatabaseURL: traceURL
+        )
+
+        let days = scanner.scanDailyActivity(
+            now: Date(timeIntervalSince1970: 1_781_784_000),
+            days: 1
+        )
+
+        XCTAssertEqual(days.count, 1)
+        XCTAssertEqual(days.first?.totalTokens, 1_650)
+        XCTAssertEqual(days.first?.modelTokenTotals["gpt-5.5"], 1_650)
+        XCTAssertEqual(days.first?.modelPriorityTokenTotals["gpt-5.5"], 1_100)
+        XCTAssertEqual(days.first?.modelStandardTokenTotals["gpt-5.5"], 550)
+        XCTAssertNotNil(days.first?.modelPriorityEstimatedCostTotals["gpt-5.5"])
+        XCTAssertNotNil(days.first?.modelStandardEstimatedCostTotals["gpt-5.5"])
+#else
+        throw XCTSkip("SQLite3 is unavailable")
+#endif
+    }
+
+    func testCodexTokenActivityScannerTreatsFastServiceTierAsFastUsage() throws {
+#if canImport(SQLite3)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines = [
+            #"{"timestamp":"2026-06-18T08:00:00.000Z","type":"turn_context","payload":{"model":"gpt-5.5","turn_id":"turn-fast"}}"#,
+            #"{"timestamp":"2026-06-18T08:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#
+        ].joined(separator: "\n")
+        let sessionURL = root.appendingPathComponent("rollout-fast-tier.jsonl")
+        try (lines + "\n").write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let traceURL = root.appendingPathComponent("logs_2.sqlite")
+        try createPriorityTraceDatabase(
+            at: traceURL,
+            turnID: "turn-fast",
+            model: "gpt-5.5",
+            serviceTier: "fast"
+        )
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: root.appendingPathComponent("token-cache.json"),
+            priorityDatabaseURL: traceURL
+        )
+
+        let days = scanner.scanDailyActivity(
+            now: Date(timeIntervalSince1970: 1_781_784_000),
+            days: 1
+        )
+
+        XCTAssertEqual(days.first?.modelPriorityTokenTotals["gpt-5.5"], 1_100)
+        XCTAssertNil(days.first?.modelStandardTokenTotals["gpt-5.5"])
+#else
+        throw XCTSkip("SQLite3 is unavailable")
+#endif
+    }
+
+    func testCodexTokenActivityScannerKeepsCachedModelForIncrementalScan() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionURL = root.appendingPathComponent("rollout-incremental-model.jsonl")
+        let initialLines = [
+            #"{"timestamp":"2026-06-18T08:00:00.000Z","type":"turn_context","payload":{"model":"gpt-5.4"}}"#,
+            #"{"timestamp":"2026-06-18T08:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#
+        ].joined(separator: "\n")
+        try (initialLines + "\n").write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let cacheURL = root.appendingPathComponent("token-cache.json")
+        let now = Date(timeIntervalSince1970: 1_781_784_000)
+        let firstScanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: cacheURL
+        )
+        _ = firstScanner.scanDailyActivity(now: now, days: 1)
+
+        let appendedLine =
+            #"{"timestamp":"2026-06-18T08:02:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":150,"output_tokens":150,"total_tokens":1650},"last_token_usage":{"input_tokens":500,"cached_input_tokens":50,"output_tokens":50,"total_tokens":550}}}}"#
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((appendedLine + "\n").utf8))
+        try handle.close()
+
+        let secondScanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: cacheURL
+        )
+        let days = secondScanner.scanDailyActivity(now: now, days: 1)
+
+        XCTAssertEqual(days.count, 1)
+        XCTAssertEqual(days.first?.totalTokens, 1_650)
+        XCTAssertEqual(days.first?.modelTokenTotals["gpt-5.4"], 1_650)
+        XCTAssertNil(days.first?.modelTokenTotals["gpt-5.5"])
+    }
+
+    func testCodexTokenActivityScannerReadsModelFromLargeTurnContextLine() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionURL = root.appendingPathComponent("rollout-large-turn-context.jsonl")
+        let largeContext = String(repeating: "x", count: 96 * 1024)
+        let lines = [
+            #"{"timestamp":"2026-06-18T08:00:00.000Z","type":"turn_context","payload":{"context":""# + largeContext + #"","model":"codex-auto-review"}}"#,
+            #"{"timestamp":"2026-06-18T08:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#
+        ].joined(separator: "\n")
+        try (lines + "\n").write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: root.appendingPathComponent("token-cache.json")
+        )
+
+        let days = scanner.scanDailyActivity(
+            now: Date(timeIntervalSince1970: 1_781_784_000),
+            days: 1
+        )
+
+        XCTAssertEqual(days.count, 1)
+        XCTAssertEqual(days.first?.totalTokens, 1_100)
+        XCTAssertEqual(days.first?.modelTokenTotals["codex-auto-review"], 1_100)
+        XCTAssertNil(days.first?.modelEstimatedCostTotals["codex-auto-review"])
+    }
+
+    func testCodexTokenActivityFastParserReadsTurnContextModel() throws {
+        let line = #"{"timestamp":"2026-06-18T08:00:00.000Z","type":"turn_context","payload":{"model":"gpt-5.4","turn_id":"turn-123"}}"#
+        let parsed = CodexTokenActivityFastParser.parseLine(Data(line.utf8))
+
+        switch parsed {
+        case let .turnContext(record):
+            XCTAssertEqual(record.model, "gpt-5.4")
+            XCTAssertEqual(record.turnID, "turn-123")
+        default:
+            XCTFail("Expected turn context model")
+        }
+    }
+
+    func testCodexTokenActivityScannerCountsOnlyNewForkedSessionUsageInThirtyDayTotals() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let parentURL = root.appendingPathComponent("rollout-parent.jsonl")
+        let parentLines = [
+            #"{"timestamp":"2026-06-18T07:50:00.000Z","type":"session_meta","payload":{"id":"parent-session","timestamp":"2026-06-18T07:50:00.000Z"}}"#,
+            #"{"timestamp":"2026-06-18T07:55:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#
+        ].joined(separator: "\n")
+        try (parentLines + "\n").write(to: parentURL, atomically: true, encoding: .utf8)
+
+        let childURL = root.appendingPathComponent("rollout-child.jsonl")
+        let childLines = [
+            #"{"timestamp":"2026-06-18T08:00:00.000Z","type":"session_meta","payload":{"id":"child-session","forked_from_id":"parent-session","timestamp":"2026-06-18T08:00:00.000Z"}}"#,
+            #"{"timestamp":"2026-06-18T08:00:10.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#,
+            #"{"timestamp":"2026-06-18T08:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":150,"output_tokens":150,"total_tokens":1650}}}}"#
+        ].joined(separator: "\n")
+        try (childLines + "\n").write(to: childURL, atomically: true, encoding: .utf8)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: root.appendingPathComponent("token-cache.json")
+        )
+
+        let days = scanner.scanDailyActivity(
+            now: Date(timeIntervalSince1970: 1_781_784_000),
+            days: 1
+        )
+
+        XCTAssertEqual(days.count, 1)
+        XCTAssertEqual(days.first?.totalTokens, 1_650)
+    }
+
+    func testCodexTokenActivityScannerUsesCachedOffsetForAppendedSessionFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionURL = root.appendingPathComponent("rollout-incremental.jsonl")
+        let firstLine = #"{"timestamp":"2026-06-18T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#
+        try (firstLine + "\n").write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let cacheURL = root.appendingPathComponent("token-cache.json")
+        let firstScanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: cacheURL
+        )
+        let firstDays = firstScanner.scanDailyActivity(
+            now: Date(timeIntervalSince1970: 1_781_784_000),
+            days: 1
+        )
+        XCTAssertEqual(firstDays.first?.totalTokens, 1_100)
+
+        let appendedLines = [
+            #"{"timestamp":"2026-06-18T08:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#,
+            #"{"timestamp":"2026-06-18T08:02:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":150,"output_tokens":150,"total_tokens":1650},"last_token_usage":{"input_tokens":500,"cached_input_tokens":50,"output_tokens":50,"total_tokens":550}}}}"#
+        ].joined(separator: "\n")
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((appendedLines + "\n").utf8))
+        try handle.close()
+
+        let secondScanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: cacheURL
+        )
+        let secondDays = secondScanner.scanDailyActivity(
+            now: Date(timeIntervalSince1970: 1_781_784_000),
+            days: 1
+        )
+
+        XCTAssertEqual(secondDays.count, 1)
+        XCTAssertEqual(secondDays.first?.totalTokens, 1_650)
+        XCTAssertTrue(try String(contentsOf: cacheURL, encoding: .utf8).contains("parsedBytes"))
+    }
+
+    func testCodexTokenActivityScannerReadsLargeSessionFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionURL = root.appendingPathComponent("rollout-large.jsonl")
+        FileManager.default.createFile(atPath: sessionURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        defer { try? handle.close() }
+
+        let fillerLine = """
+        {"timestamp":"2026-06-18T07:59:00.000Z","type":"response_item","payload":{"type":"message","content":"\(String(repeating: "x", count: 1024))"}}
+        """
+        let fillerData = Data((fillerLine + "\n").utf8)
+        for _ in 0..<(17 * 1024) {
+            try handle.write(contentsOf: fillerData)
+        }
+
+        let tokenLine = """
+        {"timestamp":"2026-06-18T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}
+        """
+        try handle.write(contentsOf: Data((tokenLine + "\n").utf8))
+
+        let values = try sessionURL.resourceValues(forKeys: [.fileSizeKey])
+        XCTAssertGreaterThan(values.fileSize ?? 0, 16 * 1024 * 1024)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let cacheURL = root.appendingPathComponent("token-cache.json")
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: cacheURL
+        )
+
+        let days = scanner.scanDailyActivity(
+            now: Date(timeIntervalSince1970: 1_781_784_000),
+            days: 1
+        )
+
+        XCTAssertEqual(days.count, 1)
+        XCTAssertEqual(days.first?.totalTokens, 1_100)
+    }
+
+    func testCodexTokenActivityScannerLoadsCachedDailyActivityWithoutSessionFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let cacheURL = root.appendingPathComponent("codex-token-activity-v18.json")
+        try writeTokenActivityCache(
+            version: 18,
+            root: root,
+            cacheURL: cacheURL,
+            calendar: calendar,
+            days: ["2026-06-18": 12_345]
+        )
+
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: cacheURL
+        )
+
+        let days = scanner.cachedDailyActivity(
+            now: Date(timeIntervalSince1970: 1_781_784_000),
+            days: 30
+        )
+
+        XCTAssertEqual(days?.count, 1)
+        XCTAssertEqual(days?.first?.totalTokens, 12_345)
+    }
+
+    func testCodexTokenActivityScannerReturnsNilWhenCachedDailyActivityIsMissing() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let currentCacheURL = root.appendingPathComponent("codex-token-activity-v18.json")
+
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: currentCacheURL
+        )
+
+        let days = scanner.cachedDailyActivity(
+            now: Date(timeIntervalSince1970: 1_781_784_000),
+            days: 30
+        )
+
+        XCTAssertNil(days)
+    }
+
+    func testCodexTokenActivityScannerDoesNotDisplayIncompleteCache() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let cacheURL = root.appendingPathComponent("codex-token-activity-v18.json")
+        try writeTokenActivityCache(
+            version: 18,
+            root: root,
+            cacheURL: cacheURL,
+            calendar: calendar,
+            days: ["2026-06-18": 12_345],
+            isComplete: false
+        )
+
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: cacheURL
+        )
+
+        let days = scanner.cachedDailyActivity(
+            now: Date(timeIntervalSince1970: 1_781_784_000),
+            days: 30
+        )
+
+        XCTAssertNil(days)
+    }
+
+    func testCodexToolActivityScannerAggregatesAndCachesAppendedSessionFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionURL = root.appendingPathComponent("rollout-tools.jsonl")
+        let initialLines = [
+            #"{"timestamp":"2026-06-17T08:00:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call_1"}}"#,
+            #"{"timestamp":"2026-06-18T08:01:00.000Z","type":"response_item","payload":{"type":"function_call","name":"apply_patch","call_id":"call_2"}}"#,
+            #"{"timestamp":"2026-06-18T08:02:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call_3"}}"#,
+            #"{"timestamp":"2026-06-18T08:03:00.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_3","output":"done"}}"#
+        ].joined(separator: "\n")
+        try (initialLines + "\n").write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let cacheURL = root.appendingPathComponent("tool-cache.json")
+        let firstScanner = CodexToolActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: cacheURL
+        )
+        let now = Date(timeIntervalSince1970: 1_781_798_400)
+        let firstSummary = firstScanner.scanSummary(now: now)
+
+        XCTAssertEqual(firstSummary.totalCalls, 3)
+        XCTAssertEqual(firstSummary.todayCalls, 2)
+        XCTAssertEqual(firstSummary.last30DaysCalls, 3)
+        XCTAssertEqual(firstSummary.topTools.first?.name, "exec_command")
+        XCTAssertEqual(firstSummary.topTools.first?.count, 2)
+
+        let appendedLines = [
+            #"{"timestamp":"2026-06-18T08:04:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call_4"}}"#,
+            #"{"timestamp":"2026-06-18T08:05:00.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"request_user_input","call_id":"call_5"}}"#
+        ].joined(separator: "\n")
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((appendedLines + "\n").utf8))
+        try handle.close()
+
+        let secondScanner = CodexToolActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: cacheURL
+        )
+        let secondSummary = secondScanner.scanSummary(now: now)
+
+        XCTAssertEqual(secondSummary.totalCalls, 5)
+        XCTAssertEqual(secondSummary.todayCalls, 4)
+        XCTAssertEqual(secondSummary.last30DaysCalls, 5)
+        XCTAssertEqual(secondSummary.topTools.first?.name, "exec_command")
+        XCTAssertEqual(secondSummary.topTools.first?.count, 3)
+        XCTAssertTrue(try String(contentsOf: cacheURL, encoding: .utf8).contains("parsedBytes"))
+    }
+
+    func testCodexToolActivitySummaryAddsLiveToolCallsImmediately() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 6,
+            day: 18,
+            hour: 12
+        )))
+        let old = try XCTUnwrap(calendar.date(byAdding: .day, value: -31, to: now))
+
+        let summary = CodexToolActivitySummary(
+            totalCalls: 10,
+            todayCalls: 2,
+            last30DaysCalls: 9,
+            topTools: [
+                CodexToolActivityItem(name: "exec_command", count: 4),
+                CodexToolActivityItem(name: "apply_patch", count: 3)
+            ]
+        )
+
+        let next = summary
+            .addingLiveToolCall(
+                name: " exec_command ",
+                timestamp: now,
+                now: now,
+                calendar: calendar
+            )
+            .addingLiveToolCall(
+                name: "request_user_input",
+                timestamp: old,
+                now: now,
+                calendar: calendar
+            )
+
+        XCTAssertEqual(next.totalCalls, 12)
+        XCTAssertEqual(next.todayCalls, 3)
+        XCTAssertEqual(next.last30DaysCalls, 10)
+        XCTAssertEqual(next.topTools.first, CodexToolActivityItem(name: "exec_command", count: 5))
+        XCTAssertTrue(next.topTools.contains(CodexToolActivityItem(name: "request_user_input", count: 1)))
+    }
+
+    private func writeTokenActivityCache(
+        version: Int,
+        root: URL,
+        cacheURL: URL,
+        calendar: Calendar,
+        days: [String: Int],
+        isComplete: Bool = true
+    ) throws {
+        let sessionPath = root.appendingPathComponent("missing-rollout.jsonl").path
+        let payload: [String: Any] = [
+            "version": version,
+            "historyDays": 30,
+            "calendarIdentifier": String(describing: calendar.identifier),
+            "timeZoneIdentifier": calendar.timeZone.identifier,
+            "roots": [root.path],
+            "isComplete": isComplete,
+            "files": [
+                sessionPath: [
+                    "size": 100,
+                    "mtimeUnixMs": 1_781_784_000_000,
+                    "parsedBytes": 100,
+                    "baseline": NSNull(),
+                    "days": days.mapValues {
+                        [
+                            "totalTokens": $0,
+                            "modelTokenTotals": [
+                                "gpt-5": $0
+                            ],
+                            "modelEstimatedCostTotals": [
+                                "gpt-5": 0
+                            ],
+                            "modelStandardTokenTotals": [
+                                "gpt-5": $0
+                            ],
+                            "modelPriorityTokenTotals": [:],
+                            "modelStandardEstimatedCostTotals": [
+                                "gpt-5": 0
+                            ],
+                            "modelPriorityEstimatedCostTotals": [:]
+                        ]
+                    }
+                ]
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        try data.write(to: cacheURL)
+    }
+
+#if canImport(SQLite3)
+    private func createPriorityTraceDatabase(
+        at url: URL,
+        turnID: String,
+        model: String,
+        serviceTier: String = "priority"
+    ) throws {
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
+        guard let database else {
+            throw NSError(domain: "AgentSignalLightTests", code: 1)
+        }
+        defer { sqlite3_close(database) }
+
+        let createSQL = """
+        CREATE TABLE logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            ts_nanos INTEGER NOT NULL,
+            level TEXT NOT NULL,
+            target TEXT NOT NULL,
+            feedback_log_body TEXT,
+            module_path TEXT,
+            file TEXT,
+            line INTEGER,
+            thread_id TEXT,
+            process_uuid TEXT,
+            estimated_bytes INTEGER NOT NULL DEFAULT 0
+        );
+        """
+        XCTAssertEqual(sqlite3_exec(database, createSQL, nil, nil, nil), SQLITE_OK)
+
+        let body = """
+        session_loop:turn{turn.id=\(turnID) model=\(model)}:run_sampling_request websocket request:{"type":"response.create","service_tier":"\(serviceTier)","model":"\(model)","turn_id":"\(turnID)"}
+        """
+        var statement: OpaquePointer?
+        let insertSQL = """
+        INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, estimated_bytes)
+        VALUES (?, 0, 'INFO', 'codex', ?, 0)
+        """
+        XCTAssertEqual(sqlite3_prepare_v2(database, insertSQL, -1, &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, 1_781_755_200)
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 2, body, -1, transient)
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
+    }
+#endif
+
+    func testCodexRateLimitFetcherMapsWhamUsageResponseToQuotaStatus() throws {
+        let data = Data("""
+        {
+          "rate_limit": {
+            "primary_window": {
+              "used_percent": 2.5,
+              "reset_at": 1781788782,
+              "limit_window_seconds": 18000
+            },
+            "secondary_window": {
+              "used_percent": 5.25,
+              "reset_at": 1782375582,
+              "limit_window_seconds": 604800
+            }
+          }
+        }
+        """.utf8)
+
+        let response = try JSONDecoder().decode(CodexUsageResponse.self, from: data)
+        let updatedAt = Date(timeIntervalSince1970: 1_781_700_000)
+        let quota = try CodexRateLimitFetcher.quotaStatus(from: response, updatedAt: updatedAt)
+
+        XCTAssertEqual(quota.remainingPercent, 97.5, accuracy: 0.01)
+        XCTAssertEqual(quota.usedPercent ?? -1, 2.5, accuracy: 0.01)
+        XCTAssertEqual(quota.windowMinutes, 300)
+        XCTAssertEqual(quota.resetsAt, Date(timeIntervalSince1970: 1_781_788_782))
+        XCTAssertEqual(quota.updatedAt, updatedAt)
+        XCTAssertEqual(quota.primaryWindow?.remainingPercent ?? -1, 97.5, accuracy: 0.01)
+        XCTAssertEqual(quota.primaryWindow?.windowMinutes, 300)
+        XCTAssertEqual(quota.secondaryWindow?.remainingPercent ?? -1, 94.75, accuracy: 0.01)
+        XCTAssertEqual(quota.secondaryWindow?.windowMinutes, 10_080)
+        XCTAssertEqual(quota.secondaryWindow?.resetsAt, Date(timeIntervalSince1970: 1_782_375_582))
+    }
+
+    func testCodexRateLimitFetcherDoesNotRewriteAPIKeyAuthFile() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let authURL = root.appendingPathComponent("auth.json")
+        let originalAuth = Data("""
+        {
+          "OPENAI_API_KEY": "sk-test-api-key",
+          "tokens": {
+            "access_token": "existing-oauth-token",
+            "refresh_token": "existing-refresh-token"
+          },
+          "last_refresh": "2026-06-01T00:00:00Z"
+        }
+        """.utf8)
+        try originalAuth.write(to: authURL)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer sk-test-api-key")
+            let data = Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 10,
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8)
+            let response = HTTPURLResponse(
+                url: request.url ?? URL(string: "https://chatgpt.com/backend-api/wham/usage")!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, data)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let fetcher = CodexRateLimitFetcher(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            session: session
+        )
+
+        let quota = try await fetcher.fetchQuota(now: Date(timeIntervalSince1970: 1_781_700_000))
+
+        XCTAssertEqual(quota.usedPercent ?? -1, 10, accuracy: 0.01)
+        XCTAssertEqual(try Data(contentsOf: authURL), originalAuth)
+    }
+
+    @MainActor
+    func testWeeklyQuotaResetTextIncludesDate() {
+        let model = MenuBarStatusModel()
+        model.appLanguage = .zhHans
+        let window = AgentQuotaWindowStatus(
+            remainingPercent: 84,
+            usedPercent: 16,
+            windowMinutes: 10_080,
+            resetsAt: Date(timeIntervalSince1970: 1_782_375_582)
+        )
+
+        let fiveHourText = model.quotaResetText(for: window, badgeWindow: .fiveHours)
+        let weeklyText = model.quotaResetText(for: window, badgeWindow: .weekly)
+
+        XCTAssertTrue(fiveHourText.hasPrefix("重置 "))
+        XCTAssertTrue(weeklyText.hasPrefix("重置 "))
+        XCTAssertNotEqual(fiveHourText, weeklyText)
+        XCTAssertGreaterThan(weeklyText.count, fiveHourText.count)
+        XCTAssertFalse(weeklyText.contains("2026"))
+    }
+
+    @MainActor
+    func testCompactTokenUsageTextUsesTwoDecimalPlaces() {
+        let model = MenuBarStatusModel()
+        model.appLanguage = .zhHans
+
+        XCTAssertEqual(model.compactTokenCountText(6_500_000_000), "65.00亿")
+        XCTAssertEqual(model.compactTokenCountText(12_345), "1.23万")
+
+        model.appLanguage = .english
+        XCTAssertEqual(model.compactTokenCountText(1_234_567_890), "1.23B")
+        XCTAssertEqual(model.compactTokenCountText(1_234), "1.23K")
     }
 
     func testCodexDesktopSessionParserMapsExecSourceToCliAgent() {
@@ -881,6 +1725,40 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(snapshot.sessions.first?.updatedAt, eventDate)
         XCTAssertEqual(snapshot.recentEvents.first?.updatedAt, eventDate)
         XCTAssertEqual(snapshot.updatedAt, eventDate)
+    }
+
+    func testApplySessionQuotaPersistsWithLaterSessionSignals() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let quotaDate = Date(timeIntervalSince1970: 1_780_358_402)
+        let signalDate = quotaDate.addingTimeInterval(5)
+        let quota = AgentQuotaStatus(
+            remainingPercent: 23.5,
+            usedPercent: 76.5,
+            limitName: "GPT-5.3-Codex-Spark",
+            windowMinutes: 300,
+            resetsAt: quotaDate.addingTimeInterval(1_800),
+            updatedAt: quotaDate
+        )
+
+        _ = try fixture.store.applySessionQuota(
+            quota,
+            sessionID: "codex-desktop:thread",
+            agent: "codex-desktop",
+            updatedAt: quotaDate
+        )
+        let snapshot = try fixture.store.applySessionSignal(
+            .working,
+            sessionID: "codex-desktop:thread",
+            agent: "codex-desktop",
+            lastEvent: "DesktopToolCall:exec_command",
+            updatedAt: signalDate
+        )
+
+        XCTAssertEqual(snapshot.aggregate, .working)
+        XCTAssertEqual(snapshot.sessions.first?.quota, quota)
+        XCTAssertEqual(snapshot.sessions.first?.updatedAt, signalDate)
+        XCTAssertEqual(snapshot.recentEvents.first?.event, "DesktopToolCall:exec_command")
     }
 
     func testApplySessionSignalIgnoresOlderEventsForSameSession() throws {
@@ -2430,6 +3308,85 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testFloatingSignalBadgeSettingsDefaultOnAndPersist() {
+        let defaults = UserDefaults.standard
+        let keys = [
+            "isFloatingSignalInfoBadgeEnabled",
+            "isFloatingSignalQuotaBadgeEnabled",
+            "isFloatingSignalTokenBadgeEnabled",
+            "floatingSignalInfoBadgeCorner",
+            "floatingSignalQuotaBadgeCorner",
+            "floatingSignalTokenBadgeCorner",
+            "floatingSignalQuotaBadgeWindow",
+            "floatingSignalTokenBadgeWindow"
+        ]
+        let previousValues = keys.map { ($0, defaults.object(forKey: $0)) }
+        keys.forEach(defaults.removeObject(forKey:))
+        defer {
+            for (key, value) in previousValues {
+                if let value {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let model = MenuBarStatusModel()
+        XCTAssertTrue(model.isFloatingSignalInfoBadgeEnabled)
+        XCTAssertTrue(model.isFloatingSignalQuotaBadgeEnabled)
+        XCTAssertTrue(model.isFloatingSignalTokenBadgeEnabled)
+        XCTAssertEqual(model.floatingSignalInfoBadgeCorner, .topRight)
+        XCTAssertEqual(model.floatingSignalQuotaBadgeCorner, .topLeft)
+        XCTAssertEqual(model.floatingSignalTokenBadgeCorner, .bottomLeft)
+        XCTAssertEqual(model.floatingSignalQuotaBadgeWindow, .fiveHours)
+        XCTAssertEqual(model.floatingSignalTokenBadgeWindow, .today)
+        XCTAssertTrue(defaults.bool(forKey: "isFloatingSignalInfoBadgeEnabled"))
+        XCTAssertTrue(defaults.bool(forKey: "isFloatingSignalQuotaBadgeEnabled"))
+        XCTAssertTrue(defaults.bool(forKey: "isFloatingSignalTokenBadgeEnabled"))
+        XCTAssertEqual(defaults.string(forKey: "floatingSignalInfoBadgeCorner"), FloatingSignalInfoBadgeCorner.topRight.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "floatingSignalQuotaBadgeCorner"), FloatingSignalInfoBadgeCorner.topLeft.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "floatingSignalTokenBadgeCorner"), FloatingSignalInfoBadgeCorner.bottomLeft.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "floatingSignalQuotaBadgeWindow"), FloatingSignalQuotaBadgeWindow.fiveHours.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "floatingSignalTokenBadgeWindow"), FloatingSignalTokenBadgeWindow.today.rawValue)
+
+        model.setFloatingSignalInfoBadgeEnabled(false)
+        model.setFloatingSignalQuotaBadgeEnabled(false)
+        model.setFloatingSignalTokenBadgeEnabled(false)
+        model.setFloatingSignalInfoBadgeCorner(.bottomLeft)
+        model.setFloatingSignalQuotaBadgeCorner(.topRight)
+        model.setFloatingSignalTokenBadgeCorner(.topLeft)
+        model.setFloatingSignalQuotaBadgeWindow(.weekly)
+        model.setFloatingSignalTokenBadgeWindow(.last30Days)
+        XCTAssertFalse(model.isFloatingSignalInfoBadgeEnabled)
+        XCTAssertFalse(model.isFloatingSignalQuotaBadgeEnabled)
+        XCTAssertFalse(model.isFloatingSignalTokenBadgeEnabled)
+        XCTAssertEqual(model.floatingSignalInfoBadgeCorner, .bottomLeft)
+        XCTAssertEqual(model.floatingSignalQuotaBadgeCorner, .topRight)
+        XCTAssertEqual(model.floatingSignalTokenBadgeCorner, .topLeft)
+        XCTAssertEqual(model.floatingSignalQuotaBadgeWindow, .weekly)
+        XCTAssertEqual(model.floatingSignalTokenBadgeWindow, .last30Days)
+        XCTAssertFalse(defaults.bool(forKey: "isFloatingSignalInfoBadgeEnabled"))
+        XCTAssertFalse(defaults.bool(forKey: "isFloatingSignalQuotaBadgeEnabled"))
+        XCTAssertFalse(defaults.bool(forKey: "isFloatingSignalTokenBadgeEnabled"))
+        XCTAssertEqual(defaults.string(forKey: "floatingSignalInfoBadgeCorner"), FloatingSignalInfoBadgeCorner.bottomLeft.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "floatingSignalQuotaBadgeCorner"), FloatingSignalInfoBadgeCorner.topRight.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "floatingSignalTokenBadgeCorner"), FloatingSignalInfoBadgeCorner.topLeft.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "floatingSignalQuotaBadgeWindow"), FloatingSignalQuotaBadgeWindow.weekly.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "floatingSignalTokenBadgeWindow"), FloatingSignalTokenBadgeWindow.last30Days.rawValue)
+
+        let restoredModel = MenuBarStatusModel()
+        XCTAssertFalse(restoredModel.isFloatingSignalInfoBadgeEnabled)
+        XCTAssertFalse(restoredModel.isFloatingSignalQuotaBadgeEnabled)
+        XCTAssertFalse(restoredModel.isFloatingSignalTokenBadgeEnabled)
+        XCTAssertEqual(restoredModel.floatingSignalInfoBadgeCorner, .bottomLeft)
+        XCTAssertEqual(restoredModel.floatingSignalQuotaBadgeCorner, .topRight)
+        XCTAssertEqual(restoredModel.floatingSignalTokenBadgeCorner, .topLeft)
+        XCTAssertEqual(restoredModel.floatingSignalQuotaBadgeWindow, .weekly)
+        XCTAssertEqual(restoredModel.floatingSignalTokenBadgeWindow, .last30Days)
+    }
+
+    @MainActor
     func testNewZealandTrafficLightModeDefaultsOnAndPersists() {
         let defaults = UserDefaults.standard
         let keys = [
@@ -2833,6 +3790,36 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
         try encoder.encode(document).write(to: store.stateFileURL)
     }
+}
+
+private final class CodexRateLimitFetcherURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+
+        do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
 }
 
 private extension FileHandle {

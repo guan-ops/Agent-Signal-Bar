@@ -297,7 +297,6 @@ private extension CodexPlatformPresenceMonitor.RunningProcessInfo {
               !commandLine.contains("/applications/codex.app/"),
               !commandLine.contains("codex computer use.app"),
               !commandLine.contains("skycomputeruseclient"),
-              !commandLine.contains("codexbar"),
               !commandLine.contains("/library/developer/xcode/codingassistant/"),
               !commandLine.contains("/library/caches/jetbrains/"),
               !commandLine.contains("/.vscode/extensions/"),

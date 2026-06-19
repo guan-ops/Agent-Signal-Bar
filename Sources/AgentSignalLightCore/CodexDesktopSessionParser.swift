@@ -22,6 +22,18 @@ public struct CodexDesktopActivity: Equatable, Sendable {
     }
 }
 
+public struct CodexDesktopQuotaUpdate: Equatable, Sendable {
+    public let sessionID: String
+    public let agent: String
+    public let quota: AgentQuotaStatus
+
+    public init(sessionID: String, agent: String, quota: AgentQuotaStatus) {
+        self.sessionID = sessionID
+        self.agent = agent
+        self.quota = quota
+    }
+}
+
 public enum CodexDesktopSessionParser {
     public static func activity(
         from line: String,
@@ -78,6 +90,71 @@ public enum CodexDesktopSessionParser {
         }
 
         return agentName(in: payload)
+    }
+
+    public static func quotaUpdate(
+        from line: String,
+        defaultSessionID: String,
+        defaultAgent: String = "codex-desktop"
+    ) -> CodexDesktopQuotaUpdate? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["type"] as? String) == "event_msg",
+              let payload = object["payload"] as? [String: Any],
+              (payload["type"] as? String) == "token_count"
+        else {
+            return nil
+        }
+
+        let timestamp = (object["timestamp"] as? String).flatMap(parseTimestamp) ?? Date()
+        let agent = agentName(in: payload) ?? defaultAgent
+        let sessionID = sessionID(in: payload, agent: agent) ?? defaultSessionID
+        guard let quota = quotaStatus(from: payload, timestamp: timestamp) else {
+            return nil
+        }
+
+        return CodexDesktopQuotaUpdate(sessionID: sessionID, agent: agent, quota: quota)
+    }
+
+    public static func tokenActivityPoint(from line: String) -> AgentTokenActivityPoint? {
+        guard let record = tokenActivityRecord(from: line),
+              let usage = record.lastUsage,
+              usage.effectiveTotalTokens != nil
+        else {
+            return nil
+        }
+
+        return AgentTokenActivityPoint(timestamp: record.timestamp, usage: usage)
+    }
+
+    public static func tokenActivityRecord(from line: String) -> AgentTokenActivityRecord? {
+        guard line.contains("token_count"),
+              line.contains("token_usage"),
+              let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["type"] as? String) == "event_msg",
+              let timestamp = (object["timestamp"] as? String).flatMap(parseTimestamp),
+              let payload = object["payload"] as? [String: Any],
+              (payload["type"] as? String) == "token_count",
+              let info = payload["info"] as? [String: Any]
+        else {
+            return nil
+        }
+
+        let lastUsage = (info["last_token_usage"] as? [String: Any])
+            .flatMap { tokenUsage(from: $0, contextWindow: intValue(info["model_context_window"])) }
+        let totalUsage = (info["total_token_usage"] as? [String: Any])
+            .flatMap { tokenUsage(from: $0, contextWindow: intValue(info["model_context_window"])) }
+
+        guard lastUsage?.effectiveTotalTokens != nil || totalUsage?.effectiveTotalTokens != nil else {
+            return nil
+        }
+
+        return AgentTokenActivityRecord(
+            timestamp: timestamp,
+            lastUsage: lastUsage,
+            totalUsage: totalUsage
+        )
     }
 }
 
@@ -138,6 +215,96 @@ private extension CodexDesktopSessionParser {
         default:
             return nil
         }
+    }
+
+    static func quotaStatus(from payload: [String: Any], timestamp: Date) -> AgentQuotaStatus? {
+        let info = payload["info"] as? [String: Any]
+        let latestTokenUsage = info.flatMap { tokenUsage(from: $0) }
+
+        if let rateLimits = payload["rate_limits"] as? [String: Any],
+           let primary = rateLimits["primary"] as? [String: Any],
+           let primaryWindow = quotaWindow(from: primary) {
+            let secondaryWindow = (rateLimits["secondary"] as? [String: Any])
+                .flatMap { quotaWindow(from: $0) }
+            return AgentQuotaStatus(
+                remainingPercent: primaryWindow.remainingPercent,
+                usedPercent: primaryWindow.usedPercent,
+                limitName: stringValue(rateLimits["limit_name"]),
+                windowMinutes: primaryWindow.windowMinutes,
+                resetsAt: primaryWindow.resetsAt,
+                updatedAt: timestamp,
+                primary: primaryWindow,
+                secondary: secondaryWindow,
+                tokenUsage: latestTokenUsage
+            )
+        }
+
+        guard let info,
+              let contextWindow = numberValue(info["model_context_window"]),
+              contextWindow > 0,
+              let lastUsage = info["last_token_usage"] as? [String: Any],
+              let inputTokens = numberValue(lastUsage["input_tokens"])
+        else {
+            return nil
+        }
+
+        let usedPercent = min(max(inputTokens / contextWindow * 100, 0), 100)
+        return AgentQuotaStatus(
+            remainingPercent: 100 - usedPercent,
+            usedPercent: usedPercent,
+            limitName: "Context",
+            windowMinutes: nil,
+            resetsAt: nil,
+            updatedAt: timestamp,
+            tokenUsage: latestTokenUsage
+        )
+    }
+
+    static func tokenUsage(from info: [String: Any]) -> AgentTokenUsage? {
+        guard let lastUsage = info["last_token_usage"] as? [String: Any] else {
+            return nil
+        }
+
+        return tokenUsage(from: lastUsage, contextWindow: intValue(info["model_context_window"]))
+    }
+
+    static func tokenUsage(from usagePayload: [String: Any], contextWindow: Int?) -> AgentTokenUsage? {
+        let inputTokens = intValue(usagePayload["input_tokens"])
+        let cachedInputTokens = intValue(usagePayload["cached_input_tokens"] ?? usagePayload["cache_read_input_tokens"])
+        let outputTokens = intValue(usagePayload["output_tokens"])
+        let reasoningOutputTokens = intValue(usagePayload["reasoning_output_tokens"])
+        let totalTokens = intValue(usagePayload["total_tokens"])
+
+        let usage = AgentTokenUsage(
+            inputTokens: inputTokens,
+            cachedInputTokens: cachedInputTokens,
+            outputTokens: outputTokens,
+            reasoningOutputTokens: reasoningOutputTokens,
+            totalTokens: totalTokens,
+            contextWindowTokens: contextWindow
+        )
+
+        if usage.effectiveTotalTokens == nil,
+           usage.cachedInputTokens == nil,
+           usage.reasoningOutputTokens == nil,
+           usage.contextWindowTokens == nil {
+            return nil
+        }
+
+        return usage
+    }
+
+    static func quotaWindow(from payload: [String: Any]) -> AgentQuotaWindowStatus? {
+        guard let usedPercent = numberValue(payload["used_percent"]) else {
+            return nil
+        }
+
+        return AgentQuotaWindowStatus(
+            remainingPercent: 100 - usedPercent,
+            usedPercent: usedPercent,
+            windowMinutes: intValue(payload["window_minutes"]),
+            resetsAt: numberValue(payload["resets_at"]).map { Date(timeIntervalSince1970: $0) }
+        )
     }
 
     static func activityFromResponseItem(
@@ -296,6 +463,33 @@ private extension CodexDesktopSessionParser {
             }
         }
         return nil
+    }
+
+    static func stringValue(_ value: Any?) -> String? {
+        guard let value = value as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    static func numberValue(_ value: Any?) -> Double? {
+        switch value {
+        case let value as Double:
+            return value
+        case let value as Float:
+            return Double(value)
+        case let value as Int:
+            return Double(value)
+        case let value as NSNumber:
+            return value.doubleValue
+        case let value as String:
+            return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
+
+    static func intValue(_ value: Any?) -> Int? {
+        numberValue(value).map { Int($0) }
     }
 
     static func containsAny(_ value: String, tokens: [String]) -> Bool {

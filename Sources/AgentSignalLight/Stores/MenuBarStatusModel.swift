@@ -211,8 +211,8 @@ enum SettingsGlassEffect: String, CaseIterable, Hashable {
 }
 
 enum StatusMenuMode: String, CaseIterable, Hashable {
-    case detailed
     case simple
+    case detailed
 }
 
 enum SignalLightAgentSelectionMode: String, Hashable {
@@ -288,6 +288,22 @@ enum HookInstallOperation: Hashable {
     case message
 }
 
+enum FloatingSignalInfoBadgeCorner: String, CaseIterable, Hashable {
+    case topLeft = "top-left"
+    case topRight = "top-right"
+    case bottomLeft = "bottom-left"
+}
+
+enum FloatingSignalQuotaBadgeWindow: String, CaseIterable, Hashable {
+    case fiveHours = "five-hours"
+    case weekly = "weekly"
+}
+
+enum FloatingSignalTokenBadgeWindow: String, CaseIterable, Hashable {
+    case today
+    case last30Days = "last-30-days"
+}
+
 @MainActor
 final class MenuBarStatusModel: ObservableObject {
     @Published private(set) var snapshot: SignalSnapshot
@@ -326,6 +342,16 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var isFloatingSignalWaitingSoundEnabled: Bool
     @Published var isFloatingSignalAlertSoundEnabled: Bool
     @Published var floatingSignalSoundLevel: FloatingSignalSoundLevel
+    @Published var isFloatingSignalInfoBadgeEnabled: Bool
+    @Published var isFloatingSignalQuotaBadgeEnabled: Bool
+    @Published var isFloatingSignalTokenBadgeEnabled: Bool
+    @Published var floatingSignalInfoBadgeCorner: FloatingSignalInfoBadgeCorner
+    @Published var floatingSignalQuotaBadgeCorner: FloatingSignalInfoBadgeCorner
+    @Published var floatingSignalTokenBadgeCorner: FloatingSignalInfoBadgeCorner
+    @Published var floatingSignalQuotaBadgeWindow: FloatingSignalQuotaBadgeWindow
+    @Published var floatingSignalTokenBadgeWindow: FloatingSignalTokenBadgeWindow
+    @Published private(set) var latestAgentQuota: AgentQuotaStatus?
+    @Published private(set) var latestAgentTokenUsage: AgentTokenUsage?
     @Published private(set) var statusLightOverride: StatusLightOverrideFrame?
     @Published private(set) var desktopAppSessions: [SessionStatus] = []
     @Published private(set) var isLaunchAtLoginEnabled = false
@@ -345,6 +371,10 @@ final class MenuBarStatusModel: ObservableObject {
     @Published private(set) var floatingSignalSoundTestTick = 0
     @Published private(set) var floatingSignalWaitingSoundTestTick = 0
     @Published private(set) var floatingSignalAlertSoundTestTick = 0
+    @Published private(set) var tokenActivityDays: [CodexTokenActivityDay] = []
+    @Published private(set) var isTokenActivityLoading = false
+    @Published private(set) var toolActivitySummary: CodexToolActivitySummary = .empty
+    @Published private(set) var isToolActivityLoading = false
 
     let animationClock = SignalAnimationClock()
 
@@ -353,10 +383,15 @@ final class MenuBarStatusModel: ObservableObject {
     private let hookInstallManager: HookInstallManager
     private let diagnosticsExportManager: DiagnosticsExportManager
     private let codexDesktopActivityMonitor: CodexDesktopActivityMonitor
+    private let codexRateLimitFetcher: CodexRateLimitFetcher
+    private let codexTokenActivityScanner: CodexTokenActivityScanner
+    private let codexToolActivityScanner: CodexToolActivityScanner
     private let codexPlatformPresenceMonitor: CodexPlatformPresenceMonitor
     private let updateChecker: GitHubReleaseUpdateChecker
     private let stateReloadQueue = DispatchQueue(label: "com.agentsignallight.state-reload")
     private let codexDesktopPollQueue = DispatchQueue(label: "com.agentsignallight.codex-desktop-poll")
+    private let tokenActivityQueue = DispatchQueue(label: "com.agentsignallight.token-activity")
+    private let toolActivityQueue = DispatchQueue(label: "com.agentsignallight.tool-activity")
     private let platformPresencePollQueue = DispatchQueue(label: "com.agentsignallight.platform-presence-poll")
     private var pollTimer: Timer?
     private var animationTimer: Timer?
@@ -375,9 +410,18 @@ final class MenuBarStatusModel: ObservableObject {
     private var isStateReloadInFlight = false
     private var isStateReloadQueued = false
     private var isCodexDesktopPollInFlight = false
+    private var isCodexRateLimitFetchInFlight = false
+    private var isTokenActivityScanInFlight = false
+    private var isToolActivityScanInFlight = false
+    private var isToolActivityScanQueued = false
     private var isPlatformPresencePollInFlight = false
     private var isAutomaticUpdateCheckInFlight = false
     private var lastNotifiedUpdateVersion: String?
+    private var lastCodexRateLimitFetchAt: Date?
+    private var lastTokenActivityScanAt: Date?
+    private var lastToolActivityScanAt: Date?
+    private var liveTokenUsageScanBaseline: Int?
+    private var lastObservedLiveTokenUsageTotal: Int?
 
     private static let defaultDisplayLayout: TrafficSignalLayout = .horizontal
     private static let defaultStatusBarStyle: TrafficSignalStyle = .macOS
@@ -387,11 +431,21 @@ final class MenuBarStatusModel: ObservableObject {
     private static let floatingSignalScaleDefaultsVersion = 3
     private static let preferenceDefaultsVersion = 1
     private static let automaticUpdateCheckInterval: TimeInterval = 24 * 60 * 60
+    private static let codexRateLimitRefreshInterval: TimeInterval = 60
+    private static let tokenActivityRefreshInterval: TimeInterval = 60
+    private static let toolActivityRefreshInterval: TimeInterval = 60
+    private static let cachedLatestAgentQuotaKey = "cachedLatestAgentQuota"
+    private static let cachedLatestAgentTokenUsageKey = "cachedLatestAgentTokenUsage"
     private static let activeDisplayWindow: TimeInterval = SignalStateStore.defaultSessionTTL()
 
     private struct LaunchAtLoginUpdateResult: Sendable {
         let isEnabled: Bool
         let errorMessage: String?
+    }
+
+    private struct LiveToolActivity: Sendable {
+        let name: String
+        let timestamp: Date?
     }
 
     private struct AnimationTickCadence {
@@ -407,6 +461,9 @@ final class MenuBarStatusModel: ObservableObject {
         hookInstallManager: HookInstallManager = HookInstallManager(),
         diagnosticsExportManager: DiagnosticsExportManager = DiagnosticsExportManager(),
         codexDesktopActivityMonitor: CodexDesktopActivityMonitor = CodexDesktopActivityMonitor(),
+        codexRateLimitFetcher: CodexRateLimitFetcher = CodexRateLimitFetcher(),
+        codexTokenActivityScanner: CodexTokenActivityScanner = CodexTokenActivityScanner(),
+        codexToolActivityScanner: CodexToolActivityScanner = CodexToolActivityScanner(),
         codexPlatformPresenceMonitor: CodexPlatformPresenceMonitor = CodexPlatformPresenceMonitor(),
         updateChecker: GitHubReleaseUpdateChecker = GitHubReleaseUpdateChecker()
     ) {
@@ -415,6 +472,9 @@ final class MenuBarStatusModel: ObservableObject {
         self.hookInstallManager = hookInstallManager
         self.diagnosticsExportManager = diagnosticsExportManager
         self.codexDesktopActivityMonitor = codexDesktopActivityMonitor
+        self.codexRateLimitFetcher = codexRateLimitFetcher
+        self.codexTokenActivityScanner = codexTokenActivityScanner
+        self.codexToolActivityScanner = codexToolActivityScanner
         self.codexPlatformPresenceMonitor = codexPlatformPresenceMonitor
         self.updateChecker = updateChecker
         let storedLayout = UserDefaults.standard.string(forKey: "trafficSignalLayout")
@@ -446,6 +506,22 @@ final class MenuBarStatusModel: ObservableObject {
         let storedFloatingSignalScaleDefaultsVersion =
             UserDefaults.standard.integer(forKey: "floatingSignalScaleDefaultsVersion")
         let storedFloatingSignalSoundLevel = UserDefaults.standard.string(forKey: "floatingSignalSoundLevel")
+        let storedFloatingSignalInfoBadgeEnabled =
+            UserDefaults.standard.object(forKey: "isFloatingSignalInfoBadgeEnabled") as? Bool
+        let storedFloatingSignalQuotaBadgeEnabled =
+            UserDefaults.standard.object(forKey: "isFloatingSignalQuotaBadgeEnabled") as? Bool
+        let storedFloatingSignalTokenBadgeEnabled =
+            UserDefaults.standard.object(forKey: "isFloatingSignalTokenBadgeEnabled") as? Bool
+        let storedFloatingSignalInfoBadgeCorner =
+            UserDefaults.standard.string(forKey: "floatingSignalInfoBadgeCorner")
+        let storedFloatingSignalQuotaBadgeCorner =
+            UserDefaults.standard.string(forKey: "floatingSignalQuotaBadgeCorner")
+        let storedFloatingSignalTokenBadgeCorner =
+            UserDefaults.standard.string(forKey: "floatingSignalTokenBadgeCorner")
+        let storedFloatingSignalQuotaBadgeWindow =
+            UserDefaults.standard.string(forKey: "floatingSignalQuotaBadgeWindow")
+        let storedFloatingSignalTokenBadgeWindow =
+            UserDefaults.standard.string(forKey: "floatingSignalTokenBadgeWindow")
         let storedFloatingSignalCompletionSound =
             UserDefaults.standard.string(forKey: "floatingSignalCompletionSound")
         let storedFloatingSignalWaitingSound =
@@ -570,6 +646,48 @@ final class MenuBarStatusModel: ObservableObject {
         isFloatingSignalAlertSoundEnabled = resolvedFloatingSignalAlertSound.isEnabled
         floatingSignalSoundLevel =
             storedFloatingSignalSoundLevel.flatMap(FloatingSignalSoundLevel.init(rawValue:)) ?? .standard
+        isFloatingSignalInfoBadgeEnabled = storedFloatingSignalInfoBadgeEnabled ?? true
+        isFloatingSignalQuotaBadgeEnabled = storedFloatingSignalQuotaBadgeEnabled ?? true
+        isFloatingSignalTokenBadgeEnabled = storedFloatingSignalTokenBadgeEnabled ?? true
+        if storedFloatingSignalInfoBadgeEnabled == nil {
+            UserDefaults.standard.set(true, forKey: "isFloatingSignalInfoBadgeEnabled")
+        }
+        if storedFloatingSignalQuotaBadgeEnabled == nil {
+            UserDefaults.standard.set(true, forKey: "isFloatingSignalQuotaBadgeEnabled")
+        }
+        if storedFloatingSignalTokenBadgeEnabled == nil {
+            UserDefaults.standard.set(true, forKey: "isFloatingSignalTokenBadgeEnabled")
+        }
+        let resolvedFloatingSignalInfoBadgeCorner =
+            storedFloatingSignalInfoBadgeCorner.flatMap(FloatingSignalInfoBadgeCorner.init(rawValue:)) ?? .topRight
+        floatingSignalInfoBadgeCorner = resolvedFloatingSignalInfoBadgeCorner
+        if storedFloatingSignalInfoBadgeCorner != resolvedFloatingSignalInfoBadgeCorner.rawValue {
+            UserDefaults.standard.set(resolvedFloatingSignalInfoBadgeCorner.rawValue, forKey: "floatingSignalInfoBadgeCorner")
+        }
+        let resolvedFloatingSignalQuotaBadgeCorner =
+            storedFloatingSignalQuotaBadgeCorner.flatMap(FloatingSignalInfoBadgeCorner.init(rawValue:)) ?? .topLeft
+        floatingSignalQuotaBadgeCorner = resolvedFloatingSignalQuotaBadgeCorner
+        if storedFloatingSignalQuotaBadgeCorner != resolvedFloatingSignalQuotaBadgeCorner.rawValue {
+            UserDefaults.standard.set(resolvedFloatingSignalQuotaBadgeCorner.rawValue, forKey: "floatingSignalQuotaBadgeCorner")
+        }
+        let resolvedFloatingSignalTokenBadgeCorner =
+            storedFloatingSignalTokenBadgeCorner.flatMap(FloatingSignalInfoBadgeCorner.init(rawValue:)) ?? .bottomLeft
+        floatingSignalTokenBadgeCorner = resolvedFloatingSignalTokenBadgeCorner
+        if storedFloatingSignalTokenBadgeCorner != resolvedFloatingSignalTokenBadgeCorner.rawValue {
+            UserDefaults.standard.set(resolvedFloatingSignalTokenBadgeCorner.rawValue, forKey: "floatingSignalTokenBadgeCorner")
+        }
+        let resolvedFloatingSignalQuotaBadgeWindow =
+            storedFloatingSignalQuotaBadgeWindow.flatMap(FloatingSignalQuotaBadgeWindow.init(rawValue:)) ?? .fiveHours
+        floatingSignalQuotaBadgeWindow = resolvedFloatingSignalQuotaBadgeWindow
+        if storedFloatingSignalQuotaBadgeWindow != resolvedFloatingSignalQuotaBadgeWindow.rawValue {
+            UserDefaults.standard.set(resolvedFloatingSignalQuotaBadgeWindow.rawValue, forKey: "floatingSignalQuotaBadgeWindow")
+        }
+        let resolvedFloatingSignalTokenBadgeWindow =
+            storedFloatingSignalTokenBadgeWindow.flatMap(FloatingSignalTokenBadgeWindow.init(rawValue:)) ?? .today
+        floatingSignalTokenBadgeWindow = resolvedFloatingSignalTokenBadgeWindow
+        if storedFloatingSignalTokenBadgeWindow != resolvedFloatingSignalTokenBadgeWindow.rawValue {
+            UserDefaults.standard.set(resolvedFloatingSignalTokenBadgeWindow.rawValue, forKey: "floatingSignalTokenBadgeWindow")
+        }
         macOSHorizontalUsesTrafficLightSize =
             UserDefaults.standard.object(forKey: "macOSHorizontalUsesTrafficLightSize") as? Bool
             ?? UserDefaults.standard.object(forKey: "macOSUsesTrafficLightSize") as? Bool
@@ -607,6 +725,14 @@ final class MenuBarStatusModel: ObservableObject {
         lastAutomaticUpdateCheckAt = storedLastAutomaticUpdateCheckAt
         lastNotifiedUpdateVersion = UserDefaults.standard.string(forKey: "lastNotifiedUpdateVersion")
         snapshot = store.readSnapshot()
+        let snapshotQuota = Self.latestQuota(in: snapshot)
+        let cachedQuota = Self.cachedLatestAgentQuota()
+        latestAgentQuota = Self.latestQuota(snapshotQuota, isNewerThan: cachedQuota) ? snapshotQuota : cachedQuota
+        latestAgentTokenUsage = Self.latestTokenUsage(in: snapshot)
+            ?? latestAgentQuota?.tokenUsage
+            ?? Self.cachedLatestAgentTokenUsage()
+        liveTokenUsageScanBaseline = latestAgentTokenUsage?.effectiveTotalTokens
+        lastObservedLiveTokenUsageTotal = latestAgentTokenUsage?.effectiveTotalTokens
         isLaunchAtLoginEnabled = launchAtLoginManager.isEnabled
         if shouldApplyPreferenceDefaults {
             enableLaunchAtLoginByDefaultIfNeeded()
@@ -638,6 +764,7 @@ final class MenuBarStatusModel: ObservableObject {
     func setManualSignal(_ signal: AgentSignal) {
         do {
             snapshot = try store.setManualSignal(signal)
+            updateLatestAgentQuota(from: snapshot)
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -647,6 +774,7 @@ final class MenuBarStatusModel: ObservableObject {
     func clearSessions() {
         do {
             snapshot = try store.clearSessions()
+            updateLatestAgentQuota(from: snapshot)
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -662,6 +790,7 @@ final class MenuBarStatusModel: ObservableObject {
             pollDesktopAppPresence()
         } else {
             reload()
+            pollCodexRateLimitsIfNeeded(force: true)
             pollDesktopAppPresence()
             startMonitoringResumeLightSequence()
         }
@@ -860,6 +989,108 @@ final class MenuBarStatusModel: ObservableObject {
     func setFloatingSignalSoundLevel(_ level: FloatingSignalSoundLevel) {
         floatingSignalSoundLevel = level
         UserDefaults.standard.set(level.rawValue, forKey: "floatingSignalSoundLevel")
+    }
+
+    func setFloatingSignalInfoBadgeEnabled(_ enabled: Bool) {
+        guard isFloatingSignalInfoBadgeEnabled != enabled else { return }
+        isFloatingSignalInfoBadgeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isFloatingSignalInfoBadgeEnabled")
+    }
+
+    func setFloatingSignalQuotaBadgeEnabled(_ enabled: Bool) {
+        guard isFloatingSignalQuotaBadgeEnabled != enabled else { return }
+        isFloatingSignalQuotaBadgeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isFloatingSignalQuotaBadgeEnabled")
+        if enabled {
+            pollCodexRateLimitsIfNeeded(force: true)
+        }
+    }
+
+    func setFloatingSignalTokenBadgeEnabled(_ enabled: Bool) {
+        guard isFloatingSignalTokenBadgeEnabled != enabled else { return }
+        isFloatingSignalTokenBadgeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isFloatingSignalTokenBadgeEnabled")
+        if enabled {
+            refreshTokenActivityIfNeeded(force: tokenActivityDays.isEmpty)
+        }
+    }
+
+    func setFloatingSignalInfoBadgeCorner(_ corner: FloatingSignalInfoBadgeCorner) {
+        guard floatingSignalInfoBadgeCorner != corner else { return }
+        floatingSignalInfoBadgeCorner = corner
+        UserDefaults.standard.set(corner.rawValue, forKey: "floatingSignalInfoBadgeCorner")
+    }
+
+    func setFloatingSignalQuotaBadgeCorner(_ corner: FloatingSignalInfoBadgeCorner) {
+        guard floatingSignalQuotaBadgeCorner != corner else { return }
+        floatingSignalQuotaBadgeCorner = corner
+        UserDefaults.standard.set(corner.rawValue, forKey: "floatingSignalQuotaBadgeCorner")
+    }
+
+    func setFloatingSignalTokenBadgeCorner(_ corner: FloatingSignalInfoBadgeCorner) {
+        guard floatingSignalTokenBadgeCorner != corner else { return }
+        floatingSignalTokenBadgeCorner = corner
+        UserDefaults.standard.set(corner.rawValue, forKey: "floatingSignalTokenBadgeCorner")
+    }
+
+    func setFloatingSignalQuotaBadgeWindow(_ window: FloatingSignalQuotaBadgeWindow) {
+        guard floatingSignalQuotaBadgeWindow != window else { return }
+        floatingSignalQuotaBadgeWindow = window
+        UserDefaults.standard.set(window.rawValue, forKey: "floatingSignalQuotaBadgeWindow")
+    }
+
+    func setFloatingSignalTokenBadgeWindow(_ window: FloatingSignalTokenBadgeWindow) {
+        guard floatingSignalTokenBadgeWindow != window else { return }
+        floatingSignalTokenBadgeWindow = window
+        UserDefaults.standard.set(window.rawValue, forKey: "floatingSignalTokenBadgeWindow")
+    }
+
+    func tokenActivityTotal(for window: FloatingSignalTokenBadgeWindow, now: Date = Date()) -> Int {
+        let scannedTotal = tokenActivityDays(for: window, now: now)
+            .map(\.totalTokens)
+            .reduce(0, +)
+        guard tokenWindowIncludesToday(window, now: now) else {
+            return scannedTotal
+        }
+        return scannedTotal + liveTokenUsageSupplement
+    }
+
+    func tokenActivityEstimatedCost(for window: FloatingSignalTokenBadgeWindow, now: Date = Date()) -> Double? {
+        let costs = tokenActivityDays(for: window, now: now)
+            .compactMap(\.estimatedCostUSD)
+        return costs.isEmpty ? nil : costs.reduce(0, +)
+    }
+
+    private func tokenActivityDays(for window: FloatingSignalTokenBadgeWindow, now: Date) -> [CodexTokenActivityDay] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+
+        switch window {
+        case .today:
+            return tokenActivityDays.filter { calendar.isDate($0.day, inSameDayAs: today) }
+        case .last30Days:
+            let startDay = calendar.date(byAdding: .day, value: -29, to: today) ?? today
+            return tokenActivityDays.filter {
+                let day = calendar.startOfDay(for: $0.day)
+                return day >= startDay && day <= today
+            }
+        }
+    }
+
+    private var liveTokenUsageSupplement: Int {
+        guard let latestTotal = latestAgentTokenUsage?.effectiveTotalTokens else {
+            return 0
+        }
+
+        let baseline = liveTokenUsageScanBaseline ?? 0
+        return max(0, latestTotal - baseline)
+    }
+
+    private func tokenWindowIncludesToday(_ window: FloatingSignalTokenBadgeWindow, now: Date) -> Bool {
+        switch window {
+        case .today, .last30Days:
+            return true
+        }
     }
 
     func previewFloatingSignalSound() {
@@ -1616,6 +1847,7 @@ final class MenuBarStatusModel: ObservableObject {
 
                     if latestSnapshot != self.snapshot {
                         self.snapshot = latestSnapshot
+                        self.updateLatestAgentQuota(from: latestSnapshot)
                     }
 
                     if self.isStateReloadQueued {
@@ -1799,6 +2031,7 @@ final class MenuBarStatusModel: ObservableObject {
 
     private func pollCodexDesktopActivity() {
         guard isCodexDesktopMonitoringEnabled, !isMonitoringPaused else { return }
+        pollCodexRateLimitsIfNeeded()
         guard !isCodexDesktopPollInFlight else { return }
 
         isCodexDesktopPollInFlight = true
@@ -1806,13 +2039,37 @@ final class MenuBarStatusModel: ObservableObject {
         let store = store
 
         codexDesktopPollQueue.async { [weak self] in
-            let activities = monitor.poll()
+            let pollResult = monitor.pollResult()
+            let liveToolActivities = Self.liveToolActivities(from: pollResult.activities)
             var latestSnapshot: SignalSnapshot?
+            var latestQuota: AgentQuotaStatus?
             var errorMessage: String?
 
-            if !activities.isEmpty {
+            if !pollResult.quotaUpdates.isEmpty {
                 do {
-                    for activity in activities {
+                    for quotaUpdate in pollResult.quotaUpdates {
+                        if let currentLatestQuota = latestQuota {
+                            if quotaUpdate.quota.updatedAt > currentLatestQuota.updatedAt {
+                                latestQuota = quotaUpdate.quota
+                            }
+                        } else {
+                            latestQuota = quotaUpdate.quota
+                        }
+                        latestSnapshot = try store.applySessionQuota(
+                            quotaUpdate.quota,
+                            sessionID: quotaUpdate.sessionID,
+                            agent: quotaUpdate.agent,
+                            updatedAt: quotaUpdate.quota.updatedAt
+                        )
+                    }
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+            }
+
+            if !pollResult.activities.isEmpty {
+                do {
+                    for activity in pollResult.activities {
                         latestSnapshot = try store.applySessionSignal(
                             activity.signal,
                             sessionID: activity.sessionID,
@@ -1831,10 +2088,247 @@ final class MenuBarStatusModel: ObservableObject {
                     guard let self else { return }
                     self.isCodexDesktopPollInFlight = false
                     guard self.isCodexDesktopMonitoringEnabled, !self.isMonitoringPaused else { return }
+                    if !liveToolActivities.isEmpty {
+                        self.applyLiveToolActivities(liveToolActivities)
+                    }
+                    if let latestQuota {
+                        self.updateLatestAgentQuota(latestQuota)
+                        if let tokenUsage = latestQuota.tokenUsage {
+                            self.updateLatestAgentTokenUsage(tokenUsage)
+                            self.refreshTokenActivityIfNeeded()
+                        }
+                    }
+                    if !liveToolActivities.isEmpty {
+                        self.refreshToolActivityIfNeeded(force: true)
+                    } else if latestQuota?.tokenUsage != nil {
+                        self.refreshToolActivityIfNeeded()
+                    }
                     if let latestSnapshot {
                         self.snapshot = latestSnapshot
+                        self.updateLatestAgentQuota(from: latestSnapshot)
                     }
                     self.lastError = errorMessage
+                }
+            }
+        }
+    }
+
+    nonisolated private static func liveToolActivities(from activities: [CodexDesktopActivity]) -> [LiveToolActivity] {
+        let desktopToolCallEventPrefix = "DesktopToolCall:"
+        return activities.compactMap { activity -> LiveToolActivity? in
+            guard activity.event.hasPrefix(desktopToolCallEventPrefix) else {
+                return nil
+            }
+
+            let name = String(activity.event.dropFirst(desktopToolCallEventPrefix.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return nil }
+
+            return LiveToolActivity(name: name, timestamp: activity.timestamp)
+        }
+    }
+
+    private func applyLiveToolActivities(_ activities: [LiveToolActivity], now: Date = Date()) {
+        guard !activities.isEmpty else { return }
+
+        var summary = toolActivitySummary
+        for activity in activities {
+            summary = summary.addingLiveToolCall(
+                name: activity.name,
+                timestamp: activity.timestamp,
+                now: now
+            )
+        }
+        toolActivitySummary = summary
+    }
+
+    func refreshToolActivityIfNeeded(force: Bool = false) {
+        guard isCodexDesktopMonitoringEnabled,
+              !isMonitoringPaused
+        else {
+            isToolActivityScanQueued = false
+            return
+        }
+
+        let now = Date()
+        if !force,
+           let lastToolActivityScanAt,
+           now.timeIntervalSince(lastToolActivityScanAt) < Self.toolActivityRefreshInterval {
+            return
+        }
+        if isToolActivityScanInFlight {
+            if force {
+                isToolActivityScanQueued = true
+            }
+            return
+        }
+
+        isToolActivityScanInFlight = true
+        isToolActivityLoading = true
+        lastToolActivityScanAt = now
+        let scanner = codexToolActivityScanner
+
+        toolActivityQueue.async { [weak self] in
+            let cachedSummary = scanner.cachedSummary(now: now)
+            if let cachedSummary {
+                DispatchQueue.main.async { [weak self] in
+                    Task { @MainActor in
+                        guard let self,
+                              self.isToolActivityScanInFlight,
+                              self.toolActivitySummary.isEmpty,
+                              self.isCodexDesktopMonitoringEnabled,
+                              !self.isMonitoringPaused
+                        else {
+                            return
+                        }
+
+                        self.toolActivitySummary = cachedSummary
+                    }
+                }
+            }
+
+            let summary = scanner.scanSummary(now: now)
+
+            DispatchQueue.main.async { [weak self] in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.isToolActivityScanInFlight = false
+                    self.isToolActivityLoading = false
+                    guard self.isCodexDesktopMonitoringEnabled,
+                          !self.isMonitoringPaused
+                    else {
+                        self.isToolActivityScanQueued = false
+                        return
+                    }
+
+                    self.toolActivitySummary = summary
+                    let shouldRunQueuedScan = self.isToolActivityScanQueued
+                    self.isToolActivityScanQueued = false
+                    if shouldRunQueuedScan {
+                        self.refreshToolActivityIfNeeded(force: true)
+                    }
+                }
+            }
+        }
+    }
+
+    func refreshTokenActivityIfNeeded(force: Bool = false) {
+        guard isCodexDesktopMonitoringEnabled,
+              !isMonitoringPaused
+        else {
+            return
+        }
+
+        let now = Date()
+        if !force,
+           let lastTokenActivityScanAt,
+           now.timeIntervalSince(lastTokenActivityScanAt) < Self.tokenActivityRefreshInterval {
+            return
+        }
+        guard !isTokenActivityScanInFlight else { return }
+
+        isTokenActivityScanInFlight = true
+        isTokenActivityLoading = true
+        lastTokenActivityScanAt = now
+        let scanner = codexTokenActivityScanner
+
+        tokenActivityQueue.async { [weak self] in
+            let cachedDays = scanner.cachedDailyActivity(now: now, days: 30)
+            if let cachedDays {
+                DispatchQueue.main.async { [weak self] in
+                    Task { @MainActor in
+                        guard let self,
+                              self.isTokenActivityScanInFlight,
+                              self.isCodexDesktopMonitoringEnabled,
+                              !self.isMonitoringPaused
+                        else {
+                            return
+                        }
+
+                        self.tokenActivityDays = cachedDays
+                    }
+                }
+            }
+
+            let days = scanner.scanDailyActivity(now: now, days: 30) { partialDays in
+                guard !partialDays.isEmpty else { return }
+                DispatchQueue.main.async { [weak self] in
+                    Task { @MainActor in
+                        guard let self,
+                              self.isTokenActivityScanInFlight,
+                              self.isCodexDesktopMonitoringEnabled,
+                              !self.isMonitoringPaused
+                        else {
+                            return
+                        }
+
+                        self.tokenActivityDays = partialDays
+                    }
+                }
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.isTokenActivityScanInFlight = false
+                    self.isTokenActivityLoading = false
+                    self.liveTokenUsageScanBaseline = self.latestAgentTokenUsage?.effectiveTotalTokens
+                    guard self.isCodexDesktopMonitoringEnabled,
+                          !self.isMonitoringPaused
+                    else {
+                        return
+                    }
+
+                    self.tokenActivityDays = days
+                }
+            }
+        }
+    }
+
+    func pollCodexRateLimitsIfNeeded(force: Bool = false) {
+        guard isCodexDesktopMonitoringEnabled,
+              !isMonitoringPaused
+        else {
+            return
+        }
+
+        let now = Date()
+        if !force,
+           let lastCodexRateLimitFetchAt,
+           now.timeIntervalSince(lastCodexRateLimitFetchAt) < Self.codexRateLimitRefreshInterval {
+            return
+        }
+        guard !isCodexRateLimitFetchInFlight else { return }
+
+        isCodexRateLimitFetchInFlight = true
+        lastCodexRateLimitFetchAt = now
+        let fetcher = codexRateLimitFetcher
+        let store = store
+
+        Task.detached(priority: .utility) { [fetcher, store, weak self] in
+            do {
+                let quota = try await fetcher.fetchQuota()
+                let snapshot = try store.applySessionQuota(
+                    quota,
+                    sessionID: "codex-rate-limits",
+                    agent: "Codex",
+                    updatedAt: quota.updatedAt
+                )
+                await MainActor.run {
+                    guard let self else { return }
+                    self.isCodexRateLimitFetchInFlight = false
+                    guard self.isCodexDesktopMonitoringEnabled,
+                          !self.isMonitoringPaused
+                    else {
+                        return
+                    }
+
+                    self.updateLatestAgentQuota(quota)
+                    self.snapshot = snapshot
+                }
+            } catch {
+                await MainActor.run {
+                    self?.isCodexRateLimitFetchInFlight = false
                 }
             }
         }
@@ -2454,6 +2948,88 @@ final class MenuBarStatusModel: ObservableObject {
             stateFileURL: snapshot.stateFileURL,
             updatedAt: snapshot.updatedAt
         )
+    }
+
+    private func updateLatestAgentQuota(from snapshot: SignalSnapshot) {
+        if let quota = Self.latestQuota(in: snapshot),
+           Self.latestQuota(quota, isNewerThan: latestAgentQuota) {
+            updateLatestAgentQuota(quota)
+        }
+
+        if let tokenUsage = Self.latestTokenUsage(in: snapshot) ?? latestAgentQuota?.tokenUsage {
+            updateLatestAgentTokenUsage(tokenUsage)
+        }
+    }
+
+    private func updateLatestAgentQuota(_ quota: AgentQuotaStatus) {
+        latestAgentQuota = quota
+        Self.cacheLatestAgentQuota(quota)
+    }
+
+    private func updateLatestAgentTokenUsage(_ usage: AgentTokenUsage) {
+        if let total = usage.effectiveTotalTokens {
+            if let previous = lastObservedLiveTokenUsageTotal,
+               total < previous {
+                liveTokenUsageScanBaseline = 0
+            }
+            lastObservedLiveTokenUsageTotal = total
+        }
+        latestAgentTokenUsage = usage
+        Self.cacheLatestAgentTokenUsage(usage)
+    }
+
+    private static func latestQuota(_ quota: AgentQuotaStatus?, isNewerThan other: AgentQuotaStatus?) -> Bool {
+        guard let quota else {
+            return false
+        }
+        guard let other else {
+            return true
+        }
+        return quota.updatedAt >= other.updatedAt
+    }
+
+    private static func cachedLatestAgentQuota() -> AgentQuotaStatus? {
+        cachedValue(forKey: cachedLatestAgentQuotaKey, as: AgentQuotaStatus.self)
+    }
+
+    private static func cacheLatestAgentQuota(_ quota: AgentQuotaStatus) {
+        cacheValue(quota, forKey: cachedLatestAgentQuotaKey)
+    }
+
+    private static func cachedLatestAgentTokenUsage() -> AgentTokenUsage? {
+        cachedValue(forKey: cachedLatestAgentTokenUsageKey, as: AgentTokenUsage.self)
+    }
+
+    private static func cacheLatestAgentTokenUsage(_ usage: AgentTokenUsage) {
+        cacheValue(usage, forKey: cachedLatestAgentTokenUsageKey)
+    }
+
+    private static func cachedValue<T: Decodable>(forKey key: String, as type: T.Type) -> T? {
+        guard let data = UserDefaults.standard.data(forKey: key) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    private static func cacheValue<T: Encodable>(_ value: T, forKey key: String) {
+        guard let data = try? JSONEncoder().encode(value) else {
+            return
+        }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
+    private static func latestQuota(in snapshot: SignalSnapshot) -> AgentQuotaStatus? {
+        snapshot.sessions
+            .compactMap(\.quota)
+            .max { lhs, rhs in lhs.updatedAt < rhs.updatedAt }
+    }
+
+    private static func latestTokenUsage(in snapshot: SignalSnapshot) -> AgentTokenUsage? {
+        snapshot.sessions
+            .compactMap(\.quota)
+            .filter { $0.tokenUsage != nil }
+            .max { lhs, rhs in lhs.updatedAt < rhs.updatedAt }?
+            .tokenUsage
     }
 
     private static func shouldIncludeStoredSessionInDisplay(_ session: SessionStatus, now: Date) -> Bool {

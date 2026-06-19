@@ -10,6 +10,7 @@ struct DebugWindowView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedSettingsTab: SettingsTab = .activity
     @State private var expandedSettingsDropdown: SettingsDropdownID?
+    @State private var hoveredTokenActivityDayID: TimeInterval?
     private let activityRecentEventLimit = 50
 
     var body: some View {
@@ -170,6 +171,8 @@ struct DebugWindowView: View {
             generalSettings
         case .activity:
             activitySettings
+        case .usage:
+            usageSettings
         case .connections:
             connectionSettings
         case .advanced:
@@ -185,6 +188,8 @@ struct DebugWindowView: View {
             return model.text("通用", "General")
         case .activity:
             return model.text("运行", "Activity")
+        case .usage:
+            return model.text("用量", "Usage")
         case .connections:
             return model.text("连接", "Connect")
         case .advanced:
@@ -196,6 +201,7 @@ struct DebugWindowView: View {
 
     fileprivate enum SettingsTab: String, CaseIterable, Identifiable {
         case activity
+        case usage
         case general
         case connections
         case advanced
@@ -205,6 +211,7 @@ struct DebugWindowView: View {
 
         static let displayOrder: [SettingsTab] = [
             .activity,
+            .usage,
             .general,
             .connections,
             .advanced,
@@ -217,6 +224,8 @@ struct DebugWindowView: View {
                 return "gearshape"
             case .activity:
                 return "waveform.path.ecg"
+            case .usage:
+                return "chart.bar.xaxis"
             case .connections:
                 return "link"
             case .advanced:
@@ -664,6 +673,23 @@ struct DebugWindowView: View {
         .frame(maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private var usageSettings: some View {
+        settingsSection(model.text("用量", "Usage")) {
+            VStack(alignment: .leading, spacing: 14) {
+                agentQuotaSummaryCard
+
+                usageTokenSummaryCard
+
+                usageToolStatsCard
+            }
+        }
+        .onAppear {
+            model.pollCodexRateLimitsIfNeeded()
+            model.refreshTokenActivityIfNeeded(force: model.tokenActivityDays.isEmpty)
+            model.refreshToolActivityIfNeeded(force: model.toolActivitySummary.isEmpty)
+        }
+    }
+
     private var monitoringPauseSetting: some View {
         settingRow(model.text("暂停监控", "Pause Monitoring")) {
             settingsSwitch(monitoringPausedBinding, tint: .red)
@@ -733,6 +759,802 @@ struct DebugWindowView: View {
             }
         }
         .padding(10)
+    }
+
+    private var agentQuotaSummaryCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Text(model.text("Codex 额度", "Codex Quota"))
+                    .font(settingsSubsectionTitleFont)
+
+                Spacer(minLength: 12)
+
+                if let quota = model.latestAgentQuota {
+                    Text(model.quotaUpdatedText(for: quota))
+                        .font(settingsDetailFont)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+
+            if let quota = model.latestAgentQuota {
+                HStack(alignment: .top, spacing: 8) {
+                    quotaWindowTile(.fiveHours, quota: quota)
+                    quotaWindowTile(.weekly, quota: quota)
+                }
+            } else {
+                HStack(alignment: .top, spacing: 8) {
+                    quotaWindowPlaceholderTile(.fiveHours)
+                    quotaWindowPlaceholderTile(.weekly)
+                }
+            }
+        }
+        .padding(10)
+        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onAppear {
+            model.pollCodexRateLimitsIfNeeded()
+        }
+    }
+
+    private func quotaWindowTile(_ badgeWindow: FloatingSignalQuotaBadgeWindow, quota: AgentQuotaStatus) -> some View {
+        let window = model.quotaWindow(for: badgeWindow, quota: quota)
+
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(model.quotaTitleLine(for: badgeWindow, quota: quota))
+                .font(settingsBodyStrongFont)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Text(model.quotaResetText(for: window, badgeWindow: badgeWindow))
+                .font(settingsDetailFont)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    private func quotaWindowPlaceholderTile(_ badgeWindow: FloatingSignalQuotaBadgeWindow) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(model.text(
+                "\(model.displayName(for: badgeWindow)) · 剩余 --",
+                "\(model.displayName(for: badgeWindow)) · -- remaining"
+            ))
+            .font(settingsBodyStrongFont)
+            .lineLimit(1)
+            .truncationMode(.tail)
+
+            Text(model.text("等待刷新", "Waiting to refresh"))
+                .font(settingsDetailFont)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    private var usageTokenSummaryCard: some View {
+        let chartDays = tokenActivityChartDays
+        let peakTokens = chartDays.map(\.totalTokens).max() ?? 0
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text(model.text("Token 使用", "Token Usage"))
+                    .font(settingsSubsectionTitleFont)
+
+                Spacer(minLength: 12)
+
+                if model.isTokenActivityLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.65)
+                }
+
+                Button {
+                    model.refreshTokenActivityIfNeeded(force: true)
+                } label: {
+                    settingsIconActionSurface(systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .disabled(model.isTokenActivityLoading)
+                .help(model.text("重新扫描本地 Codex 日志中的 Token 使用量", "Rescan token usage from local Codex logs"))
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(minimum: 120), alignment: .leading),
+                        GridItem(.flexible(minimum: 120), alignment: .leading),
+                    ],
+                    alignment: .leading,
+                    spacing: 8
+                ) {
+                    tokenUsageDashboardMetric(
+                        title: model.text("今日", "Today"),
+                        value: tokenActivityCurrencyText(tokenActivityTodayEstimatedCostUSD)
+                    )
+
+                    tokenUsageDashboardMetric(
+                        title: model.text("近 30 天费用", "Last 30 days cost"),
+                        value: tokenActivityCurrencyText(tokenActivityLast30EstimatedCostUSD)
+                    )
+
+                    tokenUsageDashboardMetric(
+                        title: model.text("今日 token 用量", "Today token usage"),
+                        value: "\(model.compactTokenCountText(tokenActivityTodayTokens)) token"
+                    )
+
+                    tokenUsageDashboardMetric(
+                        title: model.text("近 30 天 token 用量", "Last 30 days token usage"),
+                        value: "\(model.compactTokenCountText(tokenActivityLast30DaysTokens)) token"
+                    )
+                }
+
+                tokenUsageBarChart(days: chartDays, peakTokens: peakTokens)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+        }
+        .padding(10)
+        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func tokenUsageDashboardMetric(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(settingsDetailStrongFont)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+
+            Text(value)
+                .font(settingsBodyStrongFont)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+        }
+        .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+        .help("\(title): \(value)")
+    }
+
+    private func tokenUsageBarChart(
+        days: [CodexTokenActivityDay],
+        peakTokens: Int,
+        prominent: Bool = false
+    ) -> some View {
+        let hoveredDay = hoveredTokenActivityDay(in: days)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .bottom, spacing: 3) {
+                ForEach(days) { day in
+                    tokenUsageBar(
+                        day: day,
+                        peakTokens: peakTokens,
+                        prominent: prominent,
+                        isSelected: hoveredTokenActivityDayID == day.id
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 62, maxHeight: 62, alignment: .bottom)
+            .padding(.top, 4)
+
+            HStack(alignment: .firstTextBaseline) {
+                if let firstDay = days.first {
+                    Text(tokenActivityShortDateText(firstDay.day))
+                        .font(settingsDetailFont)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 12)
+
+                if let lastDay = days.last {
+                    Text(tokenActivityShortDateText(lastDay.day))
+                        .font(settingsDetailFont)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            if let hoveredDay {
+                tokenUsageDayDetail(for: hoveredDay)
+            } else {
+                tokenUsageHoverHint()
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 154, alignment: .topLeading)
+    }
+
+    private struct TokenUsageBarSegment: Identifiable {
+        let model: String
+        let tokens: Int
+
+        var id: String { model }
+    }
+
+    private struct TokenUsageBarSlice: Identifiable {
+        let segment: TokenUsageBarSegment
+        let height: CGFloat
+
+        var id: String { segment.id }
+    }
+
+    private func tokenUsageBar(
+        day: CodexTokenActivityDay,
+        peakTokens: Int,
+        prominent: Bool = false,
+        isSelected: Bool = false
+    ) -> some View {
+        let normalized = peakTokens > 0 ? CGFloat(day.totalTokens) / CGFloat(peakTokens) : 0
+        let barHeight = day.totalTokens > 0 ? max(5, normalized * 58) : 4
+        let opacity = day.totalTokens > 0 ? 0.35 + (normalized * 0.55) : 0.12
+        let segments = tokenUsageBarSegments(for: day)
+        let slices = tokenUsageBarSlices(segments: segments, barHeight: barHeight)
+
+        return ZStack(alignment: .bottom) {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(Color.secondary.opacity(colorScheme == .dark ? 0.18 : 0.14))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+
+                ZStack(alignment: .top) {
+                    if day.totalTokens > 0 {
+                        VStack(spacing: 0) {
+                            ForEach(slices) { slice in
+                                Rectangle()
+                                    .fill(tokenUsageModelColor(
+                                        slice.segment.model,
+                                        normalized: normalized,
+                                        prominent: prominent,
+                                        isSelected: isSelected
+                                    ))
+                                    .frame(height: slice.height)
+                            }
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+                    } else {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(Color.secondary.opacity(opacity))
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: barHeight)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 62, maxHeight: 62, alignment: .bottom)
+        .contentShape(Rectangle())
+            .onHover { isHovering in
+                if isHovering {
+                    hoveredTokenActivityDayID = day.id
+                } else if hoveredTokenActivityDayID == day.id {
+                    hoveredTokenActivityDayID = nil
+                }
+            }
+            .help(tokenUsageHelpText(for: day))
+    }
+
+    private func tokenUsageBarSlices(
+        segments: [TokenUsageBarSegment],
+        barHeight: CGFloat
+    ) -> [TokenUsageBarSlice] {
+        guard segments.isEmpty == false else { return [] }
+
+        let segmentTotal = max(segments.map(\.tokens).reduce(0, +), 1)
+        var slices = segments
+            .reversed()
+            .map { segment in
+                let rawHeight = barHeight * CGFloat(segment.tokens) / CGFloat(segmentTotal)
+                return TokenUsageBarSlice(
+                    segment: segment,
+                    height: max(rawHeight, tokenUsageMinimumVisibleSegmentHeight(
+                        rawHeight: rawHeight,
+                        barHeight: barHeight,
+                        segmentCount: segments.count
+                    ))
+                )
+            }
+
+        let totalHeight = slices.map(\.height).reduce(0, +)
+        guard totalHeight > barHeight,
+              let tallestIndex = slices.indices.max(by: { slices[$0].height < slices[$1].height })
+        else {
+            return slices
+        }
+
+        let overflow = totalHeight - barHeight
+        let tallest = slices[tallestIndex]
+        slices[tallestIndex] = TokenUsageBarSlice(
+            segment: tallest.segment,
+            height: max(1, tallest.height - overflow)
+        )
+        return slices
+    }
+
+    private func tokenUsageMinimumVisibleSegmentHeight(
+        rawHeight: CGFloat,
+        barHeight: CGFloat,
+        segmentCount: Int
+    ) -> CGFloat {
+        guard segmentCount > 1,
+              rawHeight > 0,
+              barHeight >= 12
+        else {
+            return rawHeight
+        }
+        return min(3, max(1.5, barHeight * 0.055))
+    }
+
+    private func tokenUsageBarSegments(for day: CodexTokenActivityDay) -> [TokenUsageBarSegment] {
+        guard day.totalTokens > 0 else {
+            return []
+        }
+
+        var totals = day.modelTokenTotals.filter { _, tokens in tokens > 0 }
+        let knownTotal = totals.values.reduce(0, +)
+        if day.totalTokens > knownTotal {
+            totals["__other__"] = day.totalTokens - knownTotal
+        }
+        if totals.isEmpty {
+            totals["__other__"] = day.totalTokens
+        }
+
+        return totals
+            .sorted { lhs, rhs in
+                let leftRank = tokenUsageModelSortRank(lhs.key)
+                let rightRank = tokenUsageModelSortRank(rhs.key)
+                if leftRank != rightRank {
+                    return leftRank < rightRank
+                }
+                return lhs.key.localizedStandardCompare(rhs.key) == .orderedAscending
+            }
+            .map { TokenUsageBarSegment(model: $0.key, tokens: $0.value) }
+    }
+
+    private func tokenUsageModelSortRank(_ modelName: String) -> Int {
+        let modelName = modelName.lowercased()
+        if modelName == "__other__" { return 900 }
+        if modelName.contains("5.5") { return 10 }
+        if modelName.contains("5.4") { return 20 }
+        if modelName.contains("5.3") { return 30 }
+        if modelName.contains("5.2") { return 40 }
+        if modelName.contains("5.1") { return 50 }
+        if modelName.contains("gpt-5") { return 60 }
+        if modelName.contains("auto-review") { return 70 }
+        return 800
+    }
+
+    private func tokenUsageModelColor(
+        _ modelName: String,
+        normalized: CGFloat,
+        prominent: Bool,
+        isSelected: Bool
+    ) -> Color {
+        let modelName = modelName.lowercased()
+        let baseColor: Color
+        if modelName.contains("5.5") {
+            baseColor = Color(red: 0.10, green: 0.48, blue: 0.95)
+        } else if modelName.contains("5.4") {
+            baseColor = Color(red: 0.95, green: 0.52, blue: 0.18)
+        } else if modelName.contains("5.3") {
+            baseColor = Color(red: 0.62, green: 0.42, blue: 0.95)
+        } else if modelName.contains("5.2") {
+            baseColor = Color(red: 0.18, green: 0.68, blue: 0.84)
+        } else if modelName.contains("5.1") {
+            baseColor = Color(red: 0.22, green: 0.72, blue: 0.42)
+        } else if modelName.contains("gpt-5") {
+            baseColor = Color(red: 0.22, green: 0.58, blue: 0.76)
+        } else if modelName.contains("auto-review") {
+            baseColor = Color(red: 0.30, green: 0.72, blue: 0.76)
+        } else {
+            baseColor = Color.secondary
+        }
+
+        let baseOpacity = prominent
+            ? 0.48 + (normalized * 0.42)
+            : 0.42 + (normalized * 0.48)
+        return baseColor.opacity(isSelected ? min(baseOpacity + 0.18, 1) : baseOpacity)
+    }
+
+    private func tokenUsageHelpText(for day: CodexTokenActivityDay) -> String {
+        let summary = model.text(
+            "\(tokenActivityDateText(day.day))：\(model.compactTokenCountText(day.totalTokens)) 个 Token",
+            "\(tokenActivityDateText(day.day)): \(model.compactTokenCountText(day.totalTokens)) tokens"
+        )
+        let breakdown = tokenUsageBarSegments(for: day)
+            .filter { $0.model != "__other__" }
+            .map { "\(tokenUsageModelDisplayName($0.model)): \(model.compactTokenCountText($0.tokens))" }
+            .joined(separator: " / ")
+
+        return breakdown.isEmpty ? summary : "\(summary)\n\(breakdown)"
+    }
+
+    private func tokenUsageModelDisplayName(_ modelName: String) -> String {
+        modelName == "__other__" ? model.text("其他", "Other") : modelName
+    }
+
+    private func tokenUsageDaySummaryText(for day: CodexTokenActivityDay) -> String {
+        let cost = tokenActivityCurrencyText(day.estimatedCostUSD)
+        return model.text(
+            "\(tokenActivityShortDateText(day.day))：\(cost) · \(model.compactTokenCountText(day.totalTokens)) token",
+            "\(tokenActivityShortDateText(day.day)): \(cost) · \(model.compactTokenCountText(day.totalTokens)) tokens"
+        )
+    }
+
+    private func tokenUsageSegmentCostText(
+        _ segment: TokenUsageBarSegment,
+        day: CodexTokenActivityDay
+    ) -> String? {
+        if let cost = day.modelEstimatedCostTotals[segment.model] {
+            return tokenActivityCurrencyText(cost)
+        }
+        return nil
+    }
+
+    private func tokenUsageDayDetail(for day: CodexTokenActivityDay) -> some View {
+        let segments = tokenUsageBarSegments(for: day)
+        let visibleSegments = segments.filter { $0.tokens > 0 }
+
+        return VStack(alignment: .leading, spacing: 7) {
+            Text(tokenUsageDaySummaryText(for: day))
+                .font(settingsBodyStrongFont)
+                .foregroundStyle(.primary.opacity(0.9))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+
+            if visibleSegments.isEmpty {
+                Text(model.text("暂无模型明细", "No model details"))
+                    .font(settingsDetailFont)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(visibleSegments) { segment in
+                        tokenUsageModelDetailRow(segment, day: day)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
+    }
+
+    private func tokenUsageHoverHint() -> some View {
+        Text(model.text("悬停在柱形图上查看详情", "Hover over a bar to view details"))
+            .font(settingsDetailFont)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
+    }
+
+    private func tokenUsageModelDetailRow(
+        _ segment: TokenUsageBarSegment,
+        day: CodexTokenActivityDay
+    ) -> some View {
+        let percent = day.totalTokens > 0
+            ? Int((Double(segment.tokens) / Double(day.totalTokens) * 100).rounded())
+            : 0
+        let cost = tokenUsageSegmentCostText(segment, day: day)
+        let detailText = [
+            cost,
+            "\(model.compactTokenCountText(segment.tokens)) token",
+            "\(percent)%"
+        ]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+        let modeDetailText = tokenUsageModelModeDetailText(segment.model, day: day)
+
+        return HStack(alignment: .top, spacing: 7) {
+            RoundedRectangle(cornerRadius: 1, style: .continuous)
+                .fill(tokenUsageModelColor(
+                    segment.model,
+                    normalized: 1,
+                    prominent: false,
+                    isSelected: true
+                ))
+                .frame(width: 3, height: 28)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(tokenUsageModelDisplayName(segment.model))
+                    .font(settingsDetailStrongFont)
+                    .lineLimit(1)
+
+                Text(detailText)
+                    .font(settingsDetailFont)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+
+                if let modeDetailText {
+                    Text(modeDetailText)
+                        .font(settingsDetailFont)
+                        .foregroundStyle(.secondary.opacity(0.92))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+            }
+        }
+    }
+
+    private func tokenUsageModelModeDetailText(
+        _ modelName: String,
+        day: CodexTokenActivityDay
+    ) -> String? {
+        guard modelName != "__other__" else { return nil }
+        let standardTokens = day.modelStandardTokenTotals[modelName] ?? 0
+        let priorityTokens = day.modelPriorityTokenTotals[modelName] ?? 0
+        guard standardTokens > 0 || priorityTokens > 0 else { return nil }
+
+        let standard = tokenUsageModePiece(
+            label: model.text("标准", "Std"),
+            tokens: standardTokens,
+            cost: day.modelStandardEstimatedCostTotals[modelName]
+        )
+        let priority = tokenUsageModePiece(
+            label: model.text("快速", "Fast"),
+            tokens: priorityTokens,
+            cost: day.modelPriorityEstimatedCostTotals[modelName]
+        )
+        return [standard, priority]
+            .compactMap { $0 }
+            .joined(separator: " / ")
+    }
+
+    private func tokenUsageModePiece(
+        label: String,
+        tokens: Int,
+        cost: Double?
+    ) -> String? {
+        guard tokens > 0 else { return nil }
+        var parts: [String] = [label]
+        if let cost {
+            parts.append(tokenActivityCurrencyText(cost))
+        }
+        parts.append("\(model.compactTokenCountText(tokens)) token")
+        return parts.joined(separator: " ")
+    }
+
+    private func hoveredTokenActivityDay(in days: [CodexTokenActivityDay]) -> CodexTokenActivityDay? {
+        guard let hoveredTokenActivityDayID else { return nil }
+        return days.first { $0.id == hoveredTokenActivityDayID }
+    }
+
+    private var tokenActivityChartDays: [CodexTokenActivityDay] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let startDay = calendar.date(byAdding: .day, value: -29, to: today) ?? today
+        let totalsByDay = Dictionary(grouping: model.tokenActivityDays) {
+            calendar.startOfDay(for: $0.day)
+        }.mapValues { days -> CodexTokenActivityDay in
+            let totalTokens = days.map(\.totalTokens).reduce(0, +)
+            let costs = days.compactMap(\.estimatedCostUSD)
+            var modelTotals: [String: Int] = [:]
+            var modelCostTotals: [String: Double] = [:]
+            var modelStandardTotals: [String: Int] = [:]
+            var modelPriorityTotals: [String: Int] = [:]
+            var modelStandardCostTotals: [String: Double] = [:]
+            var modelPriorityCostTotals: [String: Double] = [:]
+            for day in days {
+                for (model, tokens) in day.modelTokenTotals where tokens > 0 {
+                    modelTotals[model, default: 0] += tokens
+                }
+                for (model, cost) in day.modelEstimatedCostTotals where cost > 0 {
+                    modelCostTotals[model, default: 0] += cost
+                }
+                for (model, tokens) in day.modelStandardTokenTotals where tokens > 0 {
+                    modelStandardTotals[model, default: 0] += tokens
+                }
+                for (model, tokens) in day.modelPriorityTokenTotals where tokens > 0 {
+                    modelPriorityTotals[model, default: 0] += tokens
+                }
+                for (model, cost) in day.modelStandardEstimatedCostTotals where cost > 0 {
+                    modelStandardCostTotals[model, default: 0] += cost
+                }
+                for (model, cost) in day.modelPriorityEstimatedCostTotals where cost > 0 {
+                    modelPriorityCostTotals[model, default: 0] += cost
+                }
+            }
+            return CodexTokenActivityDay(
+                day: calendar.startOfDay(for: days.first?.day ?? today),
+                totalTokens: totalTokens,
+                estimatedCostUSD: costs.isEmpty ? nil : costs.reduce(0, +),
+                modelTokenTotals: modelTotals,
+                modelEstimatedCostTotals: modelCostTotals,
+                modelStandardTokenTotals: modelStandardTotals,
+                modelPriorityTokenTotals: modelPriorityTotals,
+                modelStandardEstimatedCostTotals: modelStandardCostTotals,
+                modelPriorityEstimatedCostTotals: modelPriorityCostTotals
+            )
+        }
+
+        return (0..<30).compactMap { offset in
+            guard let day = calendar.date(byAdding: .day, value: offset, to: startDay) else {
+                return nil
+            }
+
+            return totalsByDay[day] ?? CodexTokenActivityDay(day: day, totalTokens: 0)
+        }
+    }
+
+    private var tokenActivityActiveDayCount: Int {
+        tokenActivityChartDays.filter { $0.totalTokens > 0 }.count
+    }
+
+    private var tokenActivityLatestTokens: Int {
+        tokenActivityChartDays.last(where: { $0.totalTokens > 0 })?.totalTokens ?? 0
+    }
+
+    private var tokenActivityTodayEstimatedCostUSD: Double? {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let costs = tokenActivityChartDays
+            .filter { calendar.isDate($0.day, inSameDayAs: today) }
+            .compactMap(\.estimatedCostUSD)
+        return costs.isEmpty ? nil : costs.reduce(0, +)
+    }
+
+    private var tokenActivityLast30EstimatedCostUSD: Double? {
+        let costs = tokenActivityChartDays.compactMap(\.estimatedCostUSD)
+        return costs.isEmpty ? nil : costs.reduce(0, +)
+    }
+
+    private func tokenActivityCurrencyText(_ value: Double?) -> String {
+        guard let value else { return "$--" }
+        return String(format: "$%.2f", max(0, value))
+    }
+
+    private func tokenActivityShortDateText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: model.appLanguage.localeIdentifier)
+        formatter.setLocalizedDateFormatFromTemplate("MMMd")
+        return formatter.string(from: date)
+    }
+
+    private func tokenActivityDateText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: model.appLanguage.localeIdentifier)
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
+    }
+
+    private var tokenActivityTodayTokens: Int {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        return model.tokenActivityDays
+            .filter { calendar.isDate($0.day, inSameDayAs: today) }
+            .map(\.totalTokens)
+            .reduce(0, +)
+    }
+
+    private var tokenActivityLast30DaysTokens: Int {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let startDay = calendar.date(byAdding: .day, value: -29, to: today) ?? today
+        return model.tokenActivityDays
+            .filter { $0.day >= startDay && $0.day <= today }
+            .map(\.totalTokens)
+            .reduce(0, +)
+    }
+
+    private func quotaUsageTile(_ badgeWindow: FloatingSignalQuotaBadgeWindow, quota: AgentQuotaStatus) -> some View {
+        let window = model.quotaWindow(for: badgeWindow, quota: quota)
+        let usedText = window.map { "\(Int($0.usedPercent.rounded()))%" } ?? "--"
+
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(model.displayName(for: badgeWindow))
+                .font(settingsDetailStrongFont)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Text(model.text("已用 \(usedText)", "\(usedText) used"))
+                .font(settingsBodyStrongFont)
+                .lineLimit(1)
+
+            Text(model.quotaResetText(for: window, badgeWindow: badgeWindow))
+                .font(settingsDetailFont)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    private var usageToolStatsCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Text(model.text("工具调用", "Tool Calls"))
+                    .font(settingsSubsectionTitleFont)
+
+                Spacer(minLength: 12)
+
+                if model.isToolActivityLoading && model.toolActivitySummary.isEmpty {
+                    ProgressView()
+                        .scaleEffect(0.55)
+                        .frame(width: 18, height: 18)
+                } else {
+                    Text("\(model.toolActivitySummary.totalCalls)")
+                        .font(settingsDetailStrongFont)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            if model.toolActivitySummary.topTools.isEmpty {
+                emptyActivityRow(
+                    icon: "hammer",
+                    title: model.text("暂无工具调用", "No tool calls yet")
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(model.toolActivitySummary.topTools) { item in
+                        usageToolRow(name: item.name, count: item.count)
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func usageToolRow(name: String, count: Int) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: usageToolIcon(for: name))
+                .font(settingsTinyIconFont)
+                .foregroundStyle(.secondary)
+                .frame(width: 15)
+
+            Text(usageDisplayName(for: name))
+                .font(settingsBodyStrongFont)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 10)
+
+            Text("\(count)")
+                .font(settingsDetailStrongFont)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func usageDisplayName(for toolName: String) -> String {
+        switch toolName {
+        case "apply_patch":
+            return model.text("修改文件", "Edit files")
+        case "exec_command":
+            return model.text("终端命令", "Terminal command")
+        case "request_user_input":
+            return model.text("请求输入", "Request input")
+        default:
+            return toolName
+        }
+    }
+
+    private func usageToolIcon(for toolName: String) -> String {
+        switch toolName {
+        case "apply_patch":
+            return "doc.badge.gearshape"
+        case "exec_command":
+            return "terminal"
+        case "request_user_input":
+            return "questionmark.circle"
+        default:
+            return "hammer"
+        }
     }
 
     private var activitySessions: some View {
@@ -894,7 +1716,7 @@ struct DebugWindowView: View {
         settingsSection(model.text("悬浮灯", "Floating Signal")) {
             settingRow(model.text("悬浮灯方向", "Floating signal direction")) {
                 compactSegmentedControl(
-                    options: TrafficSignalLayout.allCases,
+                    options: [.vertical, .horizontal],
                     selection: floatingSignalLayoutBinding
                 ) { layout in
                     model.displayName(for: layout)
@@ -916,6 +1738,32 @@ struct DebugWindowView: View {
                     "恢复为中号（默认）的悬浮灯大小。",
                     "Restore the medium (default) floating signal size."
                 ))
+            }
+
+            settingsSubsection(model.text("角标", "Badges")) {
+                settingRow(model.text("运行数量角标", "Running count badge")) {
+                    settingsSwitch(floatingSignalInfoBadgeEnabledBinding)
+                        .help(model.text(
+                            "显示当前运行中的 Agent 数量，并可点击查看运行中的 Agent。",
+                            "Show the number of active agents and click to view active agents."
+                        ))
+                }
+
+                settingRow(model.text("额度角标", "Quota badge")) {
+                    settingsSwitch(floatingSignalQuotaBadgeEnabledBinding)
+                        .help(model.text(
+                            "显示 Agent 剩余额度百分比，点击可查看 5 小时和一周额度。",
+                            "Show remaining agent quota percentage; click to view 5-hour and weekly quotas."
+                        ))
+                }
+
+                settingRow(model.text("Token 角标", "Token badge")) {
+                    settingsSwitch(floatingSignalTokenBadgeEnabledBinding)
+                        .help(model.text(
+                            "显示今日或近 30 天 Token 使用量，并自动切换 K/M/B 单位。",
+                            "Show today or last-30-days token usage, with automatic K/M/B units."
+                        ))
+                }
             }
         }
     }
@@ -1632,6 +2480,21 @@ struct DebugWindowView: View {
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
+    private func settingsIconActionSurface(systemImage: String) -> some View {
+        Image(systemName: systemImage)
+            .font(settingsIconFont)
+            .foregroundStyle(.primary)
+            .frame(width: dropdownControlHeight, height: dropdownControlHeight)
+            .background(
+                glassControlBackground(cornerRadius: 7)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(solidControlStroke, lineWidth: 0.5)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
     private func soundPreviewButton(disabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             settingsActionSurface(
@@ -2190,6 +3053,27 @@ struct DebugWindowView: View {
         Binding(
             get: { model.floatingSignalLayout },
             set: { model.setFloatingSignalLayout($0) }
+        )
+    }
+
+    private var floatingSignalInfoBadgeEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { model.isFloatingSignalInfoBadgeEnabled },
+            set: { model.setFloatingSignalInfoBadgeEnabled($0) }
+        )
+    }
+
+    private var floatingSignalQuotaBadgeEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { model.isFloatingSignalQuotaBadgeEnabled },
+            set: { model.setFloatingSignalQuotaBadgeEnabled($0) }
+        )
+    }
+
+    private var floatingSignalTokenBadgeEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { model.isFloatingSignalTokenBadgeEnabled },
+            set: { model.setFloatingSignalTokenBadgeEnabled($0) }
         )
     }
 

@@ -108,6 +108,31 @@ extension AppLanguage {
             return false
         }
     }
+
+    var localeIdentifier: String {
+        switch resolvedLanguage {
+        case .system:
+            return Locale.current.identifier
+        case .zhHans:
+            return "zh-Hans"
+        case .zhHant:
+            return "zh-Hant"
+        case .english:
+            return "en"
+        case .japanese:
+            return "ja"
+        case .korean:
+            return "ko"
+        case .spanish:
+            return "es"
+        case .french:
+            return "fr"
+        case .german:
+            return "de"
+        case .portuguese:
+            return "pt"
+        }
+    }
 }
 
 extension MenuBarStatusModel {
@@ -164,6 +189,198 @@ extension MenuBarStatusModel {
         }
     }
 
+    func displayName(for quotaWindow: FloatingSignalQuotaBadgeWindow) -> String {
+        switch quotaWindow {
+        case .fiveHours:
+            return text("5 小时", "5 hours")
+        case .weekly:
+            return text("一周", "1 week")
+        }
+    }
+
+    func displayName(for tokenWindow: FloatingSignalTokenBadgeWindow) -> String {
+        switch tokenWindow {
+        case .today:
+            return text("今日", "Today")
+        case .last30Days:
+            return text("近 30 天", "Last 30 days")
+        }
+    }
+
+    func quotaWindow(
+        for badgeWindow: FloatingSignalQuotaBadgeWindow,
+        quota: AgentQuotaStatus
+    ) -> AgentQuotaWindowStatus? {
+        switch badgeWindow {
+        case .fiveHours:
+            return quota.primaryWindow
+        case .weekly:
+            return quota.secondaryWindow ?? quota.primaryWindow
+        }
+    }
+
+    func quotaPercentText(for window: AgentQuotaWindowStatus?) -> String {
+        guard let window else {
+            return "--"
+        }
+        return "\(Int(window.remainingPercent.rounded()))%"
+    }
+
+    func quotaTitleLine(
+        for badgeWindow: FloatingSignalQuotaBadgeWindow,
+        quota: AgentQuotaStatus
+    ) -> String {
+        let title = displayName(for: badgeWindow)
+        let percent = quotaPercentText(for: quotaWindow(for: badgeWindow, quota: quota))
+        return text(
+            "\(title) · 剩余 \(percent)",
+            "\(title) · \(percent) left"
+        )
+    }
+
+    func quotaResetText(
+        for window: AgentQuotaWindowStatus?,
+        badgeWindow: FloatingSignalQuotaBadgeWindow? = nil
+    ) -> String {
+        guard let resetsAt = window?.resetsAt else {
+            return text("重置时间未知", "reset time unavailable")
+        }
+        let resetTime = badgeWindow == .weekly
+            ? localizedMonthDayTimeString(for: resetsAt)
+            : localizedTimeString(for: resetsAt)
+        return text("重置 \(resetTime)", "resets \(resetTime)")
+    }
+
+    func quotaUpdatedText(for quota: AgentQuotaStatus) -> String {
+        "\(text("更新", "Updated")) \(localizedTimeString(for: quota.updatedAt))"
+    }
+
+    func tokenUsageTitleLine(for tokenWindow: FloatingSignalTokenBadgeWindow, tokens: Int) -> String {
+        let title = displayName(for: tokenWindow)
+        return text(
+            "\(title) · \(compactTokenCountText(tokens)) token",
+            "\(title) · \(compactTokenCountText(tokens)) tokens"
+        )
+    }
+
+    func tokenUsageCostText(_ cost: Double?) -> String {
+        guard let cost else {
+            return text("费用未知", "cost unavailable")
+        }
+        return text(
+            "费用 \(String(format: "$%.2f", max(0, cost)))",
+            "cost \(String(format: "$%.2f", max(0, cost)))"
+        )
+    }
+
+    func localizedTimeString(for date: Date) -> String {
+        date.formatted(
+            Date.FormatStyle(date: .omitted, time: .shortened)
+                .locale(Locale(identifier: appLanguage.localeIdentifier))
+        )
+    }
+
+    func localizedDateTimeString(for date: Date) -> String {
+        date.formatted(
+            Date.FormatStyle(date: .abbreviated, time: .shortened)
+                .locale(Locale(identifier: appLanguage.localeIdentifier))
+        )
+    }
+
+    func localizedMonthDayTimeString(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: appLanguage.localeIdentifier)
+        formatter.setLocalizedDateFormatFromTemplate("MMMdjmm")
+        return formatter.string(from: date)
+    }
+
+    func tokenCountText(_ count: Int?) -> String {
+        guard let count else {
+            return "--"
+        }
+
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = Locale(identifier: appLanguage.localeIdentifier)
+        return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
+    }
+
+    func compactTokenCountText(_ count: Int?) -> String {
+        guard let count else {
+            return "--"
+        }
+
+        let value = Double(count)
+        switch appLanguage.resolvedLanguage {
+        case .zhHans, .zhHant:
+            if value >= 100_000_000 {
+                return "\(compactDecimal(value / 100_000_000))亿"
+            }
+            if value >= 10_000 {
+                return "\(compactDecimal(value / 10_000))万"
+            }
+            return tokenCountText(count)
+        default:
+            if value >= 1_000_000_000 {
+                return "\(compactDecimal(value / 1_000_000_000))B"
+            }
+            if value >= 1_000_000 {
+                return "\(compactDecimal(value / 1_000_000))M"
+            }
+            if value >= 1_000 {
+                return "\(compactDecimal(value / 1_000))K"
+            }
+            return tokenCountText(count)
+        }
+    }
+
+    func compactTokenBadgeText(_ count: Int?) -> String {
+        guard let count else {
+            return "--"
+        }
+
+        let value = Double(max(count, 0))
+        guard value >= 1_000 else {
+            return "\(Int(value))"
+        }
+
+        let units: [(threshold: Double, suffix: String)] = [
+            (1_000, "K"),
+            (1_000_000, "M"),
+            (1_000_000_000, "B")
+        ]
+
+        guard var unitIndex = units.lastIndex(where: { value >= $0.threshold }) else {
+            return "\(Int(value))"
+        }
+
+        var unit = units[unitIndex]
+        var scaled = value / unit.threshold
+        if scaled >= 999.5,
+           unitIndex < units.index(before: units.endIndex) {
+            units.formIndex(after: &unitIndex)
+            unit = units[unitIndex]
+            scaled = value / unit.threshold
+        }
+
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = scaled < 10 ? 1 : 0
+        formatter.minimumFractionDigits = 0
+        formatter.locale = Locale(identifier: appLanguage.localeIdentifier)
+        let text = formatter.string(from: NSNumber(value: scaled)) ?? String(format: "%.1f", scaled)
+        return "\(text)\(unit.suffix)"
+    }
+
+    private func compactDecimal(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 2
+        formatter.minimumFractionDigits = 2
+        formatter.locale = Locale(identifier: appLanguage.localeIdentifier)
+        return formatter.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
+    }
+
     func displayName(for scale: FloatingSignalScale) -> String {
         switch scale {
         case .compact:
@@ -172,6 +389,17 @@ extension MenuBarStatusModel {
             return text("默认", "Default")
         case .large:
             return text("大", "Large")
+        }
+    }
+
+    func displayName(for corner: FloatingSignalInfoBadgeCorner) -> String {
+        switch corner {
+        case .topLeft:
+            return text("左上", "Top Left")
+        case .topRight:
+            return text("右上", "Top Right")
+        case .bottomLeft:
+            return text("左下", "Bottom Left")
         }
     }
 

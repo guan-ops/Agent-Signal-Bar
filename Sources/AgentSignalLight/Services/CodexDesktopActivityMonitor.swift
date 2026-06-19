@@ -1,6 +1,11 @@
 import AgentSignalLightCore
 import Foundation
 
+struct CodexDesktopActivityPollResult: Sendable {
+    var activities: [CodexDesktopActivity] = []
+    var quotaUpdates: [CodexDesktopQuotaUpdate] = []
+}
+
 final class CodexDesktopActivityMonitor: @unchecked Sendable {
     private struct SessionFile {
         let url: URL
@@ -138,25 +143,35 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
     }
 
     func poll(now: Date = Date()) -> [CodexDesktopActivity] {
+        pollResult(now: now).activities
+    }
+
+    func pollResult(now: Date = Date()) -> CodexDesktopActivityPollResult {
         stateLock.lock()
         defer { stateLock.unlock() }
 
         let files = recentSessionFiles(now: now)
         if !hasPrimedExistingFiles {
             hasPrimedExistingFiles = true
-            let activities = primeExistingFiles(files, returningActivities: replaysInitialHistory)
-            guard replaysInitialHistory else { return [] }
-            return sortedAcceptedActivities(from: activities, now: now)
+            let result = primeExistingFiles(files, returningActivities: replaysInitialHistory)
+            guard replaysInitialHistory else { return CodexDesktopActivityPollResult() }
+            return CodexDesktopActivityPollResult(
+                activities: sortedAcceptedActivities(from: result.activities, now: now),
+                quotaUpdates: result.quotaUpdates
+            )
         }
 
-        var activities: [CodexDesktopActivity] = []
+        var result = CodexDesktopActivityPollResult()
 
         for file in files {
             let lines = readNewLines(from: file, now: now)
-            activities.append(contentsOf: parsedActivities(from: lines, file: file))
+            let fileResult = parsedActivityPollResult(from: lines, file: file)
+            result.activities.append(contentsOf: fileResult.activities)
+            result.quotaUpdates.append(contentsOf: fileResult.quotaUpdates)
         }
 
-        return acceptedActivities(from: activities, now: now)
+        result.activities = acceptedActivities(from: result.activities, now: now)
+        return result
     }
 
     private func recentSessionFiles(now: Date) -> [SessionFile] {
@@ -370,8 +385,8 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
     private func primeExistingFiles(
         _ files: [SessionFile],
         returningActivities: Bool
-    ) -> [CodexDesktopActivity] {
-        var activities: [CodexDesktopActivity] = []
+    ) -> CodexDesktopActivityPollResult {
+        var result = CodexDesktopActivityPollResult()
 
         for file in files {
             let initialTail = readInitialTailLines(from: file)
@@ -389,20 +404,26 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
                 }
             }
 
-            let fileActivities = parsedActivities(from: initialTail.lines, file: file)
+            let fileResult = parsedActivityPollResult(from: initialTail.lines, file: file)
 
             guard returningActivities else {
-                rememberCompletionState(from: fileActivities, now: Date())
+                rememberCompletionState(from: fileResult.activities, now: Date())
                 continue
             }
 
-            activities.append(contentsOf: fileActivities)
+            result.activities.append(contentsOf: fileResult.activities)
+            result.quotaUpdates.append(contentsOf: fileResult.quotaUpdates)
         }
 
-        return activities
+        return result
     }
 
     private func parsedActivities(from lines: [String], file: SessionFile) -> [CodexDesktopActivity] {
+        parsedActivityPollResult(from: lines, file: file).activities
+    }
+
+    private func parsedActivityPollResult(from lines: [String], file: SessionFile) -> CodexDesktopActivityPollResult {
+        var result = CodexDesktopActivityPollResult()
         var activities: [CodexDesktopActivity] = []
 
         for line in lines {
@@ -421,6 +442,13 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
                 agentsByPath[file.path] = forcedAgent
             }
             let defaultSessionID = sessionID(for: file.url, agent: agent)
+            if let quotaUpdate = CodexDesktopSessionParser.quotaUpdate(
+                from: line,
+                defaultSessionID: defaultSessionID,
+                defaultAgent: agent
+            ) {
+                result.quotaUpdates.append(quotaUpdate)
+            }
             guard let activity = CodexDesktopSessionParser.activity(
                 from: line,
                 defaultSessionID: defaultSessionID,
@@ -431,7 +459,8 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
             activities.append(activity)
         }
 
-        return activities
+        result.activities = activities
+        return result
     }
 
     private func readNewLines(from file: SessionFile, now: Date) -> [String] {

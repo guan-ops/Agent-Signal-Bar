@@ -5,17 +5,20 @@ public struct SessionRecord: Codable, Equatable, Sendable {
     public var signal: AgentSignal
     public var lastEvent: String?
     public var updatedAt: Date
+    public var quota: AgentQuotaStatus?
 
     public init(
         agent: String? = nil,
         signal: AgentSignal,
         lastEvent: String? = nil,
-        updatedAt: Date
+        updatedAt: Date,
+        quota: AgentQuotaStatus? = nil
     ) {
         self.agent = agent
         self.signal = signal
         self.lastEvent = lastEvent
         self.updatedAt = updatedAt
+        self.quota = quota
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -23,6 +26,7 @@ public struct SessionRecord: Codable, Equatable, Sendable {
         case signal
         case lastEvent = "last_event"
         case updatedAt = "updated_at"
+        case quota
     }
 }
 
@@ -134,7 +138,8 @@ public extension SignalStateDocument {
                     signal: record.signal,
                     updatedAt: record.updatedAt,
                     agent: record.agent,
-                    lastEvent: record.lastEvent
+                    lastEvent: record.lastEvent,
+                    quota: record.quota
                 )
             }
             .sorted { lhs, rhs in

@@ -205,7 +205,8 @@ public final class SignalStateStore: @unchecked Sendable {
         sessionID: String,
         agent: String? = nil,
         lastEvent: String? = nil,
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        quota: AgentQuotaStatus? = nil
     ) throws -> SignalSnapshot {
         try withStateLock {
             let now = Date()
@@ -256,7 +257,8 @@ public final class SignalStateStore: @unchecked Sendable {
                     agent: agent,
                     signal: .idle,
                     lastEvent: lastEvent,
-                    updatedAt: eventDate
+                    updatedAt: eventDate,
+                    quota: quota ?? existingBeforePrune?.quota
                 )
             case .done:
                 if document.sessions[sessionID]?.signal.preserveAgainstCompletedSignal != true {
@@ -264,7 +266,8 @@ public final class SignalStateStore: @unchecked Sendable {
                         agent: agent,
                         signal: signal,
                         lastEvent: lastEvent,
-                        updatedAt: eventDate
+                        updatedAt: eventDate,
+                        quota: quota ?? existingBeforePrune?.quota
                     )
                 }
             default:
@@ -272,7 +275,8 @@ public final class SignalStateStore: @unchecked Sendable {
                     agent: agent,
                     signal: signal,
                     lastEvent: lastEvent,
-                    updatedAt: eventDate
+                    updatedAt: eventDate,
+                    quota: quota ?? existingBeforePrune?.quota
                 )
             }
 
@@ -288,6 +292,40 @@ public final class SignalStateStore: @unchecked Sendable {
                 updatedAt: eventDate
             )
             document.updatedAt = eventDate
+            try writeDocument(document)
+            return document.snapshot(stateFileURL: stateFileURL)
+        }
+    }
+
+    public func applySessionQuota(
+        _ quota: AgentQuotaStatus,
+        sessionID: String,
+        agent: String? = nil,
+        updatedAt: Date = Date()
+    ) throws -> SignalSnapshot {
+        try withStateLock {
+            let now = Date()
+            var document = readDocument()
+            let pruneResult = pruneRuntimeSessions(in: &document, now: now)
+
+            if var record = document.sessions[sessionID] {
+                record.quota = quota
+                if record.agent == nil {
+                    record.agent = agent
+                }
+                document.sessions[sessionID] = record
+            } else {
+                document.sessions[sessionID] = SessionRecord(
+                    agent: agent,
+                    signal: .idle,
+                    lastEvent: "DesktopQuota",
+                    updatedAt: updatedAt,
+                    quota: quota
+                )
+            }
+
+            updateAggregateAfterPruning(in: &document, pruneResult: pruneResult)
+            document.updatedAt = updatedAt
             try writeDocument(document)
             return document.snapshot(stateFileURL: stateFileURL)
         }

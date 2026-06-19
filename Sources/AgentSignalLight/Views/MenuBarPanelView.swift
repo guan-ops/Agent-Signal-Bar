@@ -64,6 +64,9 @@ struct MenuBarPanelView: View {
         }
         .frame(width: Self.panelWidth, height: Self.panelHeight)
         .preferredColorScheme(viewState.appTheme.colorScheme)
+        .onAppear {
+            model.pollCodexRateLimitsIfNeeded()
+        }
     }
 
     private var header: some View {
