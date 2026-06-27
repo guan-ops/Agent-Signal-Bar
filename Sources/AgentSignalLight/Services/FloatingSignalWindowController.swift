@@ -417,7 +417,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
             return
         }
 
-        let mode = alertSoundMode(for: model.lightSnapshot.aggregate)
+        let mode = alertSoundMode(for: model.floatingSignalLightSnapshot.aggregate)
         guard mode != .none else {
             didPrimeSoundState = true
             lastSoundSignature = nil
@@ -446,7 +446,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
 
         lastSoundSignature = signature
         lastAlertSoundAt = now
-        playAlertSound(force: false, cue: soundCue(for: model.lightSnapshot.aggregate))
+        playAlertSound(force: false, cue: soundCue(for: model.floatingSignalLightSnapshot.aggregate))
     }
 
     private func playAlertSound(force: Bool, cue: FloatingSignalSoundCue) {
@@ -466,19 +466,19 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
             return
         }
 
-        let signal = model.lightSnapshot.aggregate
-        guard signal.displayState == .active, !model.lightAllLightsOn else {
+        let signal = model.floatingSignalLightSnapshot.aggregate
+        guard signal.displayState == .active, !model.floatingSignalLightAllLightsOn else {
             wasActiveGreenLitForSound = false
             return
         }
 
-        let tick = model.statusLightOverride == nil ? (tickOverride ?? model.lightTick) : model.lightTick
+        let tick = model.floatingSignalStatusLightOverride == nil ? (tickOverride ?? model.floatingSignalLightTick) : model.floatingSignalLightTick
         let isGreenLit = SignalLampAnimation.isLit(
             .green,
             signal: signal,
             tick: tick,
-            allLightsOn: model.lightAllLightsOn,
-            customization: model.lightEffectCustomization
+            allLightsOn: model.floatingSignalLightAllLightsOn,
+            customization: model.floatingSignalLightEffectCustomization
         )
         defer {
             wasActiveGreenLitForSound = isGreenLit
@@ -548,7 +548,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
     }
 
     private func soundSignature() -> String {
-        let snapshot = model.lightSnapshot
+        let snapshot = model.floatingSignalLightSnapshot
         let updatedAt = snapshot.updatedAt?.timeIntervalSince1970 ?? 0
         return "\(snapshot.aggregate.rawValue)|\(Int(updatedAt))|\(snapshot.sessions.count)"
     }
@@ -645,7 +645,7 @@ private struct FloatingSignalPanelView: View {
         self.previewWaitingSound = previewWaitingSound
         self.resizeFromHandle = resizeFromHandle
         self.openSettings = openSettings
-        _cachedLightSnapshot = State(initialValue: model.lightSnapshot)
+        _cachedLightSnapshot = State(initialValue: model.floatingSignalLightSnapshot)
         _cachedFloatingInfoSessions = State(
             initialValue: ActivityPresentation.visibleRunningSessions(from: model.activitySnapshot)
         )
@@ -1350,7 +1350,7 @@ private struct FloatingSignalPanelView: View {
         FloatingSignalLightsView(
             animationClock: animationClock,
             snapshot: cachedLightSnapshot,
-            statusLightOverride: model.statusLightOverride,
+            statusLightOverride: model.floatingSignalStatusLightOverride,
             isDraggingResizeHandle: isDraggingResizeHandle,
             resizeStartTick: resizeStartTick,
             backingSize: backingSize,
@@ -1359,14 +1359,14 @@ private struct FloatingSignalPanelView: View {
             layout: model.floatingSignalLayout,
             macOSBreathingStrength: model.macOSBreathingStrength,
             trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
-            allLightsOn: model.lightAllLightsOn,
-            usesSystemGrayLights: model.lightUsesSystemGrayLights,
-            effectCustomization: model.lightEffectCustomization
+            allLightsOn: model.floatingSignalLightAllLightsOn,
+            usesSystemGrayLights: model.floatingSignalLightUsesSystemGrayLights,
+            effectCustomization: model.floatingSignalLightEffectCustomization
         )
     }
 
     private func refreshCachedSnapshots() {
-        cachedLightSnapshot = model.lightSnapshot
+        cachedLightSnapshot = model.floatingSignalLightSnapshot
         cachedFloatingInfoSessions = ActivityPresentation.visibleRunningSessions(from: model.activitySnapshot)
     }
 
@@ -1390,7 +1390,7 @@ private struct FloatingSignalPanelView: View {
             withoutResizeAnimation {
                 resizeStartVisualScale = model.floatingSignalVisualScale
                 resizeTargetVisualScale = model.floatingSignalVisualScale
-                resizeStartTick = model.statusLightOverride?.tick ?? animationClock.tick
+                resizeStartTick = model.floatingSignalLightTick
             }
         }
         if !isDraggingResizeHandle {
@@ -1453,8 +1453,10 @@ private struct FloatingSignalLightsView: View {
     let effectCustomization: SignalEffectCustomization
 
     var body: some View {
-        let currentTick = statusLightOverride?.tick ?? animationClock.tick
-        let syncedTick = isDraggingResizeHandle ? (resizeStartTick ?? currentTick) : currentTick
+        let resolvedTick = statusLightOverride?.usesLiveTick == false
+            ? statusLightOverride?.tick ?? animationClock.tick
+            : animationClock.tick
+        let syncedTick = isDraggingResizeHandle ? (resizeStartTick ?? resolvedTick) : resolvedTick
 
         ZStack {
             RoundedRectangle(cornerRadius: 8 * scale, style: .continuous)
@@ -2812,9 +2814,9 @@ private struct FloatingSignalInfoPopoverView: View {
             if visibleSessions.isEmpty {
                 infoCard(
                     title: model.text("暂无运行中的 Agent", "No active agent sessions"),
-                    subtitle: model.summary(for: model.lightSnapshot.aggregate),
-                    signal: model.lightSnapshot.aggregate,
-                    timestamp: model.lightSnapshot.updatedAt
+                    subtitle: model.summary(for: model.floatingSignalLightSnapshot.aggregate),
+                    signal: model.floatingSignalLightSnapshot.aggregate,
+                    timestamp: model.floatingSignalLightSnapshot.updatedAt
                 )
             } else {
                 ForEach(visibleSessions) { session in

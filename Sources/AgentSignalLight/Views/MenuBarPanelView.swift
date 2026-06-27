@@ -286,7 +286,7 @@ private final class MenuBarPanelViewState: ObservableObject {
 
     init(model: MenuBarStatusModel) {
         snapshot = model.displaySnapshot
-        lightSnapshot = model.lightSnapshot
+        lightSnapshot = model.statusBarLightSnapshot
         activitySnapshot = model.activitySnapshot
         appTheme = model.appTheme
         isMonitoringPaused = model.isMonitoringPaused
@@ -369,7 +369,7 @@ private final class MenuBarPanelViewState: ObservableObject {
 
     private func refreshSnapshots(from model: MenuBarStatusModel) {
         snapshot = model.displaySnapshot
-        lightSnapshot = model.lightSnapshot
+        lightSnapshot = model.statusBarLightSnapshot
         activitySnapshot = model.activitySnapshot
     }
 }
@@ -385,17 +385,17 @@ private struct PanelTrafficSignalView: View {
 
     var body: some View {
         TrafficSignalView(
-            snapshot: model.lightSnapshot,
-            tick: model.lightTick,
+            snapshot: model.statusBarLightSnapshot,
+            tick: model.statusBarLightTick,
             size: .panel,
             layout: .horizontal,
             style: model.statusBarStyle,
             macOSBreathingStrength: model.macOSBreathingStrength,
             macOSHorizontalUsesTrafficLightSize: model.macOSHorizontalUsesTrafficLightSize,
             trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
-            allLightsOn: model.lightAllLightsOn,
-            usesSystemGrayLights: model.lightUsesSystemGrayLights,
-            effectCustomization: model.lightEffectCustomization
+            allLightsOn: model.statusBarLightAllLightsOn,
+            usesSystemGrayLights: model.statusBarLightUsesSystemGrayLights,
+            effectCustomization: model.statusBarLightEffectCustomization
         )
     }
 }

@@ -202,11 +202,11 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         }
 
         didPresentRecoveryWindowForCurrentDisable = false
-        let lightSnapshot = model.lightSnapshot
-        let lightTick = model.lightTick
-        let lightAllLightsOn = model.lightAllLightsOn
-        let lightUsesSystemGrayLights = model.lightUsesSystemGrayLights
-        let lightEffectCustomization = model.lightEffectCustomization
+        let lightSnapshot = model.statusBarLightSnapshot
+        let lightTick = model.statusBarLightTick
+        let lightAllLightsOn = model.statusBarLightAllLightsOn
+        let lightUsesSystemGrayLights = model.statusBarLightUsesSystemGrayLights
+        let lightEffectCustomization = model.statusBarLightEffectCustomization
         let length = StatusBarIconRenderer.statusItemLength(
             layout: model.displayLayout,
             style: model.statusBarStyle,
@@ -363,9 +363,9 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     private func rebuildNativeStatusMenu(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        let snapshot = model.lightSnapshot
+        let snapshot = model.statusBarLightSnapshot
         let activitySnapshot = model.activitySnapshot
-        menu.addItem(infoMenuItem(title: "Agent Signal Bar", image: nativeStatusDotImage(for: model.lightSnapshot)))
+        menu.addItem(infoMenuItem(title: "Agent Signal Bar", image: nativeStatusDotImage(for: model.statusBarLightSnapshot)))
         menu.addItem(infoMenuItem(title: "\(model.displayName(for: snapshot.aggregate)) · \(model.humanAction(for: snapshot.aggregate))"))
 
         if let updatedAt = snapshot.updatedAt {
@@ -409,10 +409,10 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     private func addNativeQuotaMenuItems(to menu: NSMenu) {
-        menu.addItem(infoMenuItem(title: model.text("Codex 额度", "Codex Quota")))
+        menu.addItem(infoMenuItem(title: model.text("Codex 会话", "Codex Session")))
 
         guard let quota = model.latestAgentQuota else {
-            menu.addItem(infoMenuItem(title: model.text("暂无额度数据", "No quota data yet")))
+            menu.addItem(infoMenuItem(title: model.text("暂无会话数据", "No session data yet")))
             return
         }
 
@@ -627,7 +627,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     private func nativeStatusDotColor(for snapshot: SignalSnapshot) -> NSColor {
-        if model.lightUsesSystemGrayLights {
+        if model.statusBarLightUsesSystemGrayLights {
             return .systemGray
         }
 
@@ -738,7 +738,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             "length": statusItem?.length ?? 0,
             "layout": model.displayLayout.rawValue,
             "style": model.statusBarStyle.rawValue,
-            "aggregate": model.lightSnapshot.aggregate.rawValue,
+            "aggregate": model.statusBarLightSnapshot.aggregate.rawValue,
             "tooltip_exists": !(button?.toolTip ?? "").isEmpty,
             "updated_at": ISO8601DateFormatter().string(from: Date())
         ]

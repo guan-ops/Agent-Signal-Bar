@@ -42,7 +42,7 @@ struct ReleaseInfo: Equatable, Sendable {
         let releaseInfoURL = findReleaseInfoURL()
         let manifest = manifestURL.flatMap { ReleaseMetadata(url: $0) }
         let releaseInfo = releaseInfoURL.flatMap { ReleaseMetadata(url: $0) }
-        let metadata = releaseInfo ?? manifest
+        let metadata = manifest ?? releaseInfo
 
         return ReleaseInfo(
             version: metadata?.version ?? version,
@@ -55,30 +55,26 @@ struct ReleaseInfo: Equatable, Sendable {
     }
 
     var releaseFileURL: URL? {
-        releaseInfoURL ?? manifestURL
+        manifestURL ?? releaseInfoURL
     }
 
     private static func findManifestURL() -> URL? {
-        let fileName = "AgentSignalLight-release-manifest.json"
         let bundleURL = appBundleURL ?? Bundle.main.bundleURL.standardizedFileURL
         let distParent = bundleURL.deletingLastPathComponent()
         if distParent.lastPathComponent == "dist" {
-            let manifestURL = distParent.appendingPathComponent(fileName)
-            if FileManager.default.fileExists(atPath: manifestURL.path) {
+            if let manifestURL = firstExistingReleaseManifest(in: distParent) {
                 return manifestURL
             }
 
-            let rootManifestURL = distParent.deletingLastPathComponent()
+            let rootDistURL = distParent.deletingLastPathComponent()
                 .appendingPathComponent("dist")
-                .appendingPathComponent(fileName)
-            if FileManager.default.fileExists(atPath: rootManifestURL.path) {
-                return rootManifestURL
+            if let manifestURL = firstExistingReleaseManifest(in: rootDistURL) {
+                return manifestURL
             }
         }
 
         if let resourceURL = appResourceURL ?? Bundle.main.resourceURL?.standardizedFileURL {
-            let manifestURL = resourceURL.appendingPathComponent(fileName)
-            if FileManager.default.fileExists(atPath: manifestURL.path) {
+            if let manifestURL = firstExistingReleaseManifest(in: resourceURL) {
                 return manifestURL
             }
         }
@@ -86,12 +82,21 @@ struct ReleaseInfo: Equatable, Sendable {
         let currentURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .standardizedFileURL
             .appendingPathComponent("dist")
-            .appendingPathComponent(fileName)
-        if FileManager.default.fileExists(atPath: currentURL.path) {
-            return currentURL
+        if let manifestURL = firstExistingReleaseManifest(in: currentURL) {
+            return manifestURL
         }
 
         return nil
+    }
+
+    private static func firstExistingReleaseManifest(in directoryURL: URL) -> URL? {
+        let fileNames = [
+            "AgentSignalBar-release-manifest.json",
+            "AgentSignalLight-release-manifest.json"
+        ]
+        return fileNames
+            .map { directoryURL.appendingPathComponent($0) }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     private static func findReleaseInfoURL() -> URL? {

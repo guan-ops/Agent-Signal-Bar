@@ -1,6 +1,6 @@
 import Foundation
 
-// Fast JSONL parsing adapted from CodexBar's CostUsageScanner. We keep the
+// Fast JSONL parsing adapted from the imported cost-usage scanner. We keep the
 // implementation local and write only Agent Signal Bar's own token cache.
 enum CodexTokenActivityFastParser {
     struct SessionMetadata {
@@ -162,6 +162,23 @@ enum CodexTokenActivityFastParser {
             let bytes = rawBytes.bindMemory(to: UInt8.self)
             guard !bytes.isEmpty else { return nil }
             let range = 0..<bytes.count
+            guard extractJSONByteStringField(fieldType, from: bytes, in: range, atDepth: 1) == "event_msg",
+                  let payloadRange = extractJSONByteObjectField(
+                    fieldPayload,
+                    from: bytes,
+                    in: range,
+                    atDepth: 1
+                  ),
+                  extractJSONByteStringField(fieldType, from: bytes, in: payloadRange, atDepth: 1) == "token_count",
+                  let infoRange = extractJSONByteObjectField(
+                    fieldInfo,
+                    from: bytes,
+                    in: payloadRange,
+                    atDepth: 1
+                  )
+            else {
+                return nil
+            }
             guard let timestamp = extractJSONStringAfterPrefix(
                 quotedTimestampPrefix,
                 from: bytes,
@@ -173,12 +190,12 @@ enum CodexTokenActivityFastParser {
             let total = tokenTotalsAfterPrefix(
                 quotedTotalTokenUsagePrefix,
                 from: bytes,
-                in: range
+                in: infoRange
             )
             let last = tokenTotalsAfterPrefix(
                 quotedLastTokenUsagePrefix,
                 from: bytes,
-                in: range
+                in: infoRange
             )
             guard total != nil || last != nil else {
                 return nil

@@ -8,6 +8,38 @@ import SQLite3
 @testable import AgentSignalLightUI
 
 final class AgentSignalLightCoreTests: XCTestCase {
+    func testReleaseInfoPrefersCurrentManifestOverBundledReleaseInfo() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("release-info-\(UUID().uuidString)", isDirectory: true)
+        let distURL = root.appendingPathComponent("dist", isDirectory: true)
+        let resourceURL = distURL
+            .appendingPathComponent("AgentSignalLight.app", isDirectory: true)
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: distURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: resourceURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let manifestURL = distURL.appendingPathComponent("AgentSignalBar-release-manifest.json")
+        try releaseMetadataJSON(version: "9.9.9", build: "42", signingMode: "developer_id")
+            .write(to: manifestURL, atomically: true, encoding: .utf8)
+        let releaseInfoURL = resourceURL.appendingPathComponent("AgentSignalLight-release-info.json")
+        try releaseMetadataJSON(version: "1.0.0", build: "1", signingMode: "ad_hoc")
+            .write(to: releaseInfoURL, atomically: true, encoding: .utf8)
+
+        let previousDirectory = FileManager.default.currentDirectoryPath
+        XCTAssertTrue(FileManager.default.changeCurrentDirectoryPath(root.path))
+        defer { FileManager.default.changeCurrentDirectoryPath(previousDirectory) }
+
+        let releaseInfo = ReleaseInfo.current()
+        XCTAssertEqual(releaseInfo.version, "9.9.9")
+        XCTAssertEqual(releaseInfo.build, "42")
+        XCTAssertEqual(releaseInfo.signingMode, "developer_id")
+        XCTAssertEqual(releaseInfo.manifestURL?.standardizedFileURL, manifestURL.standardizedFileURL)
+        XCTAssertEqual(releaseInfo.releaseInfoURL?.standardizedFileURL, releaseInfoURL.standardizedFileURL)
+        XCTAssertEqual(releaseInfo.releaseFileURL?.standardizedFileURL, manifestURL.standardizedFileURL)
+    }
+
     func testFloatingSignalGeometryTracksLayout() {
         let scale = FloatingSignalScale.standard
         let verticalLamp = scale.panelSize(
@@ -212,6 +244,40 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(days.first?.totalTokens, 1_650)
         XCTAssertNil(days.first?.modelTokenTotals["gpt-5.5"])
         XCTAssertNil(days.first?.modelTokenTotals["gpt-5"])
+    }
+
+    func testCodexTokenActivityScannerIgnoresEmbeddedTokenCountInToolOutput() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let embeddedOutput = #"""
+        {"timestamp":"2026-06-18T08:01:00.000Z","type":"response_item","payload":{"type":"function_call_output","output":"12:{\"timestamp\":\"2026-06-18T08:00:30.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":999999999,\"cached_input_tokens\":0,\"output_tokens\":1,\"total_tokens\":1000000000},\"last_token_usage\":{\"input_tokens\":999999999,\"cached_input_tokens\":0,\"output_tokens\":1,\"total_tokens\":1000000000}}}}"}}
+        """#
+        let lines = [
+            #"{"timestamp":"2026-06-18T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#,
+            embeddedOutput,
+            #"{"timestamp":"2026-06-18T08:02:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":150,"output_tokens":150,"total_tokens":1650},"last_token_usage":{"input_tokens":500,"cached_input_tokens":50,"output_tokens":50,"total_tokens":550}}}}"#
+        ].joined(separator: "\n")
+        let sessionURL = root.appendingPathComponent("rollout-embedded-token-count.jsonl")
+        try lines.write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            calendar: calendar,
+            cacheURL: root.appendingPathComponent("token-cache.json")
+        )
+
+        let days = scanner.scanDailyActivity(
+            now: Date(timeIntervalSince1970: 1_781_784_000),
+            days: 1
+        )
+
+        XCTAssertEqual(days.count, 1)
+        XCTAssertEqual(days.first?.totalTokens, 1_650)
     }
 
     func testCodexTokenActivityScannerSeparatesExactModelsFromTurnContext() throws {
@@ -569,9 +635,10 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let cacheURL = root.appendingPathComponent("codex-token-activity-v18.json")
+        let cacheVersion = CodexTokenActivityScanner.currentCacheVersion
+        let cacheURL = root.appendingPathComponent("codex-token-activity-v\(cacheVersion).json")
         try writeTokenActivityCache(
-            version: 18,
+            version: cacheVersion,
             root: root,
             cacheURL: cacheURL,
             calendar: calendar,
@@ -857,6 +924,12 @@ final class AgentSignalLightCoreTests: XCTestCase {
               "used_percent": 5.25,
               "reset_at": 1782375582,
               "limit_window_seconds": 604800
+            },
+            "individual_limit": {
+              "limit": "20",
+              "used": "20",
+              "remaining_percent": "0",
+              "resets_at": 1782375582
             }
           }
         }
@@ -864,7 +937,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         let response = try JSONDecoder().decode(CodexUsageResponse.self, from: data)
         let updatedAt = Date(timeIntervalSince1970: 1_781_700_000)
-        let quota = try CodexRateLimitFetcher.quotaStatus(from: response, updatedAt: updatedAt)
+        let usageStatus = try CodexRateLimitFetcher.usageStatus(from: response, updatedAt: updatedAt)
+        let quota = usageStatus.quota
 
         XCTAssertEqual(quota.remainingPercent, 97.5, accuracy: 0.01)
         XCTAssertEqual(quota.usedPercent ?? -1, 2.5, accuracy: 0.01)
@@ -876,6 +950,68 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(quota.secondaryWindow?.remainingPercent ?? -1, 94.75, accuracy: 0.01)
         XCTAssertEqual(quota.secondaryWindow?.windowMinutes, 10_080)
         XCTAssertEqual(quota.secondaryWindow?.resetsAt, Date(timeIntervalSince1970: 1_782_375_582))
+        XCTAssertEqual(usageStatus.credits?.limit ?? -1, 20, accuracy: 0.01)
+        XCTAssertEqual(usageStatus.credits?.used ?? -1, 20, accuracy: 0.01)
+        XCTAssertEqual(usageStatus.credits?.remaining ?? -1, 0, accuracy: 0.01)
+        XCTAssertEqual(usageStatus.credits?.remainingPercent ?? -1, 0, accuracy: 0.01)
+        XCTAssertEqual(usageStatus.credits?.resetsAt, Date(timeIntervalSince1970: 1_782_375_582))
+    }
+
+    func testCodexRateLimitFetcherDoesNotInventCreditQuotaWhenBalanceIsMissing() throws {
+        let data = Data("""
+        {
+          "plan_type": "free",
+          "rate_limit": {
+            "primary_window": {
+              "used_percent": 5,
+              "reset_at": 1785075230,
+              "limit_window_seconds": 2592000
+            }
+          },
+          "spend_control": {
+            "reached": false,
+            "individual_limit": null
+          },
+          "credits": null
+        }
+        """.utf8)
+
+        let response = try JSONDecoder().decode(CodexUsageResponse.self, from: data)
+        let updatedAt = Date(timeIntervalSince1970: 1_782_483_230)
+        let usageStatus = try CodexRateLimitFetcher.usageStatus(from: response, updatedAt: updatedAt)
+
+        XCTAssertEqual(usageStatus.quota.remainingPercent, 95, accuracy: 0.01)
+        XCTAssertEqual(usageStatus.quota.primaryWindow?.windowMinutes, 43_200)
+        XCTAssertNil(usageStatus.credits)
+    }
+
+    func testCodexPlanFormattingMatchesProviderDisplayNames() {
+        XCTAssertEqual(CodexPlanFormatting.displayName("pro"), "Pro 20x")
+        XCTAssertEqual(CodexPlanFormatting.displayName("prolite"), "Pro 5x")
+        XCTAssertEqual(CodexPlanFormatting.displayName("pro_lite"), "Pro 5x")
+        XCTAssertEqual(CodexPlanFormatting.displayName("team_plan"), "Team Plan")
+    }
+
+    func testCodexServiceStatusFetcherParsesOpenAIStatusPage() throws {
+        let data = Data("""
+        {
+          "page": {
+            "updated_at": "2026-06-27T03:29:00.123Z"
+          },
+          "status": {
+            "indicator": "minor",
+            "description": "Partial System Degradation"
+          }
+        }
+        """.utf8)
+
+        let status = try CodexServiceStatusFetcher.parse(data)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        XCTAssertEqual(status.indicator, .minor)
+        XCTAssertEqual(status.displayText, "Partial System Degradation")
+        XCTAssertEqual(status.updatedAt, formatter.date(from: "2026-06-27T03:29:00.123Z"))
     }
 
     func testCodexRateLimitFetcherDoesNotRewriteAPIKeyAuthFile() async throws {
@@ -935,8 +1071,361 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: authURL), originalAuth)
     }
 
+    func testCodexRateLimitFetcherUsesManualCookieHeader() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "foo=bar; baz=qux")
+            let data = Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 25,
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8)
+            let response = HTTPURLResponse(
+                url: request.url ?? URL(string: "https://chatgpt.com/backend-api/wham/usage")!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, data)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let fetcher = CodexRateLimitFetcher(session: session)
+        let usage = try await fetcher.fetchUsageStatus(
+            route: .manualCookie("-H 'Cookie: foo=bar; baz=qux'")
+        )
+
+        XCTAssertEqual(usage.quota.usedPercent ?? -1, 25, accuracy: 0.01)
+    }
+
+    func testCodexRateLimitFetcherOAuthRouteDoesNotSendCookieHeader() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try Data("""
+        {
+          "tokens": {
+            "access_token": "oauth-token",
+            "refresh_token": ""
+          }
+        }
+        """.utf8).write(to: root.appendingPathComponent("auth.json"))
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer oauth-token")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+            let data = Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 15,
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8)
+            let response = HTTPURLResponse(
+                url: request.url ?? URL(string: "https://chatgpt.com/backend-api/wham/usage")!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, data)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let fetcher = CodexRateLimitFetcher(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            session: session
+        )
+        let usage = try await fetcher.fetchUsageStatus(route: .oauthAPI)
+
+        XCTAssertEqual(usage.quota.usedPercent ?? -1, 15, accuracy: 0.01)
+    }
+
+    func testCodexRateLimitFetcherAutomaticRouteUsesImportedBrowserCookie() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "auto_cookie=1")
+            let data = Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 35,
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8)
+            let response = HTTPURLResponse(
+                url: request.url ?? URL(string: "https://chatgpt.com/backend-api/wham/usage")!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, data)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let fetcher = CodexRateLimitFetcher(
+            session: session,
+            browserCookieImporter: FakeOpenAIBrowserCookieImporter(cookieHeader: "auto_cookie=1")
+        )
+        let usage = try await fetcher.fetchUsageStatus(
+            route: .automatic(cookieHeader: nil, importsBrowserCookies: true)
+        )
+
+        XCTAssertEqual(usage.quota.usedPercent ?? -1, 35, accuracy: 0.01)
+    }
+
+    func testCodexAccountManagerSavesAndSwitchesAccounts() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let authURL = root.appendingPathComponent("auth.json")
+        let personalAuth = codexOAuthAuthJSON(
+            email: "personal@example.com",
+            accountID: "acct_personal",
+            accessToken: "personal-access-token"
+        )
+        try personalAuth.write(to: authURL)
+
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL
+        )
+        let personal = try manager.saveCurrentAccount()
+
+        let workAuth = codexOAuthAuthJSON(
+            email: "work@example.com",
+            accountID: "acct_work",
+            accessToken: "work-access-token"
+        )
+        try workAuth.write(to: authURL)
+        let work = try manager.saveCurrentAccount()
+
+        let savedState = try manager.loadState()
+        XCTAssertEqual(savedState.savedAccounts.count, 2)
+        XCTAssertEqual(savedState.activeSavedAccountID, work.id)
+
+        let switched = try manager.switchToAccount(id: personal.id)
+        XCTAssertEqual(switched.id, personal.id)
+        XCTAssertEqual(try Data(contentsOf: authURL), personalAuth)
+
+        let switchedState = try manager.loadState()
+        XCTAssertEqual(switchedState.currentAccount?.email, "personal@example.com")
+        XCTAssertEqual(switchedState.currentAccount?.accountID, "acct_personal")
+        XCTAssertEqual(switchedState.activeSavedAccountID, personal.id)
+    }
+
+    func testCodexAccountManagerUpdatesExistingAccountAndRemovesSavedMetadataOnly() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let authURL = root.appendingPathComponent("auth.json")
+        let firstAuth = codexOAuthAuthJSON(
+            email: "user@example.com",
+            accountID: "acct_same",
+            accessToken: "first-access-token"
+        )
+        try firstAuth.write(to: authURL)
+
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL
+        )
+        let first = try manager.saveCurrentAccount()
+
+        let refreshedAuth = codexOAuthAuthJSON(
+            email: "user@example.com",
+            accountID: "acct_same",
+            accessToken: "refreshed-access-token"
+        )
+        try refreshedAuth.write(to: authURL)
+        let refreshed = try manager.saveCurrentAccount()
+
+        XCTAssertEqual(refreshed.id, first.id)
+        XCTAssertEqual(try manager.loadState().savedAccounts.count, 1)
+
+        try manager.removeAccount(id: refreshed.id)
+
+        let removedState = try manager.loadState()
+        XCTAssertEqual(removedState.savedAccounts.count, 0)
+        XCTAssertNil(removedState.activeSavedAccountID)
+        XCTAssertEqual(try Data(contentsOf: authURL), refreshedAuth)
+    }
+
+    func testCodexAccountManagerPreservesUnsavedCurrentAccountBeforeSwitching() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let authURL = root.appendingPathComponent("auth.json")
+        let savedAuth = codexOAuthAuthJSON(
+            email: "saved@example.com",
+            accountID: "acct_saved",
+            accessToken: "saved-access-token"
+        )
+        try savedAuth.write(to: authURL)
+
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL
+        )
+        let saved = try manager.saveCurrentAccount()
+
+        let unsavedAuth = codexOAuthAuthJSON(
+            email: "unsaved@example.com",
+            accountID: "acct_unsaved",
+            accessToken: "unsaved-access-token"
+        )
+        try unsavedAuth.write(to: authURL)
+
+        _ = try manager.switchToAccount(id: saved.id)
+
+        let state = try manager.loadState()
+        XCTAssertEqual(try Data(contentsOf: authURL), savedAuth)
+        XCTAssertEqual(state.activeSavedAccountID, saved.id)
+        XCTAssertTrue(state.savedAccounts.contains { $0.email == "unsaved@example.com" })
+    }
+
+    func testCodexAccountManagerAddsManagedAccountThroughScopedLogin() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        let managedHomeRootURL = root.appendingPathComponent("managed-homes", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let managedAuth = codexOAuthAuthJSON(
+            email: "managed@example.com",
+            accountID: "acct_managed",
+            accessToken: "managed-access-token"
+        )
+        let loginRunner = FakeCodexAccountLoginRunner(authData: managedAuth)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL,
+            managedHomeRootURL: managedHomeRootURL,
+            loginRunner: loginRunner
+        )
+
+        let account = try await manager.authenticateManagedAccount()
+
+        XCTAssertEqual(account.email, "managed@example.com")
+        XCTAssertEqual(account.accountID, "acct_managed")
+        let observedHomePath = try XCTUnwrap(loginRunner.observedHomePath)
+        XCTAssertTrue(observedHomePath.hasPrefix(managedHomeRootURL.path))
+        XCTAssertNil(account.managedHomePath)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: observedHomePath))
+        XCTAssertEqual(try manager.loadState().savedAccounts.count, 1)
+
+        let switched = try manager.switchToAccount(id: account.id)
+        XCTAssertEqual(switched.id, account.id)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("auth.json")), managedAuth)
+        XCTAssertEqual(try manager.loadState().activeSavedAccountID, account.id)
+    }
+
+    func testCodexAccountUsageSnapshotsStayScopedToAccountIDWhenEmailsMatch() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let accountStoreURL = root.appendingPathComponent("accounts.json")
+        let usageStoreURL = root.appendingPathComponent("usage-snapshots.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let authURL = root.appendingPathComponent("auth.json")
+        let alphaAuth = codexOAuthAuthJSON(
+            email: "shared@example.com",
+            accountID: "acct_alpha",
+            accessToken: "alpha-access-token"
+        )
+        try alphaAuth.write(to: authURL)
+
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: accountStoreURL
+        )
+        let alpha = try manager.saveCurrentAccount()
+        let alphaCurrent = try XCTUnwrap(try manager.loadState().currentAccount)
+
+        let betaAuth = codexOAuthAuthJSON(
+            email: "shared@example.com",
+            accountID: "acct_beta",
+            accessToken: "beta-access-token"
+        )
+        try betaAuth.write(to: authURL)
+        let beta = try manager.saveCurrentAccount()
+        let betaCurrent = try XCTUnwrap(try manager.loadState().currentAccount)
+
+        let usageStore = CodexAccountUsageSnapshotStore(fileURL: usageStoreURL)
+        let alphaQuota = codexQuotaFixture(remainingPercent: 84, updatedAt: 1_782_500_100)
+        let betaQuota = codexQuotaFixture(remainingPercent: 42, updatedAt: 1_782_500_200)
+        usageStore.store(
+            account: alphaCurrent,
+            quota: alphaQuota,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 1_000),
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(day: Date(timeIntervalSince1970: 1_782_432_000), totalTokens: 1_000)]
+        )
+        usageStore.store(
+            account: betaCurrent,
+            quota: betaQuota,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 2_000),
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(day: Date(timeIntervalSince1970: 1_782_432_000), totalTokens: 2_000)]
+        )
+
+        _ = try manager.switchToAccount(id: alpha.id)
+        let loadedAlpha = try XCTUnwrap(try manager.loadState().currentAccount)
+        XCTAssertEqual(usageStore.snapshot(for: loadedAlpha)?.quota?.remainingPercent, 84)
+        XCTAssertEqual(usageStore.snapshot(for: loadedAlpha)?.tokenUsage?.totalTokens, 1_000)
+        XCTAssertEqual(usageStore.snapshot(for: loadedAlpha)?.tokenActivityDays.first?.totalTokens, 1_000)
+
+        _ = try manager.switchToAccount(id: beta.id)
+        let loadedBeta = try XCTUnwrap(try manager.loadState().currentAccount)
+        XCTAssertEqual(usageStore.snapshot(for: loadedBeta)?.quota?.remainingPercent, 42)
+        XCTAssertEqual(usageStore.snapshot(for: loadedBeta)?.tokenUsage?.totalTokens, 2_000)
+        XCTAssertEqual(usageStore.snapshot(for: loadedBeta)?.tokenActivityDays.first?.totalTokens, 2_000)
+    }
+
     @MainActor
-    func testWeeklyQuotaResetTextIncludesDate() {
+    func testLongQuotaWindowResetTextIncludesDateAndDynamicTitle() {
         let model = MenuBarStatusModel()
         model.appLanguage = .zhHans
         let window = AgentQuotaWindowStatus(
@@ -951,9 +1440,28 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssertTrue(fiveHourText.hasPrefix("重置 "))
         XCTAssertTrue(weeklyText.hasPrefix("重置 "))
-        XCTAssertNotEqual(fiveHourText, weeklyText)
-        XCTAssertGreaterThan(weeklyText.count, fiveHourText.count)
+        XCTAssertEqual(fiveHourText, weeklyText)
         XCTAssertFalse(weeklyText.contains("2026"))
+        XCTAssertEqual(model.displayName(for: window, fallback: .fiveHours), "一周")
+
+        let monthlyWindow = AgentQuotaWindowStatus(
+            remainingPercent: 95,
+            usedPercent: 5,
+            windowMinutes: 43_200,
+            resetsAt: Date(timeIntervalSince1970: 1_785_075_230)
+        )
+        let quota = AgentQuotaStatus(
+            remainingPercent: 95,
+            usedPercent: 5,
+            windowMinutes: monthlyWindow.windowMinutes,
+            resetsAt: monthlyWindow.resetsAt,
+            updatedAt: Date(timeIntervalSince1970: 1_782_483_230),
+            primary: monthlyWindow,
+            secondary: nil
+        )
+
+        XCTAssertEqual(model.displayName(for: monthlyWindow, fallback: .fiveHours), "30 天")
+        XCTAssertEqual(model.quotaTitleLine(for: .fiveHours, quota: quota), "30 天 · 剩余 95%")
     }
 
     @MainActor
@@ -967,6 +1475,22 @@ final class AgentSignalLightCoreTests: XCTestCase {
         model.appLanguage = .english
         XCTAssertEqual(model.compactTokenCountText(1_234_567_890), "1.23B")
         XCTAssertEqual(model.compactTokenCountText(1_234), "1.23K")
+    }
+
+    @MainActor
+    func testFloatingSignalDebugLightUsesLiveTickForTargetedOverride() {
+        let model = MenuBarStatusModel()
+
+        model.setDebugLight(signal: .working, targets: [.floatingSignal])
+        XCTAssertEqual(model.floatingSignalLightSnapshot.aggregate, .working)
+        XCTAssertNil(model.statusBarStatusLightOverride)
+        XCTAssertNotNil(model.floatingSignalStatusLightOverride)
+        XCTAssertEqual(model.floatingSignalLightTick, 0)
+
+        model.animationClock.advance(by: 3)
+
+        XCTAssertEqual(model.floatingSignalLightTick, 3)
+        XCTAssertEqual(model.statusBarLightTick, 3)
     }
 
     func testCodexDesktopSessionParserMapsExecSourceToCliAgent() {
@@ -2776,7 +3300,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testManualSignalLightSelectionShowsHintWithoutSwitchingWhenOtherAgentsRun() throws {
+    func testHiddenLocalScriptSelectionDoesNotDriveVisibleSignalLight() throws {
         let savedDefaults = clearSignalLightSelectionDefaults()
         defer { restoreSignalLightSelectionDefaults(savedDefaults) }
         let fixture = try makeTemporaryStore()
@@ -2803,10 +3327,10 @@ final class AgentSignalLightCoreTests: XCTestCase {
         model.setSignalLightAgentScopes([.localScript])
 
         XCTAssertEqual(model.signalLightAgentSelectionMode, .manual)
-        XCTAssertEqual(model.displaySignalLightAgentScopes, [.localScript])
+        XCTAssertEqual(model.displaySignalLightAgentScopes, [])
         XCTAssertEqual(model.displaySnapshot.aggregate, .idle)
         XCTAssertEqual(model.displaySnapshot.sessions, [])
-        XCTAssertNotNil(model.signalLightAgentUnavailableHint)
+        XCTAssertNil(model.signalLightAgentUnavailableHint)
     }
 
     @MainActor
@@ -3049,6 +3573,18 @@ final class AgentSignalLightCoreTests: XCTestCase {
             applications: [],
             processes: processes,
             now: now
+        )
+
+        XCTAssertFalse(sessions.contains { $0.sessionID == "platform-presence:codex-cli" })
+    }
+
+    func testCodexPlatformPresenceMonitorIgnoresCodexLoginProcessAsCLI() {
+        let sessions = CodexPlatformPresenceMonitor.detectSessions(
+            applications: [],
+            processes: CodexPlatformPresenceMonitor.parseProcesses(
+                from: "54957 /opt/homebrew/bin/codex /opt/homebrew/bin/codex login\n"
+            ),
+            now: Date(timeIntervalSince1970: 1_000)
         )
 
         XCTAssertFalse(sessions.contains { $0.sessionID == "platform-presence:codex-cli" })
@@ -3774,6 +4310,85 @@ final class AgentSignalLightCoreTests: XCTestCase {
         return formatter.string(from: date)
     }
 
+    private func releaseMetadataJSON(version: String, build: String, signingMode: String) -> String {
+        """
+        {
+          "version": "\(version)",
+          "build": "\(build)",
+          "signing": {
+            "mode": "\(signingMode)"
+          },
+          "notarization": {
+            "ready_to_submit": true
+          }
+        }
+        """
+    }
+
+    private func codexOAuthAuthJSON(
+        email: String,
+        accountID: String,
+        accessToken: String
+    ) -> Data {
+        let idToken = [
+            base64URLEncodedJSON(["alg": "none", "typ": "JWT"]),
+            base64URLEncodedJSON([
+                "email": email,
+                "chatgpt_account_id": accountID,
+                "https://api.openai.com/auth": [
+                    "chatgpt_account_id": accountID
+                ]
+            ]),
+            "signature"
+        ].joined(separator: ".")
+
+        return Data("""
+        {
+          "tokens": {
+            "access_token": "\(accessToken)",
+            "refresh_token": "refresh-\(accessToken)",
+            "id_token": "\(idToken)",
+            "account_id": "\(accountID)"
+          },
+          "last_refresh": "2026-06-01T00:00:00Z"
+        }
+        """.utf8)
+    }
+
+    private func codexQuotaFixture(
+        remainingPercent: Double,
+        updatedAt: TimeInterval
+    ) -> AgentQuotaStatus {
+        let updatedAtDate = Date(timeIntervalSince1970: updatedAt)
+        return AgentQuotaStatus(
+            remainingPercent: remainingPercent,
+            usedPercent: 100 - remainingPercent,
+            windowMinutes: 300,
+            resetsAt: updatedAtDate.addingTimeInterval(1_800),
+            updatedAt: updatedAtDate,
+            primary: AgentQuotaWindowStatus(
+                remainingPercent: remainingPercent,
+                usedPercent: 100 - remainingPercent,
+                windowMinutes: 300,
+                resetsAt: updatedAtDate.addingTimeInterval(1_800)
+            ),
+            secondary: AgentQuotaWindowStatus(
+                remainingPercent: max(0, remainingPercent - 5),
+                usedPercent: min(100, 105 - remainingPercent),
+                windowMinutes: 10_080,
+                resetsAt: updatedAtDate.addingTimeInterval(86_400)
+            )
+        )
+    }
+
+    private func base64URLEncodedJSON(_ object: Any) -> String {
+        let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
     private func storedDocument(in store: SignalStateStore) throws -> SignalStateDocument {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -3820,6 +4435,51 @@ private final class CodexRateLimitFetcherURLProtocol: URLProtocol, @unchecked Se
     }
 
     override func stopLoading() {}
+}
+
+private struct FakeOpenAIBrowserCookieImporter: OpenAIBrowserCookieImporting {
+    let cookieHeader: String?
+
+    func importCookieHeader() async -> OpenAIBrowserCookieImportResult? {
+        guard let cookieHeader else { return nil }
+        return OpenAIBrowserCookieImportResult(
+            cookieHeader: cookieHeader,
+            sourceLabel: "Test",
+            debugLog: "test"
+        )
+    }
+}
+
+private final class FakeCodexAccountLoginRunner: CodexAccountLoginRunning, @unchecked Sendable {
+    private let authData: Data?
+    private let result: CodexAccountLoginResult
+    private(set) var observedHomePath: String?
+
+    init(
+        authData: Data?,
+        result: CodexAccountLoginResult = CodexAccountLoginResult(outcome: .success, output: "")
+    ) {
+        self.authData = authData
+        self.result = result
+    }
+
+    func run(
+        homePath: String,
+        timeout _: TimeInterval,
+        environment _: [String: String]
+    ) async -> CodexAccountLoginResult {
+        observedHomePath = homePath
+        if let authData {
+            let authURL = URL(fileURLWithPath: homePath, isDirectory: true)
+                .appendingPathComponent("auth.json", isDirectory: false)
+            try? FileManager.default.createDirectory(
+                at: authURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? authData.write(to: authURL)
+        }
+        return result
+    }
 }
 
 private extension FileHandle {

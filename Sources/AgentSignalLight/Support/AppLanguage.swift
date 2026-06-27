@@ -198,6 +198,30 @@ extension MenuBarStatusModel {
         }
     }
 
+    func displayName(
+        for window: AgentQuotaWindowStatus?,
+        fallback quotaWindow: FloatingSignalQuotaBadgeWindow
+    ) -> String {
+        guard let minutes = window?.windowMinutes, minutes > 0 else {
+            return displayName(for: quotaWindow)
+        }
+
+        if minutes % (24 * 60) == 0 {
+            let days = minutes / (24 * 60)
+            if days == 7 {
+                return text("一周", "1 week")
+            }
+            return text("\(days) 天", "\(days)d")
+        }
+
+        if minutes % 60 == 0 {
+            let hours = minutes / 60
+            return text("\(hours) 小时", "\(hours) hours")
+        }
+
+        return text("\(minutes) 分钟", "\(minutes) minutes")
+    }
+
     func displayName(for tokenWindow: FloatingSignalTokenBadgeWindow) -> String {
         switch tokenWindow {
         case .today:
@@ -230,8 +254,9 @@ extension MenuBarStatusModel {
         for badgeWindow: FloatingSignalQuotaBadgeWindow,
         quota: AgentQuotaStatus
     ) -> String {
-        let title = displayName(for: badgeWindow)
-        let percent = quotaPercentText(for: quotaWindow(for: badgeWindow, quota: quota))
+        let window = quotaWindow(for: badgeWindow, quota: quota)
+        let title = displayName(for: window, fallback: badgeWindow)
+        let percent = quotaPercentText(for: window)
         return text(
             "\(title) · 剩余 \(percent)",
             "\(title) · \(percent) left"
@@ -245,7 +270,8 @@ extension MenuBarStatusModel {
         guard let resetsAt = window?.resetsAt else {
             return text("重置时间未知", "reset time unavailable")
         }
-        let resetTime = badgeWindow == .weekly
+        let shouldShowDate = badgeWindow == .weekly || (window?.windowMinutes ?? 0) >= 24 * 60
+        let resetTime = shouldShowDate
             ? localizedMonthDayTimeString(for: resetsAt)
             : localizedTimeString(for: resetsAt)
         return text("重置 \(resetTime)", "resets \(resetTime)")

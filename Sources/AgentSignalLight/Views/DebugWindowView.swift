@@ -11,6 +11,14 @@ struct DebugWindowView: View {
     @State private var selectedSettingsTab: SettingsTab = .activity
     @State private var expandedSettingsDropdown: SettingsDropdownID?
     @State private var hoveredTokenActivityDayID: TimeInterval?
+    @State private var selectedUsagePlatform: UsagePlatform = .codex
+    @State private var selectedDebugProvider: DebugProvider = .codex
+    @State private var selectedDebugFetchProvider: DebugProvider = .codex
+    @State private var debugProbeLogText: String = ""
+    @State private var isStatusBarLightDebugTargetEnabled = true
+    @State private var isFloatingLightDebugTargetEnabled = true
+    @State private var selectedLightDebugTest: LightDebugTest?
+    @State private var isUsageAccountDetailsExpanded = false
     private let activityRecentEventLimit = 50
 
     var body: some View {
@@ -44,11 +52,16 @@ struct DebugWindowView: View {
         }
         .frame(width: 600, height: 840)
         .preferredColorScheme(model.appTheme.colorScheme)
+        .onChange(of: model.isDebugSettingsVisible) { _, isVisible in
+            if !isVisible && selectedSettingsTab == .debug {
+                selectedSettingsTab = .advanced
+            }
+        }
     }
 
     private var settingsMenu: some View {
         HStack(spacing: 4) {
-            ForEach(SettingsTab.displayOrder) { tab in
+            ForEach(visibleSettingsTabs) { tab in
                 Button {
                     withAnimation(.easeInOut(duration: 0.14)) {
                         closeSettingsDropdown()
@@ -90,6 +103,10 @@ struct DebugWindowView: View {
                 .stroke(glassMenuBarStroke, lineWidth: 0.6)
         }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var visibleSettingsTabs: [SettingsTab] {
+        SettingsTab.displayOrder(showDebug: model.isDebugSettingsVisible)
     }
 
     private var settingsContentArea: some View {
@@ -177,6 +194,8 @@ struct DebugWindowView: View {
             connectionSettings
         case .advanced:
             advancedSettings
+        case .debug:
+            debugSettings
         case .about:
             developerInfoSettings
         }
@@ -194,6 +213,8 @@ struct DebugWindowView: View {
             return model.text("连接", "Connect")
         case .advanced:
             return model.text("高级", "Advanced")
+        case .debug:
+            return model.text("调试", "Debug")
         case .about:
             return model.text("关于", "About")
         }
@@ -205,18 +226,25 @@ struct DebugWindowView: View {
         case general
         case connections
         case advanced
+        case debug
         case about
 
         var id: String { rawValue }
 
-        static let displayOrder: [SettingsTab] = [
-            .activity,
-            .usage,
-            .general,
-            .connections,
-            .advanced,
-            .about
-        ]
+        static func displayOrder(showDebug: Bool) -> [SettingsTab] {
+            var tabs: [SettingsTab] = [
+                .activity,
+                .usage,
+                .general,
+                .connections,
+                .advanced
+            ]
+            if showDebug {
+                tabs.append(.debug)
+            }
+            tabs.append(.about)
+            return tabs
+        }
 
         var systemImage: String {
             switch self {
@@ -230,10 +258,70 @@ struct DebugWindowView: View {
                 return "link"
             case .advanced:
                 return "slider.horizontal.3"
+            case .debug:
+                return "stethoscope"
             case .about:
                 return "info.circle"
             }
         }
+    }
+
+    private enum UsagePlatform: String, CaseIterable, Identifiable {
+        case codex
+        case claude
+
+        var id: String { rawValue }
+
+        var systemImage: String {
+            switch self {
+            case .codex:
+                return "terminal"
+            case .claude:
+                return "sparkles"
+            }
+        }
+
+        var supportsManagedAccounts: Bool {
+            self == .codex
+        }
+
+        var supportsQuotaRefresh: Bool {
+            self == .codex
+        }
+
+        var supportsTokenActivity: Bool {
+            self == .codex
+        }
+
+        func matches(session: SessionStatus) -> Bool {
+            let haystack = [
+                session.sessionID,
+                session.agent ?? "",
+                session.lastEvent ?? ""
+            ]
+                .joined(separator: " ")
+                .lowercased()
+
+            switch self {
+            case .codex:
+                return haystack.contains("codex")
+            case .claude:
+                return haystack.contains("claude")
+            }
+        }
+    }
+
+    private enum DebugProvider: String, CaseIterable, Identifiable {
+        case codex = "Codex"
+        case claude = "Claude"
+
+        var id: String { rawValue }
+    }
+
+    private enum LightDebugTest: Hashable {
+        case signal(AgentSignal)
+        case activeEffect(ActiveSignalEffect)
+        case completedEffect(CompletedSignalEffect)
     }
 
     private enum DotHorizontalSizeOption: Hashable {
@@ -250,6 +338,7 @@ struct DebugWindowView: View {
         case language
         case theme
         case signalLightAgents
+        case usagePlatform
         case thinkingEffect
         case workingEffect
         case doneEffect
@@ -298,6 +387,10 @@ struct DebugWindowView: View {
 
     private var settingsBodyStrongFont: Font {
         .system(size: usesCompactLatinLayout ? 12 : 13, weight: .semibold)
+    }
+
+    private var usageAccountStatusTitleFont: Font {
+        .system(size: 13, weight: .semibold)
     }
 
     private var settingsDetailFont: Font {
@@ -578,11 +671,14 @@ struct DebugWindowView: View {
     }
 
     private var signalLightAgentMenu: some View {
-        let selectedScopes = model.displaySignalLightAgentScopes
+        let visibleScopeSet = visibleSignalLightAgentScopeSet
+        let selectedScopes = model.displaySignalLightAgentScopes.intersection(visibleScopeSet)
+        let fallbackScopes = model.signalLightAgentScopes.intersection(visibleScopeSet)
+        let titleScopes = selectedScopes.isEmpty ? fallbackScopes : selectedScopes
 
         return inlineDropdown(
             id: .signalLightAgents,
-            title: model.signalLightAgentMenuTitle,
+            title: model.displayName(for: titleScopes),
             width: agentScopeMenuWidth
         ) {
             dropdownOptions(width: agentScopeMenuWidth) {
@@ -614,7 +710,7 @@ struct DebugWindowView: View {
         var sections: [SignalLightAgentDropdownSection] = []
 
         for group in SignalLightAgentScopeGroup.allCases {
-            let groupOptions = SignalLightAgentScope.selectableCases
+            let groupOptions = visibleSignalLightAgentScopes
                 .filter { $0.group == group }
                 .sorted { lhs, rhs in
                     let lhsIsRunning = runningScopes.contains(lhs)
@@ -646,7 +742,8 @@ struct DebugWindowView: View {
                 }
                 .zIndex(expandedSettingsDropdown == .signalLightAgents ? 1000 : 0)
 
-                if let hint = model.signalLightAgentUnavailableHint {
+                if shouldShowSignalLightAgentUnavailableHint,
+                   let hint = model.signalLightAgentUnavailableHint {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Image(systemName: "info.circle")
                             .font(settingsTinyIconFont)
@@ -655,6 +752,10 @@ struct DebugWindowView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     .foregroundStyle(.secondary)
+                }
+
+                if model.isLightDebugModeEnabled {
+                    lightDebugModeBanner
                 }
 
                 activitySummaryCard
@@ -673,21 +774,382 @@ struct DebugWindowView: View {
         .frame(maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private var visibleSignalLightAgentScopes: [SignalLightAgentScope] {
+        SignalLightAgentScope.visibleCases
+    }
+
+    private var visibleSignalLightAgentScopeSet: Set<SignalLightAgentScope> {
+        Set(visibleSignalLightAgentScopes)
+    }
+
+    private var shouldShowSignalLightAgentUnavailableHint: Bool {
+        let selectedScopes = model.signalLightAgentScopes.intersection(visibleSignalLightAgentScopeSet)
+        let visibleOtherRunningScopes = model.activeSignalLightAgentScopes
+            .intersection(visibleSignalLightAgentScopeSet)
+            .subtracting(selectedScopes)
+        return !visibleOtherRunningScopes.isEmpty
+    }
+
+    private var lightDebugModeBanner: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "ladybug")
+                .font(settingsTinyIconFont)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(model.text("灯光调试模式", "Light debug mode"))
+                    .font(settingsBodyStrongFont)
+                Text(model.text(
+                    "正常 Agent 灯效已暂停，当前状态栏和悬浮灯由调试按钮驱动。",
+                    "Normal agent lighting is paused; the status bar and floating light are driven by debug controls."
+                ))
+                .font(settingsDetailFont)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
     private var usageSettings: some View {
-        settingsSection(model.text("用量", "Usage")) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                Text(model.text("用量", "Usage"))
+                    .font(settingsSectionTitleFont)
+
+                Spacer(minLength: 12)
+
+                usagePlatformMenu
+            }
+            .zIndex(expandedSettingsDropdown == .usagePlatform ? 1000 : 0)
+
             VStack(alignment: .leading, spacing: 14) {
+                usageAccountCard
+
                 agentQuotaSummaryCard
 
                 usageTokenSummaryCard
-
-                usageToolStatsCard
             }
         }
         .onAppear {
-            model.pollCodexRateLimitsIfNeeded()
-            model.refreshTokenActivityIfNeeded(force: model.tokenActivityDays.isEmpty)
-            model.refreshToolActivityIfNeeded(force: model.toolActivitySummary.isEmpty)
+            refreshSelectedUsagePlatform()
         }
+        .onChange(of: selectedUsagePlatform) { _, _ in
+            refreshSelectedUsagePlatform()
+        }
+    }
+
+    private var usagePlatformMenu: some View {
+        inlineDropdown(
+            id: .usagePlatform,
+            title: usagePlatformName(selectedUsagePlatform),
+            systemImage: selectedUsagePlatform.systemImage,
+            width: 138,
+            optionsHeight: dropdownOptionsHeight(optionCount: UsagePlatform.allCases.count)
+        ) {
+            dropdownOptions(width: 138) {
+                ForEach(UsagePlatform.allCases) { platform in
+                    dropdownOption(
+                        usagePlatformName(platform),
+                        systemImage: platform.systemImage,
+                        isSelected: selectedUsagePlatform == platform,
+                        width: 138
+                    ) {
+                        selectedUsagePlatform = platform
+                    }
+                }
+            }
+        }
+        .help(model.text("切换用量平台", "Switch usage platform"))
+    }
+
+    private func usagePlatformName(_ platform: UsagePlatform) -> String {
+        switch platform {
+        case .codex:
+            return "Codex"
+        case .claude:
+            return "Claude"
+        }
+    }
+
+    private func refreshSelectedUsagePlatform() {
+        guard selectedUsagePlatform == .codex else { return }
+        model.refreshCodexAccounts()
+        model.pollCodexRateLimitsIfNeeded(force: model.latestAgentQuota == nil)
+        model.refreshTokenActivityIfNeeded()
+        model.refreshCodexProviderDetails()
+    }
+
+    private func refreshSelectedUsagePlatform(force: Bool) {
+        guard selectedUsagePlatform == .codex else { return }
+        model.refreshCodexAccounts()
+        model.pollCodexRateLimitsIfNeeded(force: force)
+        model.refreshTokenActivityIfNeeded(force: force)
+        model.refreshCodexProviderDetails(force: force)
+    }
+
+    private var isSelectedUsagePlatformRefreshing: Bool {
+        switch selectedUsagePlatform {
+        case .codex:
+            return model.isCodexAccountActionRunning
+                || model.isCodexRateLimitFetchInFlight
+                || model.isCodexProviderDetailsLoading
+        case .claude:
+            return false
+        }
+    }
+
+    @ViewBuilder
+    private var usageAccountCard: some View {
+        switch selectedUsagePlatform {
+        case .codex:
+            codexAccountSwitcherCard
+        case .claude:
+            claudeAccountStatusCard
+        }
+    }
+
+    private var codexUsageSourceControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            codexSettingsControlRow(
+                title: model.text("用量来源", "Usage Source"),
+                subtitle: model.text(
+                    "如果首选来源失败，自动模式会回退到可用来源。",
+                    "Automatic mode falls back to an available source if the preferred source fails."
+                ),
+                trailingValue: codexResolvedUsageSourceText
+            ) {
+                codexUsageDataSourceMenu
+            }
+
+            Divider().opacity(0.35)
+
+            codexSettingsControlRow(
+                title: "OpenAI Cookie",
+                subtitle: codexOpenAICookieSubtitle
+            ) {
+                codexOpenAICookieModeMenu
+            }
+
+            if model.codexOpenAICookieMode == .manual {
+                codexManualOpenAICookieInput
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    private var codexProviderDetailsDisclosure: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider().opacity(0.35)
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    isUsageAccountDetailsExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(model.text("详情", "Details"))
+                        .font(settingsBodyStrongFont)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 10)
+
+                    Image(systemName: "chevron.down")
+                        .font(settingsTinyIconFont.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isUsageAccountDetailsExpanded ? 180 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(model.text("展开 Codex 状态详情", "Expand Codex status details"))
+
+            if isUsageAccountDetailsExpanded {
+                VStack(alignment: .leading, spacing: 10) {
+                    codexUsageSourceControls
+
+                    Divider().opacity(0.35)
+
+                    codexProviderDetailsContent
+                }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    private var codexProviderDetailsContent: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            codexDetailRow(model.text("状态", "Status"), codexProviderEnabledText)
+            codexDetailRow(model.text("来源", "Source"), codexResolvedUsageSourceText)
+            codexDetailRow(model.text("版本", "Version"), codexProviderVersionText)
+            codexDetailRow(model.text("已更新", "Updated"), codexProviderUpdatedText)
+            codexDetailRow(model.text("服务状态", "Service Status"), codexProviderServiceStatusText)
+        }
+    }
+
+    private var codexProviderDetailsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Codex")
+                        .font(settingsSubsectionTitleFont)
+                        .lineLimit(1)
+
+                    Text(codexProviderSubtitle)
+                        .font(settingsDetailFont)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                Spacer(minLength: 12)
+
+            }
+
+            codexProviderDetailsContent
+        }
+        .padding(10)
+        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onAppear {
+            model.refreshCodexProviderDetails()
+        }
+    }
+
+    private func codexSettingsControlRow<Control: View>(
+        title: String,
+        subtitle: String,
+        trailingValue: String? = nil,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(settingsBodyStrongFont)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+
+                Text(subtitle)
+                    .font(settingsDetailFont)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 10)
+
+            control()
+
+            if let trailingValue {
+                Text(trailingValue)
+                    .font(settingsDetailStrongFont)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(minWidth: 42, alignment: .leading)
+            }
+        }
+    }
+
+    private var codexUsageDataSourceMenu: some View {
+        Menu {
+            ForEach(CodexUsageDataSource.selectableCases) { source in
+                Button {
+                    model.setCodexUsageDataSource(source)
+                } label: {
+                    if model.codexUsageDataSource == source {
+                        Label(codexUsageDataSourceName(source), systemImage: "checkmark")
+                    } else {
+                        Text(codexUsageDataSourceName(source))
+                    }
+                }
+            }
+        } label: {
+            settingsActionSurface(
+                codexUsageDataSourceName(model.codexUsageDataSource),
+                systemImage: nil,
+                width: 138
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .help(model.text("选择 Codex 用量读取来源", "Choose Codex usage data source"))
+    }
+
+    private var codexOpenAICookieModeMenu: some View {
+        Menu {
+            ForEach(CodexOpenAICookieMode.selectableCases) { mode in
+                Button {
+                    model.setCodexOpenAICookieMode(mode)
+                } label: {
+                    if model.codexOpenAICookieMode == mode {
+                        Label(codexOpenAICookieModeName(mode), systemImage: "checkmark")
+                    } else {
+                        Text(codexOpenAICookieModeName(mode))
+                    }
+                }
+            }
+        } label: {
+            settingsActionSurface(
+                codexOpenAICookieModeName(model.codexOpenAICookieMode),
+                systemImage: nil,
+                width: 118
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .help(model.text("选择 OpenAI Cookie 模式", "Choose OpenAI cookie mode"))
+    }
+
+    private var codexOpenAICookieSubtitle: String {
+        switch model.codexOpenAICookieMode {
+        case .manual:
+            return model.text(
+                "粘贴来自 chatgpt.com request 的 Cookie 标头。",
+                "Paste the Cookie header from a chatgpt.com request."
+            )
+        case .automatic:
+            return model.text(
+                "自动读取浏览器 Cookie；不可用时回退 OAuth API。",
+                "Automatically reads browser cookies; falls back to the OAuth API when unavailable."
+            )
+        case .off:
+            return model.text(
+                "不使用浏览器 Cookie；用量会走 OAuth API。",
+                "Browser cookies are disabled; usage uses the OAuth API."
+            )
+        }
+    }
+
+    private var codexManualOpenAICookieInput: some View {
+        SecureField(
+            model.text("Cookie: ...", "Cookie: ..."),
+            text: codexManualOpenAICookieBinding
+        )
+        .textFieldStyle(.plain)
+        .font(.system(size: 12, weight: .regular, design: .monospaced))
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+        .background(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(solidControlStroke, lineWidth: 0.7)
+        )
+        .help(model.text(
+            "粘贴完整 Cookie 标头，例如 Cookie: key=value; ...",
+            "Paste the full Cookie header, for example Cookie: key=value; ..."
+        ))
+    }
+
+    private var codexManualOpenAICookieBinding: Binding<String> {
+        Binding(
+            get: { model.codexManualOpenAICookieHeader },
+            set: { model.setCodexManualOpenAICookieHeader($0) }
+        )
     }
 
     private var monitoringPauseSetting: some View {
@@ -721,24 +1183,36 @@ struct DebugWindowView: View {
     }
 
     private var activitySummaryCard: some View {
-        let lightSnapshot = model.lightSnapshot
-        let selectedSignal = lightSnapshot.aggregate
+        let visibleSessions = visibleActivitySessions
+        let liveSelectedSignal = visibleSessions
+            .map(\.signal)
+            .max { lhs, rhs in
+                lhs.displayState.priority < rhs.displayState.priority
+            } ?? .idle
+        let selectedSignal: AgentSignal = model.isLightDebugModeEnabled ? .idle : liveSelectedSignal
+        let updatedAt = visibleSessions.map(\.updatedAt).max()
 
         return HStack(alignment: .top, spacing: 12) {
             ActivitySignalLampView(
                 model: model,
-                signalOverride: selectedSignal
+                signalOverride: model.isLightDebugModeEnabled ? nil : selectedSignal
             )
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(model.displayName(for: selectedSignal))
+                Text(model.isLightDebugModeEnabled ? model.text("调试模式", "Debug mode") : model.displayName(for: selectedSignal))
                     .font(settingsSubsectionTitleFont)
-                Text(model.summary(for: selectedSignal))
+                Text(model.isLightDebugModeEnabled
+                    ? model.text("正常 Agent 灯效已暂停。", "Normal agent lighting is paused.")
+                    : model.summary(for: selectedSignal)
+                )
                     .font(settingsBodyFont)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text(lightSnapshot.updatedAt.map(activityUpdatedText) ?? model.text("等待运行", "Waiting to launch"))
+                Text(model.isLightDebugModeEnabled
+                    ? model.text("由灯光调试按钮驱动", "Driven by light debug controls")
+                    : (updatedAt.map(activityUpdatedText) ?? model.text("等待运行", "Waiting to launch"))
+                )
                     .font(settingsDetailFont)
                     .foregroundStyle(.tertiary)
             }
@@ -747,13 +1221,13 @@ struct DebugWindowView: View {
 
             VStack(alignment: .trailing, spacing: 4) {
                 Label(
-                    model.isMonitoringPaused ? model.text("监控已暂停", "Monitoring paused") : model.text("实时监控", "Live monitoring"),
-                    systemImage: model.isMonitoringPaused ? "pause.circle" : "dot.radiowaves.left.and.right"
+                    activitySummaryModeLabel,
+                    systemImage: activitySummaryModeIcon
                 )
                 .font(settingsDetailStrongFont)
-                .foregroundStyle(model.isMonitoringPaused ? .orange : .secondary)
+                .foregroundStyle(activitySummaryModeColor)
 
-                Text("\(lightSnapshot.sessions.count) \(model.text("个会话", "sessions"))")
+                Text("\(visibleSessions.count) \(model.text("个会话", "sessions"))")
                     .font(settingsDetailFont)
                     .foregroundStyle(.tertiary)
             }
@@ -761,27 +1235,69 @@ struct DebugWindowView: View {
         .padding(10)
     }
 
+    private var activitySummaryModeLabel: String {
+        if model.isLightDebugModeEnabled {
+            return model.text("调试模式", "Debug mode")
+        }
+        return model.isMonitoringPaused ? model.text("监控已暂停", "Monitoring paused") : model.text("实时监控", "Live monitoring")
+    }
+
+    private var activitySummaryModeIcon: String {
+        if model.isLightDebugModeEnabled {
+            return "ladybug"
+        }
+        return model.isMonitoringPaused ? "pause.circle" : "dot.radiowaves.left.and.right"
+    }
+
+    private var activitySummaryModeColor: Color {
+        if model.isLightDebugModeEnabled {
+            return .orange
+        }
+        return model.isMonitoringPaused ? .orange : .secondary
+    }
+
     private var agentQuotaSummaryCard: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        let quota = selectedUsageQuota
+
+        return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
-                Text(model.text("Codex 额度", "Codex Quota"))
+                Text(model.text("会话", "Session"))
                     .font(settingsSubsectionTitleFont)
 
                 Spacer(minLength: 12)
 
-                if let quota = model.latestAgentQuota {
+                if let quota {
                     Text(model.quotaUpdatedText(for: quota))
                         .font(settingsDetailFont)
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
+
             }
 
-            if let quota = model.latestAgentQuota {
-                HStack(alignment: .top, spacing: 8) {
-                    quotaWindowTile(.fiveHours, quota: quota)
-                    quotaWindowTile(.weekly, quota: quota)
+            if selectedUsagePlatform == .codex {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let quota {
+                        quotaWindowTiles(for: quota)
+                    } else {
+                        HStack(alignment: .top, spacing: 8) {
+                            quotaWindowPlaceholderTile(.fiveHours)
+                            quotaWindowPlaceholderTile(.weekly)
+                        }
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let quota {
+                quotaWindowTiles(for: quota)
+            } else if selectedUsagePlatform == .claude {
+                usageUnavailableRow(
+                    icon: "chart.bar.xaxis",
+                    title: model.text("暂无 Claude 会话数据", "No Claude session data"),
+                    subtitle: model.text(
+                        "当前版本还没有接入 Claude 会话用量 API。",
+                        "Claude session usage API is not connected in this version."
+                    )
+                )
             } else {
                 HStack(alignment: .top, spacing: 8) {
                     quotaWindowPlaceholderTile(.fiveHours)
@@ -792,8 +1308,410 @@ struct DebugWindowView: View {
         .padding(10)
         .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onAppear {
-            model.pollCodexRateLimitsIfNeeded()
+            if selectedUsagePlatform.supportsQuotaRefresh {
+                model.pollCodexRateLimitsIfNeeded()
+            }
         }
+    }
+
+    private var selectedUsageQuota: AgentQuotaStatus? {
+        switch selectedUsagePlatform {
+        case .codex:
+            return model.latestAgentQuota
+        case .claude:
+            return latestUsageQuota(for: .claude)
+        }
+    }
+
+    private func latestUsageQuota(for platform: UsagePlatform) -> AgentQuotaStatus? {
+        model.activitySnapshot.sessions
+            .filter { platform.matches(session: $0) }
+            .compactMap(\.quota)
+            .max { lhs, rhs in lhs.updatedAt < rhs.updatedAt }
+    }
+
+    private var codexAccountSwitcherCard: some View {
+        let activeSavedAccount = model.codexSavedAccounts.first { model.isActiveCodexAccount($0) }
+        let currentAccount = model.codexCurrentAccount
+        let shouldShowSaveCurrent = currentAccount != nil && activeSavedAccount == nil
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text(model.text("账户", "Account"))
+                    .font(settingsSubsectionTitleFont)
+
+                Spacer(minLength: 12)
+
+                if isSelectedUsagePlatformRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.65)
+                }
+
+                Button {
+                    refreshSelectedUsagePlatform(force: true)
+                } label: {
+                    settingsIconActionSurface(systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .disabled(isSelectedUsagePlatformRefreshing)
+                .help(model.text("刷新 Codex 账户、会话和 Token 使用", "Refresh Codex account, session, and token usage"))
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                usageAccountIdentityRow(
+                    title: model.codexCurrentAccount?.displayName ?? model.text("未找到 Codex 登录", "No Codex login found"),
+                    detail: codexAccountPlanDetail,
+                    isActive: model.codexCurrentAccount != nil,
+                    badge: currentAccount == nil ? nil : model.text("默认", "Default")
+                )
+
+                HStack(alignment: .center, spacing: 8) {
+                    connectionActionButton(
+                        model.text("添加账号", "Add"),
+                        systemImage: "person.crop.circle.badge.plus",
+                        width: 92,
+                        disabled: model.isCodexAccountActionRunning,
+                        action: { model.addCodexAccount() }
+                    )
+
+                    if shouldShowSaveCurrent {
+                        connectionActionButton(
+                            model.text("保存当前", "Save Current"),
+                            systemImage: "tray.and.arrow.down",
+                            width: 96,
+                            disabled: model.isCodexAccountActionRunning,
+                            action: { model.saveCurrentCodexAccount() }
+                        )
+                    }
+
+                    codexAccountSwitchMenu
+                    codexAccountMoreMenu(activeSavedAccount: activeSavedAccount)
+
+                    Spacer(minLength: 0)
+                }
+
+                codexProviderDetailsDisclosure
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            if let message = model.codexAccountMessage {
+                Text(message)
+                    .font(settingsDetailFont)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onAppear {
+            model.refreshCodexProviderDetails()
+        }
+    }
+
+    private var codexAccountSwitchMenu: some View {
+        Menu {
+            if model.codexSavedAccounts.isEmpty {
+                Text(model.text("暂无保存账户", "No saved accounts"))
+            } else {
+                ForEach(model.codexSavedAccounts) { account in
+                    Button {
+                        model.switchCodexAccount(account)
+                    } label: {
+                        Label(
+                            account.displayName,
+                            systemImage: model.isActiveCodexAccount(account) ? "checkmark.circle.fill" : "person"
+                        )
+                    }
+                    .disabled(model.isActiveCodexAccount(account) || model.isCodexAccountActionRunning)
+                }
+            }
+        } label: {
+            settingsTextMenuSurface(model.text("切换", "Switch"), width: 72)
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(model.codexSavedAccounts.isEmpty || model.isCodexAccountActionRunning)
+        .help(model.text("切换保存的 Codex 账户", "Switch saved Codex account"))
+    }
+
+    private func codexAccountMoreMenu(activeSavedAccount: CodexAccountProfile?) -> some View {
+        Menu {
+            Button {
+                model.addCodexAccount()
+            } label: {
+                Label(model.text("重新认证", "Reauthenticate"), systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(model.codexCurrentAccount == nil || model.isCodexAccountActionRunning)
+
+            if let activeSavedAccount {
+                Divider()
+
+                Button(role: .destructive) {
+                    model.removeCodexAccount(activeSavedAccount)
+                } label: {
+                    Label(model.text("删除保存账户", "Remove saved account"), systemImage: "trash")
+                }
+                .disabled(model.isCodexAccountActionRunning)
+            }
+        } label: {
+            settingsIconActionSurface(systemImage: "ellipsis")
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(model.isCodexAccountActionRunning)
+        .help(model.text("更多账户操作", "More account actions"))
+    }
+
+    private func codexAccountBadge(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.secondary.opacity(0.12), in: Capsule())
+            .lineLimit(1)
+    }
+
+    private func usageAccountIdentityRow(
+        title: String,
+        detail: String?,
+        isActive: Bool,
+        badge: String?
+    ) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: isActive ? "person.crop.circle.fill" : "person.crop.circle.badge.questionmark")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Text(title)
+                        .font(usageAccountStatusTitleFont)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .minimumScaleFactor(0.82)
+                        .frame(height: 17, alignment: .leading)
+
+                    if let badge {
+                        codexAccountBadge(badge)
+                    }
+                }
+
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(settingsDetailFont)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: 10)
+        }
+    }
+
+    private var codexProviderSubtitle: String {
+        "\(codexProviderVersionText) · \(codexProviderUpdatedText)"
+    }
+
+    private var codexProviderEnabledText: String {
+        model.isCodexDesktopMonitoringEnabled
+            ? model.text("已启用", "Enabled")
+            : model.text("已停用", "Disabled")
+    }
+
+    private var codexProviderVersionText: String {
+        model.codexCLIVersionText ?? "codex-cli --"
+    }
+
+    private var codexProviderUpdatedText: String {
+        guard let checkedAt = model.codexProviderDetailsCheckedAt else {
+            return model.text("等待刷新", "Waiting to refresh")
+        }
+        return "\(model.text("更新于", "Updated")) \(checkedAt.formatted(date: .omitted, time: .shortened))"
+    }
+
+    private var codexProviderAccountText: String {
+        model.codexProviderAccountEmail ?? model.codexCurrentAccount?.displayName ?? "--"
+    }
+
+    private var codexProviderPlanText: String {
+        model.codexProviderPlanName ?? "--"
+    }
+
+    private var codexAccountPlanDetail: String? {
+        guard let planName = model.codexProviderPlanName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !planName.isEmpty,
+              planName != "--"
+        else {
+            return nil
+        }
+        return planName
+    }
+
+    private var codexProviderServiceStatusText: String {
+        model.codexProviderServiceStatusText ?? model.text("未知", "Unknown")
+    }
+
+    private var codexResolvedUsageSourceText: String {
+        switch model.codexUsageDataSource {
+        case .automatic:
+            switch model.codexCurrentAccount?.credentialKind {
+            case .oauth:
+                return "oauth"
+            case .apiKey:
+                return "api-key"
+            case .unknown:
+                return "unknown"
+            case nil:
+                return "auto"
+            }
+        case .oauthAPI:
+            return "oauth"
+        case .cliRPCPTY:
+            return "cli"
+        }
+    }
+
+    private func codexUsageDataSourceName(_ source: CodexUsageDataSource) -> String {
+        switch source {
+        case .automatic:
+            return model.text("自动", "Auto")
+        case .oauthAPI:
+            return "OAuth API"
+        case .cliRPCPTY:
+            return "CLI (RPC/PTY)"
+        }
+    }
+
+    private func codexOpenAICookieModeName(_ mode: CodexOpenAICookieMode) -> String {
+        switch mode {
+        case .automatic:
+            return model.text("自动", "Auto")
+        case .manual:
+            return model.text("手动", "Manual")
+        case .off:
+            return model.text("关闭", "Off")
+        }
+    }
+
+    private func codexDetailRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .font(settingsDetailStrongFont)
+                .foregroundStyle(.secondary)
+                .frame(width: 92, alignment: .leading)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+
+            Text(value)
+                .font(settingsDetailStrongFont)
+                .foregroundStyle(.primary.opacity(0.82))
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var claudeAccountStatusCard: some View {
+        let sessions = claudeUsageSessions
+        let isActive = model.isClaudeDesktopMonitoringEnabled || !sessions.isEmpty
+        let latestSession = sessions.max { lhs, rhs in lhs.updatedAt < rhs.updatedAt }
+        let title = if !sessions.isEmpty {
+            model.text("Claude 已检测到", "Claude detected")
+        } else if model.isClaudeDesktopMonitoringEnabled {
+            model.text("Claude 监控已开启", "Claude monitoring enabled")
+        } else {
+            model.text("Claude 未连接", "Claude not connected")
+        }
+        let detail = latestSession
+            .map { activityUpdatedText($0.updatedAt) }
+            ?? model.text(
+                "启用 Claude Desktop 或 Claude Code Hook 后显示活动。",
+                "Enable Claude Desktop or Claude Code hooks to show activity."
+            )
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text(model.text("账户", "Account"))
+                    .font(settingsSubsectionTitleFont)
+
+                if !sessions.isEmpty {
+                    Text("\(sessions.count) \(model.text("个会话", "sessions"))")
+                        .font(settingsDetailFont)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 12)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                usageAccountIdentityRow(
+                    title: title,
+                    detail: detail,
+                    isActive: isActive,
+                    badge: nil
+                )
+
+                HStack(spacing: 8) {
+                    connectionActionButton(
+                        model.text("连接", "Connect"),
+                        systemImage: "link",
+                        width: 78,
+                        action: {
+                            closeSettingsDropdown()
+                            selectedSettingsTab = .connections
+                        }
+                    )
+
+                    Spacer(minLength: 0)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .padding(10)
+        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func quotaWindowTiles(for quota: AgentQuotaStatus) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            ForEach(uniqueQuotaBadgeWindows(for: quota), id: \.self) { badgeWindow in
+                quotaWindowTile(badgeWindow, quota: quota)
+            }
+        }
+    }
+
+    private func uniqueQuotaBadgeWindows(for quota: AgentQuotaStatus) -> [FloatingSignalQuotaBadgeWindow] {
+        var result: [FloatingSignalQuotaBadgeWindow] = []
+        var seen: [AgentQuotaWindowStatus] = []
+
+        for badgeWindow in FloatingSignalQuotaBadgeWindow.allCases {
+            guard let window = model.quotaWindow(for: badgeWindow, quota: quota) else { continue }
+            guard !seen.contains(where: { quotaWindow($0, matches: window) }) else { continue }
+            result.append(badgeWindow)
+            seen.append(window)
+        }
+
+        return result.isEmpty ? [.fiveHours] : result
+    }
+
+    private func quotaWindow(_ lhs: AgentQuotaWindowStatus, matches rhs: AgentQuotaWindowStatus) -> Bool {
+        lhs.windowMinutes == rhs.windowMinutes
+            && abs(lhs.remainingPercent - rhs.remainingPercent) < 0.001
+            && abs(lhs.usedPercent - rhs.usedPercent) < 0.001
+            && lhs.resetsAt == rhs.resetsAt
+    }
+
+    private var claudeUsageSessions: [SessionStatus] {
+        model.activitySnapshot.sessions.filter { UsagePlatform.claude.matches(session: $0) }
     }
 
     private func quotaWindowTile(_ badgeWindow: FloatingSignalQuotaBadgeWindow, quota: AgentQuotaStatus) -> some View {
@@ -840,7 +1758,7 @@ struct DebugWindowView: View {
     }
 
     private var usageTokenSummaryCard: some View {
-        let chartDays = tokenActivityChartDays
+        let chartDays = selectedUsageTokenActivityChartDays
         let peakTokens = chartDays.map(\.totalTokens).max() ?? 0
 
         return VStack(alignment: .leading, spacing: 10) {
@@ -853,58 +1771,88 @@ struct DebugWindowView: View {
                 if model.isTokenActivityLoading {
                     ProgressView()
                         .controlSize(.small)
-                        .scaleEffect(0.65)
+                        .scaleEffect(0.72)
                 }
-
-                Button {
-                    model.refreshTokenActivityIfNeeded(force: true)
-                } label: {
-                    settingsIconActionSurface(systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.plain)
-                .disabled(model.isTokenActivityLoading)
-                .help(model.text("重新扫描本地 Codex 日志中的 Token 使用量", "Rescan token usage from local Codex logs"))
             }
 
-            VStack(alignment: .leading, spacing: 10) {
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(minimum: 120), alignment: .leading),
-                        GridItem(.flexible(minimum: 120), alignment: .leading),
-                    ],
-                    alignment: .leading,
-                    spacing: 8
-                ) {
-                    tokenUsageDashboardMetric(
-                        title: model.text("今日", "Today"),
-                        value: tokenActivityCurrencyText(tokenActivityTodayEstimatedCostUSD)
-                    )
+            if selectedUsagePlatform.supportsTokenActivity {
+                VStack(alignment: .leading, spacing: 10) {
+                    LazyVGrid(
+                        columns: [
+                            GridItem(.flexible(minimum: 120), alignment: .leading),
+                            GridItem(.flexible(minimum: 120), alignment: .leading),
+                        ],
+                        alignment: .leading,
+                        spacing: 8
+                    ) {
+                        tokenUsageDashboardMetric(
+                            title: model.text("今日", "Today"),
+                            value: tokenActivityCurrencyText(selectedTokenActivityTodayEstimatedCostUSD)
+                        )
 
-                    tokenUsageDashboardMetric(
-                        title: model.text("近 30 天费用", "Last 30 days cost"),
-                        value: tokenActivityCurrencyText(tokenActivityLast30EstimatedCostUSD)
-                    )
+                        tokenUsageDashboardMetric(
+                            title: model.text("近 30 天费用", "Last 30 days cost"),
+                            value: tokenActivityCurrencyText(selectedTokenActivityLast30EstimatedCostUSD)
+                        )
 
-                    tokenUsageDashboardMetric(
-                        title: model.text("今日 token 用量", "Today token usage"),
-                        value: "\(model.compactTokenCountText(tokenActivityTodayTokens)) token"
-                    )
+                        tokenUsageDashboardMetric(
+                            title: model.text("今日 token 用量", "Today token usage"),
+                            value: "\(model.compactTokenCountText(selectedTokenActivityTodayTokens)) token"
+                        )
 
-                    tokenUsageDashboardMetric(
-                        title: model.text("近 30 天 token 用量", "Last 30 days token usage"),
-                        value: "\(model.compactTokenCountText(tokenActivityLast30DaysTokens)) token"
-                    )
+                        tokenUsageDashboardMetric(
+                            title: model.text("近 30 天 token 用量", "Last 30 days token usage"),
+                            value: "\(model.compactTokenCountText(selectedTokenActivityLast30DaysTokens)) token"
+                        )
+                    }
+
+                    tokenUsageBarChart(days: chartDays, peakTokens: peakTokens)
                 }
-
-                tokenUsageBarChart(days: chartDays, peakTokens: peakTokens)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            } else {
+                usageUnavailableRow(
+                    icon: "number",
+                    title: model.text("暂无 Claude Token 数据", "No Claude token data"),
+                    subtitle: model.text(
+                        "当前版本还没有接入 Claude 本地 Token 用量扫描。",
+                        "Claude local token usage scanning is not connected in this version."
+                    )
+                )
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10)
-            .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
         }
         .padding(10)
         .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var selectedUsageTokenActivityChartDays: [CodexTokenActivityDay] {
+        switch selectedUsagePlatform {
+        case .codex:
+            return tokenActivityChartDays
+        case .claude:
+            return emptyTokenActivityChartDays
+        }
+    }
+
+    private var selectedTokenActivityTodayEstimatedCostUSD: Double? {
+        guard selectedUsagePlatform == .codex else { return nil }
+        return tokenActivityTodayEstimatedCostUSD
+    }
+
+    private var selectedTokenActivityLast30EstimatedCostUSD: Double? {
+        guard selectedUsagePlatform == .codex else { return nil }
+        return tokenActivityLast30EstimatedCostUSD
+    }
+
+    private var selectedTokenActivityTodayTokens: Int {
+        guard selectedUsagePlatform == .codex else { return 0 }
+        return tokenActivityTodayTokens
+    }
+
+    private var selectedTokenActivityLast30DaysTokens: Int {
+        guard selectedUsagePlatform == .codex else { return 0 }
+        return tokenActivityLast30DaysTokens
     }
 
     private func tokenUsageDashboardMetric(title: String, value: String) -> some View {
@@ -1385,6 +2333,19 @@ struct DebugWindowView: View {
         }
     }
 
+    private var emptyTokenActivityChartDays: [CodexTokenActivityDay] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let startDay = calendar.date(byAdding: .day, value: -29, to: today) ?? today
+
+        return (0..<30).compactMap { offset in
+            guard let day = calendar.date(byAdding: .day, value: offset, to: startDay) else {
+                return nil
+            }
+            return CodexTokenActivityDay(day: day, totalTokens: 0)
+        }
+    }
+
     private var tokenActivityActiveDayCount: Int {
         tokenActivityChartDays.filter { $0.totalTokens > 0 }.count
     }
@@ -1441,7 +2402,10 @@ struct DebugWindowView: View {
         let today = calendar.startOfDay(for: Date())
         let startDay = calendar.date(byAdding: .day, value: -29, to: today) ?? today
         return model.tokenActivityDays
-            .filter { $0.day >= startDay && $0.day <= today }
+            .filter {
+                let day = calendar.startOfDay(for: $0.day)
+                return day >= startDay && day <= today
+            }
             .map(\.totalTokens)
             .reduce(0, +)
     }
@@ -1472,91 +2436,6 @@ struct DebugWindowView: View {
         .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
-    private var usageToolStatsCard: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
-                Text(model.text("工具调用", "Tool Calls"))
-                    .font(settingsSubsectionTitleFont)
-
-                Spacer(minLength: 12)
-
-                if model.isToolActivityLoading && model.toolActivitySummary.isEmpty {
-                    ProgressView()
-                        .scaleEffect(0.55)
-                        .frame(width: 18, height: 18)
-                } else {
-                    Text("\(model.toolActivitySummary.totalCalls)")
-                        .font(settingsDetailStrongFont)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-
-            if model.toolActivitySummary.topTools.isEmpty {
-                emptyActivityRow(
-                    icon: "hammer",
-                    title: model.text("暂无工具调用", "No tool calls yet")
-                )
-            } else {
-                VStack(alignment: .leading, spacing: 7) {
-                    ForEach(model.toolActivitySummary.topTools) { item in
-                        usageToolRow(name: item.name, count: item.count)
-                    }
-                }
-            }
-        }
-        .padding(10)
-        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private func usageToolRow(name: String, count: Int) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: usageToolIcon(for: name))
-                .font(settingsTinyIconFont)
-                .foregroundStyle(.secondary)
-                .frame(width: 15)
-
-            Text(usageDisplayName(for: name))
-                .font(settingsBodyStrongFont)
-                .lineLimit(1)
-                .truncationMode(.tail)
-
-            Spacer(minLength: 10)
-
-            Text("\(count)")
-                .font(settingsDetailStrongFont)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func usageDisplayName(for toolName: String) -> String {
-        switch toolName {
-        case "apply_patch":
-            return model.text("修改文件", "Edit files")
-        case "exec_command":
-            return model.text("终端命令", "Terminal command")
-        case "request_user_input":
-            return model.text("请求输入", "Request input")
-        default:
-            return toolName
-        }
-    }
-
-    private func usageToolIcon(for toolName: String) -> String {
-        switch toolName {
-        case "apply_patch":
-            return "doc.badge.gearshape"
-        case "exec_command":
-            return "terminal"
-        case "request_user_input":
-            return "questionmark.circle"
-        default:
-            return "hammer"
-        }
-    }
-
     private var activitySessions: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(model.text("当前会话", "Active Sessions"))
@@ -1584,6 +2463,7 @@ struct DebugWindowView: View {
             from: model.activitySnapshot,
             limit: ActivityPresentation.currentSessionLimit
         )
+        .filter(isVisibleActivitySession)
     }
 
     private var activityEvents: some View {
@@ -1630,6 +2510,15 @@ struct DebugWindowView: View {
             from: model.activitySnapshot,
             excluding: visibleActivitySessions
         )
+        .filter(isVisibleActivityEvent)
+    }
+
+    private func isVisibleActivitySession(_ session: SessionStatus) -> Bool {
+        visibleSignalLightAgentScopes.contains { $0.matches(session: session) }
+    }
+
+    private func isVisibleActivityEvent(_ event: RecentSignalEvent) -> Bool {
+        visibleSignalLightAgentScopes.contains { $0.matches(event: event) }
     }
 
     private var signalVisibilitySettings: some View {
@@ -1825,6 +2714,14 @@ struct DebugWindowView: View {
             Text(model.text("高级设置", "Advanced Settings"))
                 .font(settingsSectionTitleFont)
 
+            debugVisibilitySettings
+
+            Divider()
+
+            cliInstallSettings
+
+            Divider()
+
             statusBarSettings
 
             Divider()
@@ -1834,6 +2731,260 @@ struct DebugWindowView: View {
             Divider()
 
             manualSignalSettings
+        }
+    }
+
+    private var cliInstallSettings: some View {
+        settingsSection(model.text("命令行工具", "Command Line Tool")) {
+            VStack(alignment: .leading, spacing: 8) {
+                connectionActionButton(
+                    model.text("安装 CLI", "Install CLI"),
+                    systemImage: "terminal",
+                    width: 92,
+                    disabled: model.isCLIInstallRunning,
+                    action: { model.installBundledCLI() }
+                )
+
+                Text(model.text(
+                    "将 agent-signal-light 命令安装到 /opt/homebrew/bin 或 /usr/local/bin。",
+                    "Installs the agent-signal-light command into /opt/homebrew/bin or /usr/local/bin."
+                ))
+                .font(settingsDetailFont)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                if let message = model.cliInstallMessage {
+                    Text(message)
+                        .font(settingsDetailFont)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private var debugVisibilitySettings: some View {
+        settingsSection(model.text("调试", "Debug")) {
+            settingRow(model.text("显示调试设置", "Show debug settings")) {
+                settingsSwitch(debugSettingsVisibleBinding)
+                    .help(model.text(
+                        "打开后会在顶部菜单中显示调试页面。",
+                        "Shows a Debug page in the top settings menu."
+                    ))
+            }
+        }
+    }
+
+    private var debugSettings: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(model.text("调试", "Debug"))
+                .font(settingsSectionTitleFont)
+
+            debugLoggingSection
+
+            Divider()
+
+            debugLightSection
+
+            Divider()
+
+            debugProbeLogSection
+
+            Divider()
+
+            debugFetchStrategySection
+
+            Divider()
+
+            debugOpenAICookieSection
+
+            Divider()
+
+            debugCacheSection
+        }
+    }
+
+    private var debugLoggingSection: some View {
+        settingsSection(model.text("日志", "Logs")) {
+            VStack(alignment: .leading, spacing: 12) {
+                settingRow(model.text("启用文件日志", "Enable file logging")) {
+                    settingsSwitch(debugFileLoggingEnabledBinding)
+                }
+
+                Text(model.text(
+                    "将日志写入 \(compactPath(model.debugLogFileURL.path)) 以进行调试。",
+                    "Writes logs to \(compactPath(model.debugLogFileURL.path)) for debugging."
+                ))
+                .font(settingsDetailFont)
+                .foregroundStyle(.secondary)
+
+                settingRow(model.text("详细程度", "Verbosity")) {
+                    compactSegmentedControl(
+                        options: DebugLogLevel.allCases,
+                        selection: debugLogLevelBinding
+                    ) { level in
+                        level.displayName
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    diagnosticActionButton(model.text("打开日志文件", "Open Log File"), systemImage: "doc.text.magnifyingglass") {
+                        model.openDebugLogFile()
+                    }
+
+                    diagnosticActionButton(model.text("复制", "Copy"), systemImage: "doc.on.doc") {
+                        model.copyDebugLog()
+                    }
+                }
+            }
+        }
+    }
+
+    private var debugLightSection: some View {
+        settingsSection(model.text("灯光调试", "Light Debug")) {
+            VStack(alignment: .leading, spacing: 12) {
+                settingRow(model.text("启用灯光调试", "Enable light debug")) {
+                    settingsSwitch(lightDebugEnabledBinding)
+                }
+
+                Text(model.text(
+                    "临时触发状态栏和悬浮信号灯，方便检查红、黄、绿灯效。",
+                    "Temporarily trigger the status bar and floating signal to inspect red, yellow, and green light effects."
+                ))
+                .font(settingsDetailFont)
+                .foregroundStyle(.secondary)
+
+                HStack(spacing: 16) {
+                    debugLightTargetToggle(
+                        title: model.text("状态栏", "Status Bar"),
+                        isOn: statusBarLightDebugTargetBinding
+                    )
+
+                    debugLightTargetToggle(
+                        title: model.text("悬浮红绿灯", "Floating Light"),
+                        isOn: floatingLightDebugTargetBinding
+                    )
+                }
+                .disabled(!isLightDebugEnabled)
+                .opacity(isLightDebugEnabled ? 1 : 0.48)
+
+                debugLightButtonGrid {
+                    debugLightTestButton(.activeEffect(.greenBreathing), title: model.text("绿灯呼吸", "Green breathe"), systemImage: "waveform.path")
+                    debugLightTestButton(.activeEffect(.greenSteady), title: model.text("绿灯常亮", "Green steady"), systemImage: "circle.fill")
+                    debugLightTestButton(.activeEffect(.greenSlowFlash), title: model.text("绿灯慢闪", "Green slow"), systemImage: "slowmo")
+                    debugLightTestButton(.activeEffect(.greenFastFlash), title: model.text("绿灯快闪", "Green fast"), systemImage: "bolt.fill")
+                    debugLightTestButton(.signal(.permission), title: model.text("红灯慢闪", "Red slow"), systemImage: "circle.dotted")
+                    debugLightTestButton(.signal(.blocked), title: model.text("红灯快闪", "Red fast"), systemImage: "circle.dotted")
+                    debugLightTestButton(.completedEffect(.greenPulse), title: model.text("绿灯脉冲", "Green pulse"), systemImage: "circle.dotted")
+                    debugLightTestButton(.completedEffect(.yellowPulse), title: model.text("黄灯慢闪", "Yellow slow"), systemImage: "circle.dotted")
+                    debugLightTestButton(.completedEffect(.yellowSteady), title: model.text("黄灯常亮", "Yellow steady"), systemImage: "circle.fill")
+                    debugLightTestButton(.activeEffect(.trafficCycle), title: model.text("红黄绿依次亮灯", "R/Y/G sequence"), systemImage: "circle.grid.3x1.fill")
+                    debugLightTestButton(.completedEffect(.allSteady), title: model.text("三灯全亮", "All steady"), systemImage: "circle.grid.3x1.fill")
+                    debugLightTestButton(.completedEffect(.allPulse), title: model.text("三灯同步闪", "All flash"), systemImage: "lightspectrum.horizontal")
+                }
+                .disabled(!canApplyLightDebugTest)
+                .opacity(isLightDebugEnabled ? 1 : 0.48)
+            }
+        }
+    }
+
+    private var debugProbeLogSection: some View {
+        settingsSection(model.text("探测日志", "Probe Logs")) {
+            VStack(alignment: .leading, spacing: 12) {
+                compactSegmentedControl(
+                    options: DebugProvider.allCases,
+                    selection: debugProviderBinding
+                ) { provider in
+                    provider.rawValue
+                }
+
+                HStack(spacing: 8) {
+                    diagnosticActionButton(model.text("获取日志", "Fetch Log"), systemImage: "arrow.clockwise") {
+                        debugProbeLogText = model.debugProbeLog(provider: selectedDebugProvider.rawValue)
+                    }
+
+                    diagnosticActionButton(
+                        model.text("复制", "Copy"),
+                        systemImage: "doc.on.doc",
+                        disabled: debugProbeLogText.isEmpty
+                    ) {
+                        model.copyDebugText(debugProbeLogText)
+                    }
+
+                    diagnosticActionButton(model.text("重新运行检测", "Rerun Detection"), systemImage: "dot.radiowaves.left.and.right") {
+                        model.refreshCodexProviderDetails(force: true)
+                        model.refreshCodexAccounts()
+                        debugProbeLogText = model.debugProbeLog(provider: selectedDebugProvider.rawValue)
+                    }
+                }
+
+                debugTextBox(debugProbeLogText.isEmpty ? model.text("尚无日志。获取后加载。", "No log yet. Fetch to load.") : debugProbeLogText, minHeight: 150)
+            }
+        }
+    }
+
+    private var debugFetchStrategySection: some View {
+        settingsSection(model.text("获取策略调试", "Fetch Strategy Debug")) {
+            VStack(alignment: .leading, spacing: 12) {
+                settingRow(model.text("提供商", "Provider")) {
+                    compactSegmentedControl(
+                        options: DebugProvider.allCases,
+                        selection: debugFetchProviderBinding
+                    ) { provider in
+                        provider.rawValue
+                    }
+                }
+
+                debugTextBox(model.debugFetchStrategyLog(provider: selectedDebugFetchProvider.rawValue), minHeight: 120)
+            }
+        }
+    }
+
+    private var debugOpenAICookieSection: some View {
+        settingsSection("OpenAI Cookie") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(model.text(
+                    "上次 OpenAI Cookie 尝试中的 Cookie 导入和 WebKit 抓取日志。",
+                    "Cookie import and WebKit capture logs from the last OpenAI Cookie attempt."
+                ))
+                .font(settingsDetailFont)
+                .foregroundStyle(.secondary)
+
+                diagnosticActionButton(model.text("复制", "Copy"), systemImage: "doc.on.doc") {
+                    model.copyDebugText(model.debugOpenAICookieLog())
+                }
+
+                debugTextBox(model.debugOpenAICookieLog(), minHeight: 120)
+            }
+        }
+    }
+
+    private var debugCacheSection: some View {
+        settingsSection(model.text("缓存", "Caches")) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(model.text(
+                    "清除缓存的费用扫描结果或浏览器 Cookie 缓存。",
+                    "Clear cached cost scan results or browser cookie cache."
+                ))
+                .font(settingsDetailFont)
+                .foregroundStyle(.secondary)
+
+                HStack(spacing: 8) {
+                    diagnosticActionButton(model.text("清除费用缓存", "Clear Usage Cache"), systemImage: "trash") {
+                        model.clearDebugUsageCache()
+                    }
+
+                    diagnosticActionButton(model.text("清除 Cookie 缓存", "Clear Cookie Cache"), systemImage: "trash") {
+                        model.clearDebugCookieCache()
+                    }
+                }
+
+                if let message = model.debugCacheMessage {
+                    Text(message)
+                        .font(settingsDetailFont)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
@@ -1892,22 +3043,6 @@ struct DebugWindowView: View {
         settingsSection(model.text("连接", "Connections")) {
             VStack(alignment: .leading, spacing: 14) {
                 automaticConnectionSettings
-
-                Divider()
-
-                connectionItem(
-                    title: model.text("其他 Agent", "Other agents"),
-                    subtitle: model.text("本地脚本、通用 JSON 事件", "Local scripts, generic JSON events"),
-                    systemImage: "point.3.connected.trianglepath.dotted"
-                ) {
-                    connectionActionButton(
-                        model.text("复制接入命令", "Copy command"),
-                        systemImage: "doc.on.doc",
-                        width: connectionActionButtonWidth
-                    ) {
-                        model.copyGenericAgentHookCommand()
-                    }
-                }
 
                 Divider()
 
@@ -2175,9 +3310,7 @@ struct DebugWindowView: View {
 
     private func closeSettingsDropdown() {
         guard expandedSettingsDropdown != nil else { return }
-        withAnimation(.easeInOut(duration: 0.12)) {
-            expandedSettingsDropdown = nil
-        }
+        expandedSettingsDropdown = nil
     }
 
     private func inlineDropdown<Options: View>(
@@ -2196,9 +3329,7 @@ struct DebugWindowView: View {
         let transitionEdge: Edge = opensUpward ? .bottom : .top
 
         return Button {
-            withAnimation(.easeInOut(duration: 0.12)) {
-                expandedSettingsDropdown = isExpanded ? nil : id
-            }
+            expandedSettingsDropdown = isExpanded ? nil : id
         } label: {
             dropdownSurface(
                 title,
@@ -2313,9 +3444,7 @@ struct DebugWindowView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.12)) {
-                expandedSettingsDropdown = nil
-            }
+            expandedSettingsDropdown = nil
             action()
         } label: {
             HStack(spacing: 7) {
@@ -2401,6 +3530,126 @@ struct DebugWindowView: View {
         .disabled(disabled)
     }
 
+    private func debugLightButtonGroup<Content: View>(
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(settingsDetailStrongFont)
+                .foregroundStyle(.secondary)
+
+            content()
+        }
+        .disabled(!canApplyLightDebugTest)
+        .opacity(isLightDebugEnabled ? 1 : 0.48)
+    }
+
+    private func debugLightButtonGrid<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.fixed(diagnosticActionButtonWidth), spacing: 8), count: 3),
+            alignment: .leading,
+            spacing: 8,
+            content: content
+        )
+    }
+
+    private func debugLightTestButton(_ test: LightDebugTest, title: String, systemImage: String) -> some View {
+        let isSelected = selectedLightDebugTest == test
+
+        return Button {
+            selectedLightDebugTest = test
+            applyLightDebugTest(test)
+        } label: {
+            Text(title)
+                .lineLimit(1)
+                .allowsTightening(true)
+                .minimumScaleFactor(0.72)
+            .font(settingsControlFont)
+            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .padding(.horizontal, 10)
+            .frame(width: diagnosticActionButtonWidth, height: dropdownControlHeight)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isSelected ? Color.accentColor : (model.isSettingsGlassEnabled ? glassControlTint : solidControlFill))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(isSelected ? Color.accentColor.opacity(0.7) : solidControlStroke, lineWidth: 0.5)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func debugLightSystemImage(for effect: ActiveSignalEffect) -> String {
+        switch effect {
+        case .greenBreathing:
+            return "waveform.path"
+        case .greenSteady:
+            return "circle.fill"
+        case .greenSlowFlash:
+            return "slowmo"
+        case .greenFastFlash:
+            return "bolt.fill"
+        case .trafficCycle:
+            return "circle.grid.3x1.fill"
+        }
+    }
+
+    private func debugLightSystemImage(for effect: CompletedSignalEffect) -> String {
+        switch effect {
+        case .greenPulse:
+            return "circle.dotted"
+        case .greenSteady:
+            return "circle.fill"
+        case .yellowPulse:
+            return "circle.dotted"
+        case .yellowSteady:
+            return "circle.fill"
+        case .allSteady:
+            return "circle.grid.3x1.fill"
+        case .allPulse:
+            return "lightspectrum.horizontal"
+        }
+    }
+
+    private func debugLightTargetToggle(title: String, isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) {
+            Text(title)
+                .font(settingsBodyStrongFont)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+        }
+        .toggleStyle(.checkbox)
+    }
+
+    private func applyLightDebugTest(_ test: LightDebugTest) {
+        guard canApplyLightDebugTest else { return }
+
+        switch test {
+        case .signal(let signal):
+            model.setDebugLight(signal: signal, targets: selectedLightDebugTargets)
+        case .activeEffect(let effect):
+            var customization = model.signalEffectCustomization
+            customization.thinkingEffect = effect
+            customization.activeEffect = effect
+            model.previewDebugLight(
+                signal: .working,
+                effectCustomization: customization,
+                targets: selectedLightDebugTargets
+            )
+        case .completedEffect(let effect):
+            var customization = model.signalEffectCustomization
+            customization.completedEffect = effect
+            model.previewDebugLight(
+                signal: .done,
+                effectCustomization: customization,
+                targets: selectedLightDebugTargets
+            )
+        }
+    }
+
     private func connectionActionButton(
         _ title: String,
         systemImage: String,
@@ -2453,13 +3702,15 @@ struct DebugWindowView: View {
 
     private func settingsActionSurface(
         _ title: String,
-        systemImage: String,
+        systemImage: String?,
         width: CGFloat? = nil
     ) -> some View {
         HStack(spacing: 7) {
-            Image(systemName: systemImage)
-                .font(settingsIconFont)
-                .frame(width: 16)
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(settingsIconFont)
+                    .frame(width: 16)
+            }
 
             Text(title)
                 .lineLimit(1)
@@ -2493,6 +3744,27 @@ struct DebugWindowView: View {
                     .stroke(solidControlStroke, lineWidth: 0.5)
             )
             .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    private func settingsTextMenuSurface(_ title: String, width: CGFloat? = nil) -> some View {
+        HStack(spacing: 5) {
+            Text(title)
+                .lineLimit(1)
+                .allowsTightening(true)
+                .minimumScaleFactor(0.72)
+        }
+        .font(settingsControlFont)
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 10)
+        .frame(width: width ?? settingsActionButtonWidth, height: dropdownControlHeight)
+        .background(
+            glassControlBackground(cornerRadius: 7)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(solidControlStroke, lineWidth: 0.5)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     private func soundPreviewButton(disabled: Bool, action: @escaping () -> Void) -> some View {
@@ -2816,6 +4088,46 @@ struct DebugWindowView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func usageUnavailableRow(icon: String, title: String, subtitle: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: icon)
+                .font(settingsTinyIconFont)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(settingsBodyStrongFont)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+
+                Text(subtitle)
+                    .font(settingsDetailFont)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func debugTextBox(_ text: String, minHeight: CGFloat) -> some View {
+        ScrollView {
+            Text(text)
+                .font(.system(size: 11.5, weight: .regular, design: .monospaced))
+                .foregroundStyle(.primary.opacity(0.9))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+        }
+        .frame(minHeight: minHeight, maxHeight: minHeight + 80)
+        .background(Color.black.opacity(colorScheme == .dark ? 0.24 : 0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     private func activityUpdatedText(_ updatedAt: Date?) -> String {
@@ -3159,6 +4471,125 @@ struct DebugWindowView: View {
             get: { model.isSettingsGlassEnabled },
             set: { model.setSettingsGlassEnabled($0) }
         )
+    }
+
+    private var debugSettingsVisibleBinding: Binding<Bool> {
+        Binding(
+            get: { model.isDebugSettingsVisible },
+            set: { model.setDebugSettingsVisible($0) }
+        )
+    }
+
+    private var debugFileLoggingEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { model.isDebugFileLoggingEnabled },
+            set: { model.setDebugFileLoggingEnabled($0) }
+        )
+    }
+
+    private var debugLogLevelBinding: Binding<DebugLogLevel> {
+        Binding(
+            get: { model.debugLogLevel },
+            set: { model.setDebugLogLevel($0) }
+        )
+    }
+
+    private var debugProviderBinding: Binding<DebugProvider> {
+        Binding(
+            get: { selectedDebugProvider },
+            set: {
+                selectedDebugProvider = $0
+                debugProbeLogText = ""
+            }
+        )
+    }
+
+    private var debugFetchProviderBinding: Binding<DebugProvider> {
+        Binding(
+            get: { selectedDebugFetchProvider },
+            set: { selectedDebugFetchProvider = $0 }
+        )
+    }
+
+    private var isLightDebugEnabled: Bool {
+        model.isLightDebugModeEnabled
+    }
+
+    private var lightDebugEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { model.isLightDebugModeEnabled },
+            set: { enabled in
+                if enabled {
+                    if let selectedLightDebugTest {
+                        applyLightDebugTest(selectedLightDebugTest)
+                    } else {
+                        model.setLightDebugModeEnabled(true, targets: selectedLightDebugTargets)
+                    }
+                } else {
+                    selectedLightDebugTest = nil
+                    model.setLightDebugModeEnabled(false, targets: selectedLightDebugTargets)
+                }
+            }
+        )
+    }
+
+    private var statusBarLightDebugTargetBinding: Binding<Bool> {
+        Binding(
+            get: { isStatusBarLightDebugTargetEnabled },
+            set: { enabled in
+                if !enabled && !isFloatingLightDebugTargetEnabled {
+                    isStatusBarLightDebugTargetEnabled = true
+                    return
+                }
+                isStatusBarLightDebugTargetEnabled = enabled
+                reapplySelectedLightDebugTest()
+            }
+        )
+    }
+
+    private var floatingLightDebugTargetBinding: Binding<Bool> {
+        Binding(
+            get: { isFloatingLightDebugTargetEnabled },
+            set: { enabled in
+                if !enabled && !isStatusBarLightDebugTargetEnabled {
+                    isFloatingLightDebugTargetEnabled = true
+                    return
+                }
+                isFloatingLightDebugTargetEnabled = enabled
+                reapplySelectedLightDebugTest()
+            }
+        )
+    }
+
+    private var selectedLightDebugTargets: Set<StatusLightOverrideTarget> {
+        var targets: Set<StatusLightOverrideTarget> = []
+        if isStatusBarLightDebugTargetEnabled {
+            targets.insert(.statusBar)
+        }
+        if isFloatingLightDebugTargetEnabled {
+            targets.insert(.floatingSignal)
+        }
+        return targets
+    }
+
+    private var canApplyLightDebugTest: Bool {
+        isLightDebugEnabled && !selectedLightDebugTargets.isEmpty
+    }
+
+    private func reapplySelectedLightDebugTest() {
+        guard let selectedLightDebugTest else {
+            if model.isLightDebugModeEnabled {
+                model.setLightDebugModeEnabled(true, targets: selectedLightDebugTargets)
+            } else {
+                model.clearDebugLight()
+            }
+            return
+        }
+        guard canApplyLightDebugTest else {
+            model.clearDebugLight()
+            return
+        }
+        applyLightDebugTest(selectedLightDebugTest)
     }
 
     private var settingsGlassEffectBinding: Binding<SettingsGlassEffect> {

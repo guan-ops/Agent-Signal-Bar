@@ -6,6 +6,7 @@ APP_NAME="AgentSignalLight"
 RELEASE_BASENAME="AgentSignalBar"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DMG_PATH="$ROOT_DIR/dist/$RELEASE_BASENAME.dmg"
+DEFAULT_DMG_PATH="$ROOT_DIR/dist/$RELEASE_BASENAME.dmg"
 PROFILE="${AGENT_SIGNAL_LIGHT_NOTARY_PROFILE:-${NOTARYTOOL_PROFILE:-}}"
 
 while [[ $# -gt 0 ]]; do
@@ -56,6 +57,13 @@ EOF
 done
 
 DMG_PATH="$(/usr/bin/python3 - "$DMG_PATH" <<'PY'
+from pathlib import Path
+import sys
+
+print(Path(sys.argv[1]).expanduser().resolve(strict=False))
+PY
+)"
+DEFAULT_DMG_PATH="$(/usr/bin/python3 - "$DEFAULT_DMG_PATH" <<'PY'
 from pathlib import Path
 import sys
 
@@ -114,10 +122,11 @@ print_readiness() {
 
 refresh_release_metadata_after_staple() {
   local manifest="$ROOT_DIR/dist/$RELEASE_BASENAME-release-manifest.json"
+  local appcast="$ROOT_DIR/dist/appcast.xml"
   local checksums="$ROOT_DIR/dist/$RELEASE_BASENAME-SHA256SUMS.txt"
 
   if [[ -f "$manifest" ]]; then
-    /usr/bin/python3 - "$ROOT_DIR" "$manifest" "$DMG_PATH" <<'PY'
+    /usr/bin/python3 - "$ROOT_DIR" "$manifest" "$DMG_PATH" "$appcast" <<'PY'
 import hashlib
 import json
 import sys
@@ -127,6 +136,7 @@ from pathlib import Path
 root = Path(sys.argv[1]).resolve()
 manifest_path = Path(sys.argv[2]).resolve()
 dmg_path = Path(sys.argv[3]).resolve()
+appcast_path = Path(sys.argv[4]).resolve()
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -136,17 +146,27 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 manifest = json.loads(manifest_path.read_text())
-try:
-    relative_dmg = str(dmg_path.relative_to(root))
-except ValueError:
-    relative_dmg = None
 
-for artifact in manifest.get("artifacts", []):
-    if artifact.get("role") == "installer_dmg" or artifact.get("path") == relative_dmg:
-        artifact["bytes"] = dmg_path.stat().st_size
-        artifact["sha256"] = sha256(dmg_path)
-        if relative_dmg:
-            artifact["path"] = relative_dmg
+def relative_path(path: Path):
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return None
+
+def refresh_artifact(role: str, path: Path):
+    if not path.exists():
+        return
+    relative = relative_path(path)
+    for artifact in manifest.get("artifacts", []):
+        if artifact.get("role") != role and artifact.get("path") != relative:
+            continue
+        artifact["bytes"] = path.stat().st_size
+        artifact["sha256"] = sha256(path)
+        if relative:
+            artifact["path"] = relative
+
+refresh_artifact("installer_dmg", dmg_path)
+refresh_artifact("sparkle_appcast", appcast_path)
 
 notarization = manifest.setdefault("notarization", {})
 notarization["status"] = "stapled"
@@ -168,6 +188,7 @@ PY
       for candidate in \
         "dist/$RELEASE_BASENAME.zip" \
         "$dmg_checksum_target" \
+        "dist/appcast.xml" \
         "dist/$RELEASE_BASENAME-release-manifest.json"; do
         if [[ -f "$candidate" ]]; then
           checksum_targets+=("$candidate")
@@ -202,6 +223,11 @@ submit_notarization() {
   xcrun notarytool submit "$DMG_PATH" --keychain-profile "$PROFILE" --wait
   xcrun stapler staple "$DMG_PATH"
   xcrun stapler validate "$DMG_PATH"
+  if [[ "$DMG_PATH" == "$DEFAULT_DMG_PATH" ]]; then
+    "$ROOT_DIR/script/generate_appcast.sh" >/dev/null
+  else
+    echo "Skipping appcast regeneration for non-default DMG path: $DMG_PATH" >&2
+  fi
   refresh_release_metadata_after_staple
   spctl --assess --type open --context context:primary-signature -v "$DMG_PATH"
   echo "Notarized DMG: $DMG_PATH"

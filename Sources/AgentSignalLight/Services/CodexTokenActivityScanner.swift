@@ -4,7 +4,7 @@ import Foundation
 import SQLite3
 #endif
 
-struct CodexTokenActivityDay: Identifiable, Equatable, Sendable {
+struct CodexTokenActivityDay: Codable, Identifiable, Equatable, Sendable {
     let day: Date
     let totalTokens: Int
     let estimatedCostUSD: Double?
@@ -45,19 +45,24 @@ struct CodexTokenActivityDay: Identifiable, Equatable, Sendable {
 final class CodexTokenActivityScanner: @unchecked Sendable {
     private typealias ModelContext = (lineNumber: Int, model: String, turnID: String?)
 
+    static let currentCacheVersion = 23
+
     private static let newlineNeedle = Data([0x0A])
     private static let tokenCountNeedle = Data("token_count".utf8)
     private static let tokenUsageNeedle = Data("token_usage".utf8)
     private static let sessionMetaNeedle = Data("session_meta".utf8)
     private static let turnContextNeedle = Data("turn_context".utf8)
-    private static let cacheVersion = 18
+    private static let cacheVersion = currentCacheVersion
     private static let ripgrepContextFastPathMinimumBytes: Int64 = 1_000_000
+    private static let legacyImportedCostUsageCacheRootName = ["codex", "bar-cost-usage"].joined()
 
     private let sessionRootURLs: [URL]
     private let fileManager: FileManager
     private let calendar: Calendar
     private let readChunkBytes: Int
     private let cacheURL: URL?
+    private let costUsageCacheRoot: URL?
+    private let usesAgentSignalCostUsageScanner: Bool
     private let priorityDatabaseURL: URL?
 
     init(
@@ -77,6 +82,11 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         self.calendar = calendar
         self.readChunkBytes = readChunkBytes
         self.cacheURL = cacheURL ?? Self.defaultCacheURL(fileManager: fileManager)
+        self.usesAgentSignalCostUsageScanner = cacheURL == nil
+        self.costUsageCacheRoot = Self.defaultCostUsageCacheRoot(
+            fileManager: fileManager,
+            cacheURL: cacheURL
+        )
         self.priorityDatabaseURL = priorityDatabaseURL ?? Self.defaultPriorityDatabaseURL(
             fileManager: fileManager,
             environment: environment
@@ -84,6 +94,19 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
     }
 
     func scanDailyActivity(
+        now: Date = Date(),
+        days: Int = 365,
+        progress: (([CodexTokenActivityDay]) -> Void)? = nil
+    ) -> [CodexTokenActivityDay] {
+        guard usesAgentSignalCostUsageScanner else {
+            return legacyScanDailyActivity(now: now, days: days, progress: progress)
+        }
+        let costUsageDays = agentSignalCostUsageDailyActivity(now: now, days: days, forceRefresh: true)
+        progress?(costUsageDays)
+        return costUsageDays
+    }
+
+    func legacyScanDailyActivity(
         now: Date = Date(),
         days: Int = 365,
         progress: (([CodexTokenActivityDay]) -> Void)? = nil
@@ -282,6 +305,17 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         now: Date = Date(),
         days: Int = 365
     ) -> [CodexTokenActivityDay]? {
+        guard usesAgentSignalCostUsageScanner else {
+            return legacyCachedDailyActivity(now: now, days: days)
+        }
+        let activity = agentSignalCachedCostUsageDailyActivity(now: now, days: days)
+        return activity.isEmpty ? nil : activity
+    }
+
+    func legacyCachedDailyActivity(
+        now: Date = Date(),
+        days: Int = 365
+    ) -> [CodexTokenActivityDay]? {
         if let cache = loadCompatibleCache(
             from: cacheURL,
             version: Self.cacheVersion,
@@ -293,6 +327,144 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         }
 
         return nil
+    }
+
+    private func agentSignalCostUsageDailyActivity(
+        now: Date,
+        days: Int,
+        forceRefresh: Bool
+    ) -> [CodexTokenActivityDay] {
+        let range = agentSignalCostUsageDateRange(now: now, days: days)
+        let options = agentSignalCostUsageOptions(forceRefresh: forceRefresh)
+        let codexReport = CostUsageScanner.loadDailyReport(
+            provider: .codex,
+            since: range.since,
+            until: range.until,
+            now: now,
+            options: options
+        )
+
+        var piOptions = PiSessionCostScanner.Options(
+            cacheRoot: options.cacheRoot,
+            refreshMinIntervalSeconds: forceRefresh ? 0 : options.refreshMinIntervalSeconds,
+            forceRescan: false
+        )
+        if forceRefresh {
+            piOptions.refreshMinIntervalSeconds = 0
+        }
+        let piReport = PiSessionCostScanner.loadDailyReport(
+            provider: .codex,
+            since: range.since,
+            until: range.until,
+            now: now,
+            options: piOptions
+        )
+        return codexTokenActivityDays(from: CostUsageDailyReport.merged([codexReport, piReport]))
+    }
+
+    private func agentSignalCachedCostUsageDailyActivity(
+        now: Date,
+        days: Int
+    ) -> [CodexTokenActivityDay] {
+        let range = agentSignalCostUsageDateRange(now: now, days: days)
+        let costRange = CostUsageScanner.CostUsageDayRange(since: range.since, until: range.until)
+        let options = agentSignalCostUsageOptions(forceRefresh: false)
+        var reports: [CostUsageDailyReport] = []
+
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: options.cacheRoot)
+        if !cache.days.isEmpty,
+           cache.roots == CostUsageScanner.codexRootsFingerprint(options: options),
+           !CostUsageScanner.requestedWindowExpandsCache(range: costRange, cache: cache) {
+            let report = CostUsageScanner.buildCodexReportFromCache(
+                cache: cache,
+                range: costRange,
+                modelsDevCacheRoot: options.cacheRoot
+            )
+            if !report.data.isEmpty {
+                reports.append(report)
+            }
+        }
+
+        if let piReport = PiSessionCostScanner.loadCachedDailyReport(
+            provider: .codex,
+            since: range.since,
+            until: range.until,
+            now: now,
+            cacheRoot: options.cacheRoot
+        ) {
+            reports.append(piReport)
+        }
+
+        guard !reports.isEmpty else { return [] }
+        return codexTokenActivityDays(from: CostUsageDailyReport.merged(reports))
+    }
+
+    private func agentSignalCostUsageDateRange(now: Date, days: Int) -> (since: Date, until: Date) {
+        let clampedDays = max(1, min(365, days))
+        let today = calendar.startOfDay(for: now)
+        let since = calendar.date(byAdding: .day, value: -(clampedDays - 1), to: today) ?? today
+        return (since, now)
+    }
+
+    private func agentSignalCostUsageOptions(forceRefresh: Bool) -> CostUsageScanner.Options {
+        var options = CostUsageScanner.Options(
+            cacheRoot: costUsageCacheRoot,
+            codexTraceDatabaseURL: priorityDatabaseURL,
+            forceRescan: false
+        )
+        if sessionRootURLs.count == 1 {
+            options.codexSessionsRoot = sessionRootURLs[0]
+        }
+        if forceRefresh {
+            options.refreshMinIntervalSeconds = 0
+        }
+        return options
+    }
+
+    private func codexTokenActivityDays(from report: CostUsageDailyReport) -> [CodexTokenActivityDay] {
+        report.data.compactMap { entry in
+            guard let date = CostUsageDateParser.parse(entry.date) else { return nil }
+            var modelTokenTotals: [String: Int] = [:]
+            var modelCostTotals: [String: Double] = [:]
+            var modelStandardTokenTotals: [String: Int] = [:]
+            var modelPriorityTokenTotals: [String: Int] = [:]
+            var modelStandardCostTotals: [String: Double] = [:]
+            var modelPriorityCostTotals: [String: Double] = [:]
+
+            for breakdown in entry.modelBreakdowns ?? [] {
+                if let tokens = breakdown.totalTokens, tokens > 0 {
+                    modelTokenTotals[breakdown.modelName, default: 0] += tokens
+                }
+                if let cost = breakdown.costUSD, cost > 0 {
+                    modelCostTotals[breakdown.modelName, default: 0] += cost
+                }
+                if let tokens = breakdown.standardTokens, tokens > 0 {
+                    modelStandardTokenTotals[breakdown.modelName, default: 0] += tokens
+                }
+                if let tokens = breakdown.priorityTokens, tokens > 0 {
+                    modelPriorityTokenTotals[breakdown.modelName, default: 0] += tokens
+                }
+                if let cost = breakdown.standardCostUSD, cost > 0 {
+                    modelStandardCostTotals[breakdown.modelName, default: 0] += cost
+                }
+                if let cost = breakdown.priorityCostUSD, cost > 0 {
+                    modelPriorityCostTotals[breakdown.modelName, default: 0] += cost
+                }
+            }
+
+            return CodexTokenActivityDay(
+                day: calendar.startOfDay(for: date),
+                totalTokens: max(entry.totalTokens ?? 0, 0),
+                estimatedCostUSD: entry.costUSD,
+                modelTokenTotals: modelTokenTotals,
+                modelEstimatedCostTotals: modelCostTotals,
+                modelStandardTokenTotals: modelStandardTokenTotals,
+                modelPriorityTokenTotals: modelPriorityTokenTotals,
+                modelStandardEstimatedCostTotals: modelStandardCostTotals,
+                modelPriorityEstimatedCostTotals: modelPriorityCostTotals
+            )
+        }
+        .sorted { $0.day < $1.day }
     }
 
     private func scanTokenActivity(
@@ -908,7 +1080,7 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
                       ]),
                       values.isRegularFile == true,
                       let modifiedAt = values.contentModificationDate,
-                      modifiedAt >= startDay || fileDayKey != nil
+                      modifiedAt >= startDay || isSessionDayKey(fileDayKey, in: startKey...todayKey)
                 else {
                     continue
                 }
@@ -935,6 +1107,11 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         return files
             .sorted { $0.modifiedAt > $1.modifiedAt }
             .map(\.url)
+    }
+
+    private func isSessionDayKey(_ key: String?, in range: ClosedRange<String>) -> Bool {
+        guard let key else { return false }
+        return range.contains(key)
     }
 
     private func allSessionFiles(cachedFiles: [String: CodexTokenActivityFileCache]) -> [URL] {
@@ -1000,44 +1177,11 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
             ]
         }
 
-        var roots: [URL] = [
+        return [
             home.appendingPathComponent(".codex/sessions", isDirectory: true),
-            home.appendingPathComponent(".codex/archived_sessions", isDirectory: true)
-        ]
-
-        let xcodeSessions = home.appendingPathComponent(
-            "Library/Developer/Xcode/CodingAssistant/codex/sessions",
-            isDirectory: true
-        )
-        var isXcodeDirectory: ObjCBool = false
-        if fileManager.fileExists(atPath: xcodeSessions.path, isDirectory: &isXcodeDirectory),
-           isXcodeDirectory.boolValue {
-            roots.append(xcodeSessions)
-        }
-
-        let jetBrainsCache = home.appendingPathComponent(
-            "Library/Caches/JetBrains",
-            isDirectory: true
-        )
-        if let products = try? fileManager.contentsOfDirectory(
-            at: jetBrainsCache,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) {
-            for product in products {
-                let sessionsRoot = product
-                    .appendingPathComponent("aia/codex/sessions", isDirectory: true)
-                var isDirectory: ObjCBool = false
-                guard fileManager.fileExists(atPath: sessionsRoot.path, isDirectory: &isDirectory),
-                      isDirectory.boolValue
-                else {
-                    continue
-                }
-                roots.append(sessionsRoot)
-            }
-        }
-
-        return roots
+            home.appendingPathComponent(".codex/archived_sessions", isDirectory: true),
+            home.appendingPathComponent("Library/Developer/Xcode/CodingAssistant/codex/sessions", isDirectory: true)
+        ] + jetBrainsCodexSessionRootURLs(home: home, fileManager: fileManager)
     }
 
     private static func defaultPriorityDatabaseURL(
@@ -1058,6 +1202,68 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("AgentSignalLight", isDirectory: true)
             .appendingPathComponent("codex-token-activity-v\(cacheVersion).json", isDirectory: false)
+    }
+
+    private static func defaultCostUsageCacheRoot(fileManager: FileManager, cacheURL: URL?) -> URL? {
+        if let cacheURL {
+            let base = cacheURL.deletingLastPathComponent()
+            let newRoot = base.appendingPathComponent("agent-signal-cost-usage", isDirectory: true)
+            migrateCostUsageCacheRootIfNeeded(
+                from: base.appendingPathComponent(legacyImportedCostUsageCacheRootName, isDirectory: true),
+                to: newRoot,
+                fileManager: fileManager
+            )
+            return newRoot
+        }
+        guard let cachesRoot = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let appRoot = cachesRoot.appendingPathComponent("AgentSignalBar", isDirectory: true)
+        let newRoot = appRoot.appendingPathComponent("agent-signal-cost-usage", isDirectory: true)
+        migrateCostUsageCacheRootIfNeeded(
+            from: appRoot.appendingPathComponent(legacyImportedCostUsageCacheRootName, isDirectory: true),
+            to: newRoot,
+            fileManager: fileManager
+        )
+        return newRoot
+    }
+
+    private static func migrateCostUsageCacheRootIfNeeded(
+        from oldRoot: URL,
+        to newRoot: URL,
+        fileManager: FileManager
+    ) {
+        guard fileManager.fileExists(atPath: oldRoot.path),
+              !fileManager.fileExists(atPath: newRoot.path)
+        else {
+            return
+        }
+        try? fileManager.createDirectory(
+            at: newRoot.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? fileManager.copyItem(at: oldRoot, to: newRoot)
+    }
+
+    private static func jetBrainsCodexSessionRootURLs(home: URL, fileManager: FileManager) -> [URL] {
+        let jetBrainsRoot = home.appendingPathComponent("Library/Caches/JetBrains", isDirectory: true)
+        guard let enumerator = fileManager.enumerator(
+            at: jetBrainsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return []
+        }
+
+        var roots: [URL] = []
+        for case let url as URL in enumerator {
+            guard url.path.hasSuffix("/aia/codex/sessions") else { continue }
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+            if values?.isDirectory == true {
+                roots.append(url)
+            }
+        }
+        return roots.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
     private func loadCache(historyDays: Int) -> CodexTokenActivityCache {
@@ -1118,6 +1324,7 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
 
     private func saveCache(_ cache: CodexTokenActivityCache) {
         guard let cacheURL,
+              cache.isComplete,
               let data = try? JSONEncoder().encode(cache)
         else {
             return

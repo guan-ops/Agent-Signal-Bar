@@ -155,7 +155,7 @@ struct AgentSignalCLI {
             }
             return 0
         } catch {
-            fputs("agent-signal: \(error.localizedDescription)\n", stderr)
+            fputs("\(commandName()): \(error.localizedDescription)\n", stderr)
             return 1
         }
     }
@@ -259,28 +259,33 @@ private func scalarString(_ value: Any?) -> String? {
     }
 }
 
+private func commandName() -> String {
+    URL(fileURLWithPath: CommandLine.arguments.first ?? "agent-signal-light").lastPathComponent
+}
+
 private func printUsage() {
+    let command = commandName()
     print(
         """
-        agent-signal
+        \(command)
 
         Usage:
-          agent-signal list
-          agent-signal status [--json]
-          agent-signal <signal> [--session <id>] [--agent <name>] [--event <event>] [--json]
-          agent-signal set <signal> [--json]
-          agent-signal session <signal> --session <id> [--json]
-          agent-signal codex-hook [event]
-          agent-signal claude-hook [event]
-          agent-signal agent-hook [event] [--agent <name>] [--session <id>]
-          agent-signal reset [--json]
+          \(command) list
+          \(command) status [--json]
+          \(command) <signal> [--session <id>] [--agent <name>] [--event <event>] [--json]
+          \(command) set <signal> [--json]
+          \(command) session <signal> --session <id> [--json]
+          \(command) codex-hook [event]
+          \(command) claude-hook [event]
+          \(command) agent-hook [event] [--agent <name>] [--session <id>]
+          \(command) reset [--json]
 
         Examples:
-          agent-signal idle
-          agent-signal working --session codex-main --agent codex --event PreToolUse
-          echo '{"event":"AgentStarted","agent":"local-script","session_id":"local-script-main"}' | agent-signal agent-hook
-          agent-signal status --json
-          agent-signal permission --session codex-main --event PermissionRequest
+          \(command) idle
+          \(command) working --session codex-main --agent codex --event PreToolUse
+          echo '{"event":"AgentStarted","agent":"local-script","session_id":"local-script-main"}' | \(command) agent-hook
+          \(command) status --json
+          \(command) permission --session codex-main --event PermissionRequest
 
         Signals:
           idle, thinking, working, tool_done, subagent_start, subagent_stop,
@@ -342,7 +347,7 @@ private func printStatusJSON(_ snapshot: SignalSnapshot) {
             print(output)
         }
     } catch {
-        fputs("agent-signal: \(error.localizedDescription)\n", stderr)
+        fputs("\(commandName()): \(error.localizedDescription)\n", stderr)
     }
 }
 

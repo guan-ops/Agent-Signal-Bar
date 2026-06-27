@@ -47,6 +47,15 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
         .localScript
     ]
 
+    static let visibleCases: [SignalLightAgentScope] = [
+        .codexDesktop,
+        .codexCLI,
+        .codexVSCode,
+        .codexXcode,
+        .codexIDEA,
+        .claudeCode
+    ]
+
     static let allCases: [SignalLightAgentScope] = selectableCases
 
     static let defaultSelectedCases: Set<SignalLightAgentScope> = [
@@ -220,25 +229,36 @@ enum SignalLightAgentSelectionMode: String, Hashable {
     case manual
 }
 
+enum StatusLightOverrideTarget: String, CaseIterable, Hashable {
+    case statusBar
+    case floatingSignal
+}
+
 struct StatusLightOverrideFrame: Equatable {
     let signal: AgentSignal
     let tick: Int
     let allLightsOn: Bool
     let usesSystemGrayLights: Bool
     let effectCustomization: SignalEffectCustomization
+    let targets: Set<StatusLightOverrideTarget>
+    let usesLiveTick: Bool
 
     init(
         signal: AgentSignal,
         tick: Int,
         allLightsOn: Bool,
         usesSystemGrayLights: Bool = false,
-        effectCustomization: SignalEffectCustomization
+        effectCustomization: SignalEffectCustomization,
+        targets: Set<StatusLightOverrideTarget> = Set(StatusLightOverrideTarget.allCases),
+        usesLiveTick: Bool = false
     ) {
         self.signal = signal
         self.tick = tick
         self.allLightsOn = allLightsOn
         self.usesSystemGrayLights = usesSystemGrayLights
         self.effectCustomization = effectCustomization
+        self.targets = targets
+        self.usesLiveTick = usesLiveTick
     }
 }
 
@@ -304,6 +324,61 @@ enum FloatingSignalTokenBadgeWindow: String, CaseIterable, Hashable {
     case last30Days = "last-30-days"
 }
 
+enum CodexUsageDataSource: String, CaseIterable, Hashable, Identifiable {
+    case automatic
+    case oauthAPI = "oauth-api"
+    case cliRPCPTY = "cli-rpc-pty"
+
+    var id: String { rawValue }
+
+    static let selectableCases: [CodexUsageDataSource] = [.automatic, .oauthAPI]
+
+    var resolvedSelectableValue: CodexUsageDataSource {
+        Self.selectableCases.contains(self) ? self : .automatic
+    }
+}
+
+enum CodexOpenAICookieMode: String, CaseIterable, Hashable, Identifiable {
+    case automatic
+    case manual
+    case off
+
+    var id: String { rawValue }
+
+    static let selectableCases: [CodexOpenAICookieMode] = [.automatic, .manual, .off]
+
+    var resolvedSelectableValue: CodexOpenAICookieMode {
+        Self.selectableCases.contains(self) ? self : .off
+    }
+}
+
+enum DebugLogLevel: String, CaseIterable, Hashable, Identifiable {
+    case error
+    case info
+    case verbose
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .error:
+            return "Error"
+        case .info:
+            return "Info"
+        case .verbose:
+            return "Verbose"
+        }
+    }
+}
+
+private struct CLIInstallError: LocalizedError {
+    let message: String
+
+    var errorDescription: String? {
+        message
+    }
+}
+
 @MainActor
 final class MenuBarStatusModel: ObservableObject {
     @Published private(set) var snapshot: SignalSnapshot
@@ -326,6 +401,9 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var appLanguage: AppLanguage
     @Published var appTheme: AppTheme
     @Published var isSettingsGlassEnabled: Bool
+    @Published var isDebugSettingsVisible: Bool
+    @Published var isDebugFileLoggingEnabled: Bool
+    @Published var debugLogLevel: DebugLogLevel
     @Published var settingsGlassEffect: SettingsGlassEffect
     @Published var isLowPowerModeEnabled: Bool
     @Published var isNewZealandTrafficLightModeEnabled: Bool
@@ -351,14 +429,18 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var floatingSignalQuotaBadgeWindow: FloatingSignalQuotaBadgeWindow
     @Published var floatingSignalTokenBadgeWindow: FloatingSignalTokenBadgeWindow
     @Published private(set) var latestAgentQuota: AgentQuotaStatus?
+    @Published private(set) var latestCodexCredits: CodexCreditStatus?
     @Published private(set) var latestAgentTokenUsage: AgentTokenUsage?
     @Published private(set) var statusLightOverride: StatusLightOverrideFrame?
+    @Published private(set) var isLightDebugModeEnabled = false
     @Published private(set) var desktopAppSessions: [SessionStatus] = []
     @Published private(set) var isLaunchAtLoginEnabled = false
     @Published private(set) var isLaunchAtLoginChangeRunning = false
     @Published var isHookInstallRunning = false
     @Published var hookInstallMessage: String?
     @Published var hookInstallOperation: HookInstallOperation = .message
+    @Published private(set) var isCLIInstallRunning = false
+    @Published var cliInstallMessage: String?
     @Published var isDiagnosticsExportRunning = false
     @Published var diagnosticsExportMessage: String?
     @Published private(set) var releaseInfo: ReleaseInfo = .current()
@@ -373,8 +455,22 @@ final class MenuBarStatusModel: ObservableObject {
     @Published private(set) var floatingSignalAlertSoundTestTick = 0
     @Published private(set) var tokenActivityDays: [CodexTokenActivityDay] = []
     @Published private(set) var isTokenActivityLoading = false
-    @Published private(set) var toolActivitySummary: CodexToolActivitySummary = .empty
-    @Published private(set) var isToolActivityLoading = false
+    @Published private(set) var isCodexRateLimitFetchInFlight = false
+    @Published private(set) var codexCurrentAccount: CodexCurrentAccount?
+    @Published private(set) var codexSavedAccounts: [CodexAccountProfile] = []
+    @Published private(set) var codexActiveSavedAccountID: UUID?
+    @Published private(set) var isCodexAccountActionRunning = false
+    @Published var codexAccountMessage: String?
+    @Published var codexUsageDataSource: CodexUsageDataSource
+    @Published var codexOpenAICookieMode: CodexOpenAICookieMode
+    @Published var codexManualOpenAICookieHeader: String
+    @Published private(set) var codexCLIVersionText: String?
+    @Published private(set) var codexProviderAccountEmail: String?
+    @Published private(set) var codexProviderPlanName: String?
+    @Published private(set) var codexProviderServiceStatusText: String?
+    @Published private(set) var codexProviderDetailsCheckedAt: Date?
+    @Published private(set) var isCodexProviderDetailsLoading = false
+    @Published private(set) var debugCacheMessage: String?
 
     let animationClock = SignalAnimationClock()
 
@@ -383,15 +479,19 @@ final class MenuBarStatusModel: ObservableObject {
     private let hookInstallManager: HookInstallManager
     private let diagnosticsExportManager: DiagnosticsExportManager
     private let codexDesktopActivityMonitor: CodexDesktopActivityMonitor
+    private let codexAccountManager: CodexAccountManager
+    private let codexUsageSnapshotStore: CodexAccountUsageSnapshotStore
+    private let codexCLIStatusProbe: CodexCLIStatusProbe
+    private let codexRPCStatusProbe: CodexRPCStatusProbe
+    private let codexServiceStatusFetcher: CodexServiceStatusFetcher
     private let codexRateLimitFetcher: CodexRateLimitFetcher
     private let codexTokenActivityScanner: CodexTokenActivityScanner
-    private let codexToolActivityScanner: CodexToolActivityScanner
     private let codexPlatformPresenceMonitor: CodexPlatformPresenceMonitor
+    private let openAICookieStore: KeychainSecretStore
     private let updateChecker: GitHubReleaseUpdateChecker
     private let stateReloadQueue = DispatchQueue(label: "com.agentsignallight.state-reload")
     private let codexDesktopPollQueue = DispatchQueue(label: "com.agentsignallight.codex-desktop-poll")
     private let tokenActivityQueue = DispatchQueue(label: "com.agentsignallight.token-activity")
-    private let toolActivityQueue = DispatchQueue(label: "com.agentsignallight.tool-activity")
     private let platformPresencePollQueue = DispatchQueue(label: "com.agentsignallight.platform-presence-poll")
     private var pollTimer: Timer?
     private var animationTimer: Timer?
@@ -410,16 +510,14 @@ final class MenuBarStatusModel: ObservableObject {
     private var isStateReloadInFlight = false
     private var isStateReloadQueued = false
     private var isCodexDesktopPollInFlight = false
-    private var isCodexRateLimitFetchInFlight = false
     private var isTokenActivityScanInFlight = false
-    private var isToolActivityScanInFlight = false
-    private var isToolActivityScanQueued = false
+    private var codexUsageRefreshGeneration = 0
+    private var tokenActivityScanGeneration = 0
     private var isPlatformPresencePollInFlight = false
     private var isAutomaticUpdateCheckInFlight = false
     private var lastNotifiedUpdateVersion: String?
     private var lastCodexRateLimitFetchAt: Date?
     private var lastTokenActivityScanAt: Date?
-    private var lastToolActivityScanAt: Date?
     private var liveTokenUsageScanBaseline: Int?
     private var lastObservedLiveTokenUsageTotal: Int?
 
@@ -432,20 +530,18 @@ final class MenuBarStatusModel: ObservableObject {
     private static let preferenceDefaultsVersion = 1
     private static let automaticUpdateCheckInterval: TimeInterval = 24 * 60 * 60
     private static let codexRateLimitRefreshInterval: TimeInterval = 60
+    private static let codexProviderDetailsRefreshInterval: TimeInterval = 60
     private static let tokenActivityRefreshInterval: TimeInterval = 60
-    private static let toolActivityRefreshInterval: TimeInterval = 60
     private static let cachedLatestAgentQuotaKey = "cachedLatestAgentQuota"
     private static let cachedLatestAgentTokenUsageKey = "cachedLatestAgentTokenUsage"
+    private static let manualOpenAICookieKey = "manualOpenAICookieHeader"
+    private static let legacyManualOpenAICookieUserDefaultsKey = "codexManualOpenAICookieHeader"
     private static let activeDisplayWindow: TimeInterval = SignalStateStore.defaultSessionTTL()
+    private static let debugLogFileName = "AgentSignalLight.log"
 
     private struct LaunchAtLoginUpdateResult: Sendable {
         let isEnabled: Bool
         let errorMessage: String?
-    }
-
-    private struct LiveToolActivity: Sendable {
-        let name: String
-        let timestamp: Date?
     }
 
     private struct AnimationTickCadence {
@@ -461,9 +557,13 @@ final class MenuBarStatusModel: ObservableObject {
         hookInstallManager: HookInstallManager = HookInstallManager(),
         diagnosticsExportManager: DiagnosticsExportManager = DiagnosticsExportManager(),
         codexDesktopActivityMonitor: CodexDesktopActivityMonitor = CodexDesktopActivityMonitor(),
+        codexAccountManager: CodexAccountManager = CodexAccountManager(),
+        codexUsageSnapshotStore: CodexAccountUsageSnapshotStore = CodexAccountUsageSnapshotStore(),
+        codexCLIStatusProbe: CodexCLIStatusProbe = CodexCLIStatusProbe(),
+        codexRPCStatusProbe: CodexRPCStatusProbe = CodexRPCStatusProbe(),
+        codexServiceStatusFetcher: CodexServiceStatusFetcher = CodexServiceStatusFetcher(),
         codexRateLimitFetcher: CodexRateLimitFetcher = CodexRateLimitFetcher(),
         codexTokenActivityScanner: CodexTokenActivityScanner = CodexTokenActivityScanner(),
-        codexToolActivityScanner: CodexToolActivityScanner = CodexToolActivityScanner(),
         codexPlatformPresenceMonitor: CodexPlatformPresenceMonitor = CodexPlatformPresenceMonitor(),
         updateChecker: GitHubReleaseUpdateChecker = GitHubReleaseUpdateChecker()
     ) {
@@ -472,10 +572,16 @@ final class MenuBarStatusModel: ObservableObject {
         self.hookInstallManager = hookInstallManager
         self.diagnosticsExportManager = diagnosticsExportManager
         self.codexDesktopActivityMonitor = codexDesktopActivityMonitor
+        self.codexAccountManager = codexAccountManager
+        self.codexUsageSnapshotStore = codexUsageSnapshotStore
+        self.codexCLIStatusProbe = codexCLIStatusProbe
+        self.codexRPCStatusProbe = codexRPCStatusProbe
+        self.codexServiceStatusFetcher = codexServiceStatusFetcher
         self.codexRateLimitFetcher = codexRateLimitFetcher
         self.codexTokenActivityScanner = codexTokenActivityScanner
-        self.codexToolActivityScanner = codexToolActivityScanner
         self.codexPlatformPresenceMonitor = codexPlatformPresenceMonitor
+        let openAICookieStore = KeychainSecretStore(service: "com.agentsignallight.openai-cookie")
+        self.openAICookieStore = openAICookieStore
         self.updateChecker = updateChecker
         let storedLayout = UserDefaults.standard.string(forKey: "trafficSignalLayout")
         let storedStyle = UserDefaults.standard.string(forKey: "trafficSignalStyle")
@@ -488,6 +594,11 @@ final class MenuBarStatusModel: ObservableObject {
         let storedLanguage = UserDefaults.standard.string(forKey: "appLanguage")
         let storedTheme = UserDefaults.standard.string(forKey: "appTheme")
         let storedSettingsGlassEnabled = UserDefaults.standard.object(forKey: "isSettingsGlassEnabled") as? Bool
+        let storedDebugSettingsVisible =
+            UserDefaults.standard.object(forKey: "isDebugSettingsVisible") as? Bool
+        let storedDebugFileLoggingEnabled =
+            UserDefaults.standard.object(forKey: "isDebugFileLoggingEnabled") as? Bool
+        let storedDebugLogLevel = UserDefaults.standard.string(forKey: "debugLogLevel")
         let storedSettingsGlassEffect =
             UserDefaults.standard.string(forKey: "settingsGlassEffect")
             ?? UserDefaults.standard.string(forKey: "settingsMenuGlassEffect")
@@ -498,6 +609,8 @@ final class MenuBarStatusModel: ObservableObject {
         let storedSignalLightAgentScope = UserDefaults.standard.string(forKey: "signalLightAgentScope")
         let storedSignalLightAgentScopes = UserDefaults.standard.stringArray(forKey: "signalLightAgentScopes")
         let storedSignalLightAgentSelectionMode = UserDefaults.standard.string(forKey: "signalLightAgentSelectionMode")
+        let storedCodexUsageDataSource = UserDefaults.standard.string(forKey: "codexUsageDataSource")
+        let storedCodexOpenAICookieMode = UserDefaults.standard.string(forKey: "codexOpenAICookieMode")
         let storedStatusMenuMode = UserDefaults.standard.string(forKey: "statusMenuMode")
         let storedFloatingSignalScale = UserDefaults.standard.string(forKey: "floatingSignalScale")
         let storedFloatingSignalVisualScale =
@@ -577,6 +690,9 @@ final class MenuBarStatusModel: ObservableObject {
         appLanguage = storedLanguage.flatMap(AppLanguage.init(rawValue:)) ?? .system
         appTheme = storedTheme.flatMap(AppTheme.init(rawValue:)) ?? .system
         isSettingsGlassEnabled = storedSettingsGlassEnabled ?? true
+        isDebugSettingsVisible = storedDebugSettingsVisible ?? false
+        isDebugFileLoggingEnabled = storedDebugFileLoggingEnabled ?? false
+        debugLogLevel = storedDebugLogLevel.flatMap(DebugLogLevel.init(rawValue:)) ?? .verbose
         settingsGlassEffect =
             SettingsGlassEffect.preferenceValue(for: storedSettingsGlassEffect) ?? .reduced
         isLowPowerModeEnabled = storedLowPowerModeEnabled ?? false
@@ -707,6 +823,13 @@ final class MenuBarStatusModel: ObservableObject {
             storedScopes: storedSignalLightAgentScopes,
             legacyScope: storedSignalLightAgentScope
         )
+        codexUsageDataSource =
+            (storedCodexUsageDataSource.flatMap(CodexUsageDataSource.init(rawValue:)) ?? .automatic)
+            .resolvedSelectableValue
+        codexOpenAICookieMode =
+            (storedCodexOpenAICookieMode.flatMap(CodexOpenAICookieMode.init(rawValue:)) ?? .off)
+            .resolvedSelectableValue
+        codexManualOpenAICookieHeader = Self.loadManualOpenAICookieHeader(secretStore: openAICookieStore)
         let storedStatusMenuModeValue = storedStatusMenuMode.flatMap(StatusMenuMode.init(rawValue:))
         let resolvedStatusMenuMode = storedStatusMenuModeValue ?? .simple
         statusMenuMode = resolvedStatusMenuMode
@@ -734,6 +857,8 @@ final class MenuBarStatusModel: ObservableObject {
         liveTokenUsageScanBaseline = latestAgentTokenUsage?.effectiveTotalTokens
         lastObservedLiveTokenUsageTotal = latestAgentTokenUsage?.effectiveTotalTokens
         isLaunchAtLoginEnabled = launchAtLoginManager.isEnabled
+        refreshCodexAccounts()
+        hydrateCodexUsageSnapshotForCurrentAccount()
         if shouldApplyPreferenceDefaults {
             enableLaunchAtLoginByDefaultIfNeeded()
             UserDefaults.standard.set(Self.preferenceDefaultsVersion, forKey: "settingsPreferenceDefaultsVersion")
@@ -759,6 +884,151 @@ final class MenuBarStatusModel: ObservableObject {
     func reloadFromWatcher() {
         guard !isMonitoringPaused else { return }
         reload()
+    }
+
+    func refreshCodexAccounts() {
+        do {
+            let state = try codexAccountManager.loadState()
+            applyCodexAccountState(state)
+            codexAccountMessage = nil
+        } catch {
+            codexAccountMessage = error.localizedDescription
+        }
+    }
+
+    func refreshCodexProviderDetails(force: Bool = false) {
+        let now = Date()
+        if !force,
+           let codexProviderDetailsCheckedAt,
+           now.timeIntervalSince(codexProviderDetailsCheckedAt) < Self.codexProviderDetailsRefreshInterval {
+            return
+        }
+        guard !isCodexProviderDetailsLoading else { return }
+
+        isCodexProviderDetailsLoading = true
+        let cliProbe = codexCLIStatusProbe
+        let rpcProbe = codexRPCStatusProbe
+        let serviceStatusFetcher = codexServiceStatusFetcher
+        Task(priority: .utility) { [weak self] in
+            async let cliStatus = Task.detached(priority: .utility) {
+                cliProbe.probe()
+            }.value
+            async let rpcStatus = rpcProbe.probe()
+            async let serviceStatus = try? serviceStatusFetcher.fetch()
+            let (resolvedCLIStatus, resolvedRPCStatus, resolvedServiceStatus) = await (
+                cliStatus,
+                rpcStatus,
+                serviceStatus
+            )
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.codexCLIVersionText = resolvedCLIStatus.versionText
+                self.codexProviderAccountEmail = resolvedRPCStatus.accountEmail
+                self.codexProviderPlanName = resolvedRPCStatus.displayPlanName
+                self.codexProviderServiceStatusText = resolvedServiceStatus?.displayText
+                self.codexProviderDetailsCheckedAt = max(
+                    resolvedCLIStatus.checkedAt,
+                    resolvedRPCStatus.checkedAt,
+                    resolvedServiceStatus?.updatedAt ?? resolvedRPCStatus.checkedAt
+                )
+                self.isCodexProviderDetailsLoading = false
+            }
+        }
+    }
+
+    func saveCurrentCodexAccount() {
+        guard !isCodexAccountActionRunning else { return }
+        isCodexAccountActionRunning = true
+        do {
+            let account = try codexAccountManager.saveCurrentAccount()
+            applyCodexAccountState(try codexAccountManager.loadState())
+            persistCodexUsageSnapshotForCurrentAccount()
+            codexAccountMessage = text("已保存 \(account.displayName)。", "Saved \(account.displayName).")
+            lastError = nil
+        } catch {
+            codexAccountMessage = nil
+            lastError = error.localizedDescription
+        }
+        isCodexAccountActionRunning = false
+    }
+
+    func addCodexAccount() {
+        guard !isCodexAccountActionRunning else { return }
+        isCodexAccountActionRunning = true
+        codexAccountMessage = text(
+            "正在打开 Codex 登录，请在浏览器完成授权。",
+            "Opening Codex login. Complete authorization in the browser."
+        )
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let account = try await codexAccountManager.authenticateManagedAccount()
+                let switchedAccount = try codexAccountManager.switchToAccount(id: account.id)
+                applyCodexAccountState(try codexAccountManager.loadState())
+                prepareCodexUsageAfterAccountChange()
+                refreshCodexProviderDetails(force: true)
+                codexAccountMessage = text(
+                    "已添加并切换到 \(switchedAccount.displayName)。",
+                    "Added and switched to \(switchedAccount.displayName)."
+                )
+                lastError = nil
+                pollCodexRateLimitsIfNeeded(force: true)
+                refreshTokenActivityIfNeeded()
+            } catch {
+                codexAccountMessage = nil
+                lastError = error.localizedDescription
+            }
+            isCodexAccountActionRunning = false
+        }
+    }
+
+    func switchCodexAccount(_ account: CodexAccountProfile) {
+        guard !isCodexAccountActionRunning,
+              codexActiveSavedAccountID != account.id
+        else {
+            return
+        }
+
+        isCodexAccountActionRunning = true
+        do {
+            let switchedAccount = try codexAccountManager.switchToAccount(id: account.id)
+            applyCodexAccountState(try codexAccountManager.loadState())
+            prepareCodexUsageAfterAccountChange()
+            refreshCodexProviderDetails(force: true)
+            codexAccountMessage = text(
+                "已切换到 \(switchedAccount.displayName)。",
+                "Switched to \(switchedAccount.displayName)."
+            )
+            lastError = nil
+            pollCodexRateLimitsIfNeeded(force: true)
+            refreshTokenActivityIfNeeded()
+        } catch {
+            codexAccountMessage = nil
+            lastError = error.localizedDescription
+        }
+        isCodexAccountActionRunning = false
+    }
+
+    func removeCodexAccount(_ account: CodexAccountProfile) {
+        guard !isCodexAccountActionRunning else { return }
+        isCodexAccountActionRunning = true
+        do {
+            try codexAccountManager.removeAccount(id: account.id)
+            codexUsageSnapshotStore.remove(for: account)
+            applyCodexAccountState(try codexAccountManager.loadState())
+            codexAccountMessage = text("已删除保存的账户。", "Saved account removed.")
+            lastError = nil
+        } catch {
+            codexAccountMessage = nil
+            lastError = error.localizedDescription
+        }
+        isCodexAccountActionRunning = false
+    }
+
+    func isActiveCodexAccount(_ account: CodexAccountProfile) -> Bool {
+        codexActiveSavedAccountID == account.id
     }
 
     func setManualSignal(_ signal: AgentSignal) {
@@ -855,16 +1125,15 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     var lightSnapshot: SignalSnapshot {
-        let baseSnapshot = displaySnapshot
-        if let statusLightOverride {
-            return snapshot(baseSnapshot, overridingAggregate: statusLightOverride.signal)
-        }
+        lightSnapshot(for: nil)
+    }
 
-        if isMonitoringPaused {
-            return snapshot(baseSnapshot, overridingAggregate: .off)
-        }
+    var statusBarLightSnapshot: SignalSnapshot {
+        lightSnapshot(for: .statusBar)
+    }
 
-        return baseSnapshot
+    var floatingSignalLightSnapshot: SignalSnapshot {
+        lightSnapshot(for: .floatingSignal)
     }
 
     var isSignalSoundSurfaceEnabled: Bool {
@@ -875,20 +1144,56 @@ final class MenuBarStatusModel: ObservableObject {
         return statusLightOverride?.tick ?? animationClock.tick
     }
 
-    var lightAllLightsOn: Bool {
-        if statusLightOverride == nil, isMonitoringPaused {
-            return true
-        }
+    var statusBarLightTick: Int {
+        lightTick(for: .statusBar)
+    }
 
-        return statusLightOverride?.allLightsOn ?? false
+    var floatingSignalLightTick: Int {
+        lightTick(for: .floatingSignal)
+    }
+
+    var lightAllLightsOn: Bool {
+        lightAllLightsOn(for: nil)
+    }
+
+    var statusBarLightAllLightsOn: Bool {
+        lightAllLightsOn(for: .statusBar)
+    }
+
+    var floatingSignalLightAllLightsOn: Bool {
+        lightAllLightsOn(for: .floatingSignal)
     }
 
     var lightUsesSystemGrayLights: Bool {
-        return statusLightOverride?.usesSystemGrayLights ?? isMonitoringPaused
+        lightUsesSystemGrayLights(for: nil)
+    }
+
+    var statusBarLightUsesSystemGrayLights: Bool {
+        lightUsesSystemGrayLights(for: .statusBar)
+    }
+
+    var floatingSignalLightUsesSystemGrayLights: Bool {
+        lightUsesSystemGrayLights(for: .floatingSignal)
     }
 
     var lightEffectCustomization: SignalEffectCustomization {
-        return statusLightOverride?.effectCustomization ?? signalEffectCustomization
+        lightEffectCustomization(for: nil)
+    }
+
+    var statusBarLightEffectCustomization: SignalEffectCustomization {
+        lightEffectCustomization(for: .statusBar)
+    }
+
+    var floatingSignalLightEffectCustomization: SignalEffectCustomization {
+        lightEffectCustomization(for: .floatingSignal)
+    }
+
+    var statusBarStatusLightOverride: StatusLightOverrideFrame? {
+        statusLightOverride(for: .statusBar)
+    }
+
+    var floatingSignalStatusLightOverride: StatusLightOverrideFrame? {
+        statusLightOverride(for: .floatingSignal)
     }
 
     var runtimeTimingProfile: RuntimeTimingProfile {
@@ -1160,6 +1465,43 @@ final class MenuBarStatusModel: ObservableObject {
         UserDefaults.standard.set(mode.rawValue, forKey: "statusMenuMode")
     }
 
+    func setCodexUsageDataSource(_ source: CodexUsageDataSource) {
+        let resolvedSource = source.resolvedSelectableValue
+        guard codexUsageDataSource != resolvedSource else { return }
+        codexUsageDataSource = resolvedSource
+        UserDefaults.standard.set(resolvedSource.rawValue, forKey: "codexUsageDataSource")
+        lastCodexRateLimitFetchAt = nil
+        lastError = nil
+        pollCodexRateLimitsIfNeeded(force: true)
+    }
+
+    func setCodexOpenAICookieMode(_ mode: CodexOpenAICookieMode) {
+        let resolvedMode = mode.resolvedSelectableValue
+        guard codexOpenAICookieMode != resolvedMode else { return }
+        codexOpenAICookieMode = resolvedMode
+        UserDefaults.standard.set(resolvedMode.rawValue, forKey: "codexOpenAICookieMode")
+        lastCodexRateLimitFetchAt = nil
+        pollCodexRateLimitsIfNeeded(force: true)
+    }
+
+    func setCodexManualOpenAICookieHeader(_ header: String) {
+        codexManualOpenAICookieHeader = header
+        do {
+            if header.isEmpty {
+                try openAICookieStore.delete(key: Self.manualOpenAICookieKey)
+            } else {
+                try openAICookieStore.set(header, for: Self.manualOpenAICookieKey)
+            }
+            UserDefaults.standard.removeObject(forKey: Self.legacyManualOpenAICookieUserDefaultsKey)
+        } catch {
+            lastError = text(
+                "无法保存 OpenAI Cookie：\(error.localizedDescription)",
+                "Could not save OpenAI Cookie: \(error.localizedDescription)"
+            )
+        }
+        lastCodexRateLimitFetchAt = nil
+    }
+
     func setCodexDesktopMonitoringEnabled(_ enabled: Bool) {
         isCodexDesktopMonitoringEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isCodexDesktopMonitoringEnabled")
@@ -1189,6 +1531,289 @@ final class MenuBarStatusModel: ObservableObject {
     func setSettingsGlassEnabled(_ enabled: Bool) {
         isSettingsGlassEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isSettingsGlassEnabled")
+    }
+
+    func setDebugSettingsVisible(_ visible: Bool) {
+        isDebugSettingsVisible = visible
+        UserDefaults.standard.set(visible, forKey: "isDebugSettingsVisible")
+    }
+
+    func setDebugFileLoggingEnabled(_ enabled: Bool) {
+        isDebugFileLoggingEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isDebugFileLoggingEnabled")
+        if enabled {
+            appendDebugLog("file logging enabled")
+        }
+    }
+
+    func setDebugLogLevel(_ level: DebugLogLevel) {
+        debugLogLevel = level
+        UserDefaults.standard.set(level.rawValue, forKey: "debugLogLevel")
+        appendDebugLog("log level set to \(level.displayName)")
+    }
+
+    var debugLogFileURL: URL {
+        let logsDirectory = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library", isDirectory: true)
+        return logsDirectory
+            .appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent("AgentSignalLight", isDirectory: true)
+            .appendingPathComponent(Self.debugLogFileName, isDirectory: false)
+    }
+
+    func openDebugLogFile() {
+        ensureDebugLogFileExists()
+        NSWorkspace.shared.open(debugLogFileURL)
+    }
+
+    func copyDebugLog() {
+        let text = loadDebugLogText()
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    func copyDebugText(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    func loadDebugLogText() -> String {
+        ensureDebugLogFileExists()
+        return (try? String(contentsOf: debugLogFileURL, encoding: .utf8))
+            ?? text("尚无日志。", "No log yet.")
+    }
+
+    func debugProbeLog(provider: String) -> String {
+        let now = Date().formatted(date: .numeric, time: .standard)
+        switch provider.lowercased() {
+        case "codex":
+            let account = codexProviderAccountEmail ?? codexCurrentAccount?.displayName ?? "--"
+            let plan = codexProviderPlanName ?? "--"
+            let source = codexUsageDataSource.rawValue
+            let quota = latestAgentQuota.map { quotaDebugLine($0) } ?? "quota unavailable"
+            let tokens = latestAgentTokenUsage.map {
+                "tokens total=\($0.effectiveTotalTokens.map(String.init) ?? "--") input=\($0.inputTokens.map(String.init) ?? "--") output=\($0.outputTokens.map(String.init) ?? "--")"
+            } ?? "tokens unavailable"
+            return """
+            [\(now)] Codex probe
+            account=\(account)
+            plan=\(plan)
+            source=\(source)
+            cli=\(codexCLIVersionText ?? "--")
+            service=\(codexProviderServiceStatusText ?? "--")
+            \(quota)
+            \(tokens)
+            rateLimitInFlight=\(isCodexRateLimitFetchInFlight)
+            tokenScanInFlight=\(isTokenActivityLoading)
+            """
+        case "claude":
+            let sessions = activitySnapshot.sessions.filter {
+                let haystack = [$0.sessionID, $0.agent ?? "", $0.lastEvent ?? ""].joined(separator: " ").lowercased()
+                return haystack.contains("claude")
+            }
+            return """
+            [\(now)] Claude probe
+            monitoringEnabled=\(isClaudeDesktopMonitoringEnabled)
+            sessions=\(sessions.count)
+            latest=\(sessions.map { $0.updatedAt.formatted(date: .numeric, time: .standard) }.max() ?? "--")
+            source=desktop/activity monitor
+            """
+        default:
+            return "[\(now)] \(provider) probe unavailable."
+        }
+    }
+
+    func debugFetchStrategyLog(provider: String) -> String {
+        switch provider.lowercased() {
+        case "codex":
+            let oauthAvailable = codexCurrentAccount?.credentialKind == .oauth
+            let cliAvailable = codexCLIVersionText != nil
+            return """
+            codex.oauth (oauth) \(oauthAvailable ? "available" : "unavailable")
+            codex.rate_limits (oauth api) \(codexUsageDataSource == .cliRPCPTY ? "skipped source=cli-rpc-pty" : "available")
+            codex.cli_status (cli) \(cliAvailable ? "available" : "unavailable")
+            codex.local_token_scan (local) available
+            """
+        case "claude":
+            return """
+            claude.desktop_monitor (local) \(isClaudeDesktopMonitoringEnabled ? "available" : "disabled")
+            claude.code_hook (hook) displayed when hook events arrive
+            claude.usage_api unavailable
+            """
+        default:
+            return "\(provider) strategy unavailable."
+        }
+    }
+
+    func debugOpenAICookieLog() -> String {
+        """
+        OpenAI Cookie mode: \(codexOpenAICookieMode.rawValue)
+        Current Codex account: \(codexCurrentAccount?.displayName ?? "--")
+        Manual Cookie header length: \(codexManualOpenAICookieHeader.count)
+        Normalized Cookie header available: \(CodexRateLimitFetcher.normalizedCookieHeader(codexManualOpenAICookieHeader) == nil ? "false" : "true")
+        Cookie usage fetch: \(codexOpenAICookieMode == .off ? "disabled" : "enabled")
+        """
+    }
+
+    func clearDebugUsageCache() {
+        clearLatestAgentQuotaCache()
+        clearLatestAgentTokenUsageCache()
+        clearTokenActivityCache()
+        codexUsageSnapshotStore.removeAll()
+        debugCacheMessage = text("已清除费用/用量缓存。", "Usage cache cleared.")
+        appendDebugLog("usage cache cleared")
+    }
+
+    func clearDebugCookieCache() {
+        codexManualOpenAICookieHeader = ""
+        try? openAICookieStore.delete(key: Self.manualOpenAICookieKey)
+        UserDefaults.standard.removeObject(forKey: Self.legacyManualOpenAICookieUserDefaultsKey)
+        lastCodexRateLimitFetchAt = nil
+        debugCacheMessage = text("已清除保存的 OpenAI Cookie。", "Saved OpenAI Cookie cleared.")
+        appendDebugLog("saved OpenAI cookie cleared")
+    }
+
+    func installBundledCLI() {
+        guard !isCLIInstallRunning else { return }
+        guard let sourceURL = bundledCLIURL() else {
+            cliInstallMessage = text(
+                "没有找到内置 agent-signal-light CLI。请先重新构建或安装正式版 App。",
+                "Bundled agent-signal-light CLI was not found. Rebuild or install the packaged app first."
+            )
+            return
+        }
+
+        isCLIInstallRunning = true
+        cliInstallMessage = text("正在安装 agent-signal-light CLI...", "Installing agent-signal-light CLI...")
+
+        let installDirectory = preferredCLIInstallDirectory()
+        let installPath = installDirectory.appendingPathComponent("agent-signal-light", isDirectory: false)
+        let sourcePath = sourceURL.path
+        let destinationPath = installPath.path
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result {
+                try Self.installCLI(sourcePath: sourcePath, destinationPath: destinationPath)
+            }
+
+            DispatchQueue.main.async {
+                self.isCLIInstallRunning = false
+                switch result {
+                case .success:
+                    self.cliInstallMessage = self.text(
+                        "已安装：\(destinationPath)",
+                        "Installed: \(destinationPath)"
+                    )
+                    self.lastError = nil
+                case .failure(let error):
+                    self.cliInstallMessage = self.text(
+                        "安装失败：\(error.localizedDescription)",
+                        "Install failed: \(error.localizedDescription)"
+                    )
+                }
+            }
+        }
+    }
+
+    func runDebugLightSignal(_ signal: AgentSignal, targets: Set<StatusLightOverrideTarget> = Set(StatusLightOverrideTarget.allCases)) {
+        guard !targets.isEmpty else { return }
+        setDebugLight(
+            signal: signal,
+            allLightsOn: false,
+            effectCustomization: signalEffectCustomization,
+            targets: targets
+        )
+        appendDebugLog("debug light signal \(signal.rawValue)")
+    }
+
+    func setDebugLight(
+        signal: AgentSignal,
+        allLightsOn: Bool = false,
+        effectCustomization: SignalEffectCustomization? = nil,
+        targets: Set<StatusLightOverrideTarget> = Set(StatusLightOverrideTarget.allCases)
+    ) {
+        guard !targets.isEmpty else { return }
+        let frame = StatusLightOverrideFrame(
+            signal: signal,
+            tick: 0,
+            allLightsOn: allLightsOn,
+            effectCustomization: effectCustomization ?? signalEffectCustomization,
+            targets: targets,
+            usesLiveTick: true
+        )
+        statusLightSequence = []
+        statusLightSequenceIndex = 0
+        statusLightOverride = frame
+        appendDebugLog("debug light set \(signal.rawValue)")
+    }
+
+    func setLightDebugModeEnabled(
+        _ enabled: Bool,
+        targets: Set<StatusLightOverrideTarget> = Set(StatusLightOverrideTarget.allCases)
+    ) {
+        let shouldLogStateChange = isLightDebugModeEnabled != enabled
+        let effectiveTargets = targets.isEmpty ? Set(StatusLightOverrideTarget.allCases) : targets
+        isLightDebugModeEnabled = enabled
+        if enabled {
+            setDebugLight(signal: .idle, targets: effectiveTargets)
+            if shouldLogStateChange {
+                appendDebugLog("debug light mode enabled")
+            }
+        } else {
+            clearDebugLight()
+            if shouldLogStateChange {
+                appendDebugLog("debug light mode disabled")
+            }
+        }
+    }
+
+    func previewDebugLight(
+        signal: AgentSignal,
+        allLightsOn: Bool = false,
+        effectCustomization: SignalEffectCustomization,
+        targets: Set<StatusLightOverrideTarget> = Set(StatusLightOverrideTarget.allCases)
+    ) {
+        guard !targets.isEmpty else { return }
+        let frames = (0..<24).map { tick in
+            StatusLightOverrideFrame(
+                signal: signal,
+                tick: tick,
+                allLightsOn: allLightsOn,
+                effectCustomization: effectCustomization,
+                targets: targets
+            )
+        }
+        startStatusLightSequence(frames)
+        appendDebugLog("debug light preview \(signal.rawValue)")
+    }
+
+    func clearDebugLight() {
+        statusLightSequence = []
+        statusLightSequenceIndex = 0
+        statusLightOverride = nil
+        appendDebugLog("debug light cleared")
+    }
+
+    func replayDebugLightSequence(targets: Set<StatusLightOverrideTarget> = Set(StatusLightOverrideTarget.allCases)) {
+        guard !targets.isEmpty else { return }
+        let customization = signalEffectCustomization
+        startStatusLightSequence([
+            StatusLightOverrideFrame(signal: .working, tick: 0, allLightsOn: false, effectCustomization: customization, targets: targets),
+            StatusLightOverrideFrame(signal: .working, tick: 4, allLightsOn: false, effectCustomization: customization, targets: targets),
+            StatusLightOverrideFrame(signal: .permission, tick: 0, allLightsOn: false, effectCustomization: customization, targets: targets),
+            StatusLightOverrideFrame(signal: .blocked, tick: 0, allLightsOn: false, effectCustomization: customization, targets: targets),
+            StatusLightOverrideFrame(signal: .done, tick: 0, allLightsOn: true, effectCustomization: customization, targets: targets)
+        ])
+        appendDebugLog("debug light sequence replayed")
+    }
+
+    func blinkDebugLightNow() {
+        startStatusLightSequence([
+            StatusLightOverrideFrame(signal: .done, tick: 0, allLightsOn: true, effectCustomization: signalEffectCustomization),
+            StatusLightOverrideFrame(signal: .idle, tick: 0, allLightsOn: false, effectCustomization: signalEffectCustomization),
+            StatusLightOverrideFrame(signal: .done, tick: 0, allLightsOn: true, effectCustomization: signalEffectCustomization)
+        ])
+        appendDebugLog("debug light blink")
     }
 
     func setSettingsGlassEffect(_ effect: SettingsGlassEffect) {
@@ -1880,12 +2505,68 @@ final class MenuBarStatusModel: ObservableObject {
             statusLightSequenceIndex = nextIndex
             statusLightOverride = statusLightSequence[nextIndex]
         } else {
+            let previousTargets = statusLightOverride?.targets ?? Set(StatusLightOverrideTarget.allCases)
             statusLightSequence = []
             statusLightSequenceIndex = 0
-            statusLightOverride = nil
+            if isLightDebugModeEnabled {
+                statusLightOverride = StatusLightOverrideFrame(
+                    signal: .idle,
+                    tick: 0,
+                    allLightsOn: false,
+                    effectCustomization: signalEffectCustomization,
+                    targets: previousTargets,
+                    usesLiveTick: true
+                )
+            } else {
+                statusLightOverride = nil
+            }
         }
 
         return true
+    }
+
+    private func statusLightOverride(for target: StatusLightOverrideTarget?) -> StatusLightOverrideFrame? {
+        guard let target else { return statusLightOverride }
+        guard let statusLightOverride, statusLightOverride.targets.contains(target) else {
+            return nil
+        }
+        return statusLightOverride
+    }
+
+    private func lightSnapshot(for target: StatusLightOverrideTarget?) -> SignalSnapshot {
+        let baseSnapshot = displaySnapshot
+        if let override = statusLightOverride(for: target) {
+            return snapshot(baseSnapshot, overridingAggregate: override.signal)
+        }
+
+        if isMonitoringPaused {
+            return snapshot(baseSnapshot, overridingAggregate: .off)
+        }
+
+        return baseSnapshot
+    }
+
+    private func lightTick(for target: StatusLightOverrideTarget?) -> Int {
+        guard let override = statusLightOverride(for: target) else {
+            return animationClock.tick
+        }
+        return override.usesLiveTick ? animationClock.tick : override.tick
+    }
+
+    private func lightAllLightsOn(for target: StatusLightOverrideTarget?) -> Bool {
+        if statusLightOverride(for: target) == nil, isMonitoringPaused {
+            return true
+        }
+
+        return statusLightOverride(for: target)?.allLightsOn ?? false
+    }
+
+    private func lightUsesSystemGrayLights(for target: StatusLightOverrideTarget?) -> Bool {
+        statusLightOverride(for: target)?.usesSystemGrayLights ?? isMonitoringPaused
+    }
+
+    private func lightEffectCustomization(for target: StatusLightOverrideTarget?) -> SignalEffectCustomization {
+        statusLightOverride(for: target)?.effectCustomization ?? signalEffectCustomization
     }
 
     private static var monitoringTransitionCustomization: SignalEffectCustomization {
@@ -2040,7 +2721,6 @@ final class MenuBarStatusModel: ObservableObject {
 
         codexDesktopPollQueue.async { [weak self] in
             let pollResult = monitor.pollResult()
-            let liveToolActivities = Self.liveToolActivities(from: pollResult.activities)
             var latestSnapshot: SignalSnapshot?
             var latestQuota: AgentQuotaStatus?
             var errorMessage: String?
@@ -2088,125 +2768,18 @@ final class MenuBarStatusModel: ObservableObject {
                     guard let self else { return }
                     self.isCodexDesktopPollInFlight = false
                     guard self.isCodexDesktopMonitoringEnabled, !self.isMonitoringPaused else { return }
-                    if !liveToolActivities.isEmpty {
-                        self.applyLiveToolActivities(liveToolActivities)
-                    }
-                    if let latestQuota {
+                    if let latestQuota, self.shouldApplyLocalCodexQuotaUpdates {
                         self.updateLatestAgentQuota(latestQuota)
                         if let tokenUsage = latestQuota.tokenUsage {
                             self.updateLatestAgentTokenUsage(tokenUsage)
                             self.refreshTokenActivityIfNeeded()
                         }
                     }
-                    if !liveToolActivities.isEmpty {
-                        self.refreshToolActivityIfNeeded(force: true)
-                    } else if latestQuota?.tokenUsage != nil {
-                        self.refreshToolActivityIfNeeded()
-                    }
                     if let latestSnapshot {
                         self.snapshot = latestSnapshot
                         self.updateLatestAgentQuota(from: latestSnapshot)
                     }
                     self.lastError = errorMessage
-                }
-            }
-        }
-    }
-
-    nonisolated private static func liveToolActivities(from activities: [CodexDesktopActivity]) -> [LiveToolActivity] {
-        let desktopToolCallEventPrefix = "DesktopToolCall:"
-        return activities.compactMap { activity -> LiveToolActivity? in
-            guard activity.event.hasPrefix(desktopToolCallEventPrefix) else {
-                return nil
-            }
-
-            let name = String(activity.event.dropFirst(desktopToolCallEventPrefix.count))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty else { return nil }
-
-            return LiveToolActivity(name: name, timestamp: activity.timestamp)
-        }
-    }
-
-    private func applyLiveToolActivities(_ activities: [LiveToolActivity], now: Date = Date()) {
-        guard !activities.isEmpty else { return }
-
-        var summary = toolActivitySummary
-        for activity in activities {
-            summary = summary.addingLiveToolCall(
-                name: activity.name,
-                timestamp: activity.timestamp,
-                now: now
-            )
-        }
-        toolActivitySummary = summary
-    }
-
-    func refreshToolActivityIfNeeded(force: Bool = false) {
-        guard isCodexDesktopMonitoringEnabled,
-              !isMonitoringPaused
-        else {
-            isToolActivityScanQueued = false
-            return
-        }
-
-        let now = Date()
-        if !force,
-           let lastToolActivityScanAt,
-           now.timeIntervalSince(lastToolActivityScanAt) < Self.toolActivityRefreshInterval {
-            return
-        }
-        if isToolActivityScanInFlight {
-            if force {
-                isToolActivityScanQueued = true
-            }
-            return
-        }
-
-        isToolActivityScanInFlight = true
-        isToolActivityLoading = true
-        lastToolActivityScanAt = now
-        let scanner = codexToolActivityScanner
-
-        toolActivityQueue.async { [weak self] in
-            let cachedSummary = scanner.cachedSummary(now: now)
-            if let cachedSummary {
-                DispatchQueue.main.async { [weak self] in
-                    Task { @MainActor in
-                        guard let self,
-                              self.isToolActivityScanInFlight,
-                              self.toolActivitySummary.isEmpty,
-                              self.isCodexDesktopMonitoringEnabled,
-                              !self.isMonitoringPaused
-                        else {
-                            return
-                        }
-
-                        self.toolActivitySummary = cachedSummary
-                    }
-                }
-            }
-
-            let summary = scanner.scanSummary(now: now)
-
-            DispatchQueue.main.async { [weak self] in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.isToolActivityScanInFlight = false
-                    self.isToolActivityLoading = false
-                    guard self.isCodexDesktopMonitoringEnabled,
-                          !self.isMonitoringPaused
-                    else {
-                        self.isToolActivityScanQueued = false
-                        return
-                    }
-
-                    self.toolActivitySummary = summary
-                    let shouldRunQueuedScan = self.isToolActivityScanQueued
-                    self.isToolActivityScanQueued = false
-                    if shouldRunQueuedScan {
-                        self.refreshToolActivityIfNeeded(force: true)
-                    }
                 }
             }
         }
@@ -2230,7 +2803,10 @@ final class MenuBarStatusModel: ObservableObject {
         isTokenActivityScanInFlight = true
         isTokenActivityLoading = true
         lastTokenActivityScanAt = now
-        let scanner = codexTokenActivityScanner
+        tokenActivityScanGeneration += 1
+        let scanGeneration = tokenActivityScanGeneration
+        let expectedAccountFingerprint = codexCurrentAccount?.authFingerprint
+        let scanner = codexTokenActivityScannerForCurrentAccount()
 
         tokenActivityQueue.async { [weak self] in
             let cachedDays = scanner.cachedDailyActivity(now: now, days: 30)
@@ -2239,6 +2815,8 @@ final class MenuBarStatusModel: ObservableObject {
                     Task { @MainActor in
                         guard let self,
                               self.isTokenActivityScanInFlight,
+                              self.tokenActivityScanGeneration == scanGeneration,
+                              self.codexCurrentAccount?.authFingerprint == expectedAccountFingerprint,
                               self.isCodexDesktopMonitoringEnabled,
                               !self.isMonitoringPaused
                         else {
@@ -2246,30 +2824,39 @@ final class MenuBarStatusModel: ObservableObject {
                         }
 
                         self.tokenActivityDays = cachedDays
+                        self.persistCodexUsageSnapshotForCurrentAccount()
                     }
                 }
-            }
 
-            let days = scanner.scanDailyActivity(now: now, days: 30) { partialDays in
-                guard !partialDays.isEmpty else { return }
-                DispatchQueue.main.async { [weak self] in
-                    Task { @MainActor in
-                        guard let self,
-                              self.isTokenActivityScanInFlight,
-                              self.isCodexDesktopMonitoringEnabled,
-                              !self.isMonitoringPaused
-                        else {
-                            return
+                if !force {
+                    DispatchQueue.main.async { [weak self] in
+                        Task { @MainActor in
+                            guard let self else { return }
+                            guard self.tokenActivityScanGeneration == scanGeneration,
+                                  self.codexCurrentAccount?.authFingerprint == expectedAccountFingerprint
+                            else {
+                                return
+                            }
+                            self.isTokenActivityScanInFlight = false
+                            self.isTokenActivityLoading = false
+                            self.liveTokenUsageScanBaseline = self.latestAgentTokenUsage?.effectiveTotalTokens
+                            self.lastObservedLiveTokenUsageTotal = self.latestAgentTokenUsage?.effectiveTotalTokens
                         }
-
-                        self.tokenActivityDays = partialDays
                     }
+                    return
                 }
             }
+
+            let days = scanner.scanDailyActivity(now: now, days: 30)
 
             DispatchQueue.main.async { [weak self] in
                 Task { @MainActor in
                     guard let self else { return }
+                    guard self.tokenActivityScanGeneration == scanGeneration,
+                          self.codexCurrentAccount?.authFingerprint == expectedAccountFingerprint
+                    else {
+                        return
+                    }
                     self.isTokenActivityScanInFlight = false
                     self.isTokenActivityLoading = false
                     self.liveTokenUsageScanBaseline = self.latestAgentTokenUsage?.effectiveTotalTokens
@@ -2280,8 +2867,27 @@ final class MenuBarStatusModel: ObservableObject {
                     }
 
                     self.tokenActivityDays = days
+                    self.persistCodexUsageSnapshotForCurrentAccount()
                 }
             }
+        }
+    }
+
+    func refreshCodexUsageForCurrentAccount(force: Bool = false) {
+        pollCodexRateLimitsIfNeeded(force: force)
+        refreshTokenActivityIfNeeded(force: force)
+    }
+
+    private func codexRateLimitFetchRoute() -> CodexRateLimitFetchRoute {
+        let manualCookieHeader = codexOpenAICookieMode == .manual ? codexManualOpenAICookieHeader : nil
+        let importsBrowserCookies = codexOpenAICookieMode == .automatic
+        switch codexUsageDataSource.resolvedSelectableValue {
+        case .automatic:
+            return .automatic(cookieHeader: manualCookieHeader, importsBrowserCookies: importsBrowserCookies)
+        case .oauthAPI:
+            return .oauthAPI
+        case .cliRPCPTY:
+            return .automatic(cookieHeader: manualCookieHeader, importsBrowserCookies: importsBrowserCookies)
         }
     }
 
@@ -2302,19 +2908,29 @@ final class MenuBarStatusModel: ObservableObject {
 
         isCodexRateLimitFetchInFlight = true
         lastCodexRateLimitFetchAt = now
+        codexUsageRefreshGeneration += 1
+        let refreshGeneration = codexUsageRefreshGeneration
+        let expectedAccountFingerprint = codexCurrentAccount?.authFingerprint
+        let fetchRoute = codexRateLimitFetchRoute()
         let fetcher = codexRateLimitFetcher
         let store = store
 
-        Task(priority: .utility) { [fetcher, store, weak self] in
+        Task(priority: .utility) { [fetcher, store, fetchRoute, weak self] in
             do {
-                let quota = try await fetcher.fetchQuota()
+                let usageStatus = try await fetcher.fetchUsageStatus(route: fetchRoute)
+                let quota = usageStatus.quota
+                guard let self else { return }
+                guard self.codexUsageRefreshGeneration == refreshGeneration,
+                      self.codexCurrentAccount?.authFingerprint == expectedAccountFingerprint
+                else {
+                    return
+                }
                 let snapshot = try store.applySessionQuota(
                     quota,
                     sessionID: "codex-rate-limits",
                     agent: "Codex",
                     updatedAt: quota.updatedAt
                 )
-                guard let self else { return }
                 self.isCodexRateLimitFetchInFlight = false
                 guard self.isCodexDesktopMonitoringEnabled,
                       !self.isMonitoringPaused
@@ -2323,9 +2939,16 @@ final class MenuBarStatusModel: ObservableObject {
                 }
 
                 self.updateLatestAgentQuota(quota)
+                self.latestCodexCredits = usageStatus.credits
+                self.persistCodexUsageSnapshotForCurrentAccount()
+                _ = try? self.codexAccountManager.refreshSavedCurrentAccountIfPossible()
+                self.refreshCodexAccounts()
+                self.persistCodexUsageSnapshotForCurrentAccount()
                 self.snapshot = snapshot
             } catch {
-                self?.isCodexRateLimitFetchInFlight = false
+                guard let self else { return }
+                guard self.codexUsageRefreshGeneration == refreshGeneration else { return }
+                self.isCodexRateLimitFetchInFlight = false
             }
         }
     }
@@ -2698,7 +3321,7 @@ final class MenuBarStatusModel: ObservableObject {
     var activeSignalLightAgentScopes: Set<SignalLightAgentScope> {
         let visibleSessions = ActivityPresentation.visibleSessions(from: activitySnapshot, limit: nil)
         return Set(
-            SignalLightAgentScope.selectableCases.filter { scope in
+            SignalLightAgentScope.visibleCases.filter { scope in
                 visibleSessions.contains { scope.matches(session: $0) }
             }
         )
@@ -2714,16 +3337,18 @@ final class MenuBarStatusModel: ObservableObject {
 
     var signalLightAgentUnavailableHint: String? {
         guard signalLightAgentSelectionMode == .manual else { return nil }
+        let selectedVisibleScopes = signalLightAgentScopes.intersection(Set(SignalLightAgentScope.visibleCases))
+        guard !selectedVisibleScopes.isEmpty else { return nil }
 
         let visibleSessions = ActivityPresentation.visibleSessions(from: activitySnapshot, limit: nil)
         let selectedHasVisibleSession = visibleSessions.contains { session in
-            Self.session(session, matches: signalLightAgentScopes)
+            Self.session(session, matches: selectedVisibleScopes)
         }
         guard !selectedHasVisibleSession else { return nil }
 
         let otherVisibleScopes = Set(
-            SignalLightAgentScope.selectableCases.filter { scope in
-                !signalLightAgentScopes.contains(scope)
+            SignalLightAgentScope.visibleCases.filter { scope in
+                !selectedVisibleScopes.contains(scope)
                     && visibleSessions.contains { scope.matches(session: $0) }
             }
         )
@@ -2801,7 +3426,7 @@ final class MenuBarStatusModel: ObservableObject {
     private func signalLightAgentScopesForDisplay(from displaySessions: [SessionStatus]) -> Set<SignalLightAgentScope> {
         switch signalLightAgentSelectionMode {
         case .manual:
-            return signalLightAgentScopes
+            return signalLightAgentScopes.intersection(Set(SignalLightAgentScope.visibleCases))
         case .following:
             guard let scope = followedSignalLightAgentScope(in: displaySessions) else {
                 return []
@@ -2817,7 +3442,7 @@ final class MenuBarStatusModel: ObservableObject {
             let updatedAt: Date
         }
 
-        let candidates = SignalLightAgentScope.selectableCases.compactMap { scope -> Candidate? in
+        let candidates = SignalLightAgentScope.visibleCases.compactMap { scope -> Candidate? in
             let matchingSessions = displaySessions.filter {
                 scope.matches(session: $0) && Self.isFollowCandidateSession($0)
             }
@@ -2947,7 +3572,8 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private func updateLatestAgentQuota(from snapshot: SignalSnapshot) {
-        if let quota = Self.latestQuota(in: snapshot),
+        if shouldApplyLocalCodexQuotaUpdates,
+           let quota = Self.latestQuota(in: snapshot),
            Self.latestQuota(quota, isNewerThan: latestAgentQuota) {
             updateLatestAgentQuota(quota)
         }
@@ -2960,6 +3586,116 @@ final class MenuBarStatusModel: ObservableObject {
     private func updateLatestAgentQuota(_ quota: AgentQuotaStatus) {
         latestAgentQuota = quota
         Self.cacheLatestAgentQuota(quota)
+        persistCodexUsageSnapshotForCurrentAccount()
+    }
+
+    private var shouldApplyLocalCodexQuotaUpdates: Bool {
+        codexUsageDataSource == .cliRPCPTY
+    }
+
+    private func clearLatestAgentQuotaCache() {
+        latestAgentQuota = nil
+        latestCodexCredits = nil
+        UserDefaults.standard.removeObject(forKey: Self.cachedLatestAgentQuotaKey)
+    }
+
+    private func clearLatestAgentTokenUsageCache() {
+        latestAgentTokenUsage = nil
+        liveTokenUsageScanBaseline = nil
+        lastObservedLiveTokenUsageTotal = nil
+        UserDefaults.standard.removeObject(forKey: Self.cachedLatestAgentTokenUsageKey)
+    }
+
+    private func clearTokenActivityCache() {
+        tokenActivityDays = []
+        lastTokenActivityScanAt = nil
+        isTokenActivityLoading = false
+    }
+
+    private func ensureDebugLogFileExists() {
+        let directory = debugLogFileURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: debugLogFileURL.path) {
+            let header = "Agent Signal Bar debug log\n"
+            try? header.write(to: debugLogFileURL, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func appendDebugLog(_ message: String) {
+        guard isDebugFileLoggingEnabled else { return }
+        ensureDebugLogFileExists()
+        let line = "[\(Date().formatted(date: .numeric, time: .standard))] \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: debugLogFileURL) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            _ = try? handle.write(contentsOf: data)
+        }
+    }
+
+    private func quotaDebugLine(_ quota: AgentQuotaStatus) -> String {
+        let reset = quota.resetsAt?.formatted(date: .numeric, time: .shortened) ?? "--"
+        return "quota window=\(quota.windowMinutes.map(String.init) ?? "--")m remaining=\(Int(quota.remainingPercent.rounded()))% resets=\(reset)"
+    }
+
+    private func prepareCodexUsageAfterAccountChange() {
+        codexUsageRefreshGeneration += 1
+        tokenActivityScanGeneration += 1
+        isCodexRateLimitFetchInFlight = false
+        isTokenActivityScanInFlight = false
+        clearLatestAgentQuotaCache()
+        clearLatestAgentTokenUsageCache()
+        clearTokenActivityCache()
+        lastCodexRateLimitFetchAt = nil
+        hydrateCodexUsageSnapshotForCurrentAccount()
+    }
+
+    private func codexTokenActivityScannerForCurrentAccount() -> CodexTokenActivityScanner {
+        codexTokenActivityScanner
+    }
+
+    private func hydrateCodexUsageSnapshotForCurrentAccount() {
+        guard let account = codexCurrentAccount,
+              let snapshot = codexUsageSnapshotStore.snapshot(for: account)
+        else {
+            return
+        }
+
+        latestAgentQuota = snapshot.quota
+        latestCodexCredits = snapshot.credits
+        if snapshot.tokenActivityCacheVersion == CodexTokenActivityScanner.currentCacheVersion {
+            latestAgentTokenUsage = snapshot.tokenUsage ?? snapshot.quota?.tokenUsage
+            tokenActivityDays = snapshot.tokenActivityDays
+        } else {
+            latestAgentTokenUsage = nil
+            tokenActivityDays = []
+        }
+        liveTokenUsageScanBaseline = latestAgentTokenUsage?.effectiveTotalTokens
+        lastObservedLiveTokenUsageTotal = latestAgentTokenUsage?.effectiveTotalTokens
+        if let quota = snapshot.quota {
+            Self.cacheLatestAgentQuota(quota)
+        }
+        if let tokenUsage = latestAgentTokenUsage {
+            Self.cacheLatestAgentTokenUsage(tokenUsage)
+        }
+    }
+
+    private func persistCodexUsageSnapshotForCurrentAccount() {
+        guard let account = codexCurrentAccount else { return }
+        codexUsageSnapshotStore.store(
+            account: account,
+            quota: latestAgentQuota,
+            credits: latestCodexCredits,
+            tokenUsage: latestAgentTokenUsage,
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: tokenActivityDays
+        )
+    }
+
+    private func applyCodexAccountState(_ state: CodexAccountState) {
+        codexCurrentAccount = state.currentAccount
+        codexSavedAccounts = state.savedAccounts
+        codexActiveSavedAccountID = state.activeSavedAccountID
     }
 
     private func updateLatestAgentTokenUsage(_ usage: AgentTokenUsage) {
@@ -2972,6 +3708,7 @@ final class MenuBarStatusModel: ObservableObject {
         }
         latestAgentTokenUsage = usage
         Self.cacheLatestAgentTokenUsage(usage)
+        persistCodexUsageSnapshotForCurrentAccount()
     }
 
     private static func latestQuota(_ quota: AgentQuotaStatus?, isNewerThan other: AgentQuotaStatus?) -> Bool {
@@ -2998,6 +3735,29 @@ final class MenuBarStatusModel: ObservableObject {
 
     private static func cacheLatestAgentTokenUsage(_ usage: AgentTokenUsage) {
         cacheValue(usage, forKey: cachedLatestAgentTokenUsageKey)
+    }
+
+    private static func loadManualOpenAICookieHeader(secretStore: KeychainSecretStore) -> String {
+        if let value = try? secretStore.string(for: manualOpenAICookieKey),
+           !value.isEmpty {
+            UserDefaults.standard.removeObject(forKey: legacyManualOpenAICookieUserDefaultsKey)
+            return value
+        }
+
+        guard let legacyValue = UserDefaults.standard.string(forKey: legacyManualOpenAICookieUserDefaultsKey),
+              !legacyValue.isEmpty
+        else {
+            UserDefaults.standard.removeObject(forKey: legacyManualOpenAICookieUserDefaultsKey)
+            return ""
+        }
+
+        do {
+            try secretStore.set(legacyValue, for: manualOpenAICookieKey)
+            UserDefaults.standard.removeObject(forKey: legacyManualOpenAICookieUserDefaultsKey)
+        } catch {
+            return legacyValue
+        }
+        return legacyValue
     }
 
     private static func cachedValue<T: Decodable>(forKey key: String, as type: T.Type) -> T? {
@@ -3119,6 +3879,98 @@ final class MenuBarStatusModel: ObservableObject {
 
     private func genericAgentHookURL() -> URL? {
         bundledScriptURL(named: "generic-agent-signal-hook")
+    }
+
+    private func bundledCLIURL() -> URL? {
+        var candidates: [URL] = []
+
+        if let resourceURL = Bundle.main.resourceURL {
+            candidates.append(resourceURL.appendingPathComponent("dist/bin/agent-signal"))
+        }
+
+        let bundleURL = Bundle.main.bundleURL.standardizedFileURL
+        let distParent = bundleURL.deletingLastPathComponent()
+        if distParent.lastPathComponent == "dist" {
+            candidates.append(
+                distParent
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("dist/bin/agent-signal")
+            )
+        }
+
+        candidates.append(
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("dist/bin/agent-signal")
+        )
+
+        let developmentBuildRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build")
+        if let enumerator = FileManager.default.enumerator(
+            at: developmentBuildRoot,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) {
+            for case let candidate as URL in enumerator where candidate.lastPathComponent == "agent-signal" {
+                candidates.append(candidate)
+            }
+        }
+
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
+    private func preferredCLIInstallDirectory() -> URL {
+        let homebrewBin = URL(fileURLWithPath: "/opt/homebrew/bin", isDirectory: true)
+        if FileManager.default.fileExists(atPath: homebrewBin.path) {
+            return homebrewBin
+        }
+
+        return URL(fileURLWithPath: "/usr/local/bin", isDirectory: true)
+    }
+
+    nonisolated private static func installCLI(sourcePath: String, destinationPath: String) throws {
+        let destinationDirectory = URL(fileURLWithPath: destinationPath).deletingLastPathComponent()
+        let fileManager = FileManager.default
+
+        if fileManager.isWritableFile(atPath: destinationDirectory.path) {
+            try fileManager.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+            if fileManager.fileExists(atPath: destinationPath) {
+                try fileManager.removeItem(atPath: destinationPath)
+            }
+            try fileManager.copyItem(atPath: sourcePath, toPath: destinationPath)
+            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destinationPath)
+            return
+        }
+
+        let command = """
+        mkdir -p \(Self.shellQuoted(destinationDirectory.path)) && \
+        rm -f \(Self.shellQuoted(destinationPath)) && \
+        cp \(Self.shellQuoted(sourcePath)) \(Self.shellQuoted(destinationPath)) && \
+        chmod 755 \(Self.shellQuoted(destinationPath))
+        """
+        let script = "do shell script \(Self.appleScriptQuoted(command)) with administrator privileges"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let message = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw CLIInstallError(message: message?.isEmpty == false ? message! : "administrator authorization was cancelled or failed")
+        }
+    }
+
+    nonisolated private static func shellQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    nonisolated private static func appleScriptQuoted(_ value: String) -> String {
+        "\"\(value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
     }
 
     private func bundledScriptURL(named scriptName: String) -> URL? {

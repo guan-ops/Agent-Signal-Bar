@@ -152,6 +152,30 @@ for license_resource in LICENSE NOTICE ASSET_LICENSES.md TRADEMARKS.md; do
   [[ -f "$ROOT_DIR/$license_resource" ]] || continue
   cp "$ROOT_DIR/$license_resource" "$APP_RESOURCES/$license_resource"
 done
+THIRD_PARTY_LICENSES_DIR="$APP_RESOURCES/ThirdPartyLicenses"
+mkdir -p "$THIRD_PARTY_LICENSES_DIR"
+cat >"$APP_RESOURCES/THIRD_PARTY_NOTICES.md" <<'EOF'
+# Third-Party Notices
+
+Agent Signal Bar bundles or links the following third-party components:
+
+- Sparkle, licensed under the MIT License. See `ThirdPartyLicenses/Sparkle-LICENSE`.
+- SweetCookieKit, licensed under the MIT License. See `ThirdPartyLicenses/SweetCookieKit-LICENSE`.
+
+These notices are provided for attribution and license compliance.
+EOF
+SPARKLE_LICENSE="$(find "$ROOT_DIR/.build/checkouts/Sparkle" -maxdepth 2 -name LICENSE -type f -print 2>/dev/null | head -n 1 || true)"
+SWEETCOOKIEKIT_LICENSE="$(find "$ROOT_DIR/.build/checkouts/SweetCookieKit" -maxdepth 2 -name LICENSE -type f -print 2>/dev/null | head -n 1 || true)"
+if [[ -n "$SPARKLE_LICENSE" ]]; then
+  cp "$SPARKLE_LICENSE" "$THIRD_PARTY_LICENSES_DIR/Sparkle-LICENSE"
+else
+  echo "warning: Sparkle LICENSE not found in .build/checkouts" >&2
+fi
+if [[ -n "$SWEETCOOKIEKIT_LICENSE" ]]; then
+  cp "$SWEETCOOKIEKIT_LICENSE" "$THIRD_PARTY_LICENSES_DIR/SweetCookieKit-LICENSE"
+else
+  echo "warning: SweetCookieKit LICENSE not found in .build/checkouts" >&2
+fi
 cp "$VERSION_FILE" "$VERSION_RESOURCE"
 chmod +x "$APP_BINARY"
 chmod +x "$APP_RESOURCES/dist/bin/agent-signal" \

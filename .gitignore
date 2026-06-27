@@ -1,4 +1,5 @@
 .build/
+.build-test/
 .swiftpm/
 .codex/hooks.json
 .codex/hooks.json.*
