@@ -54,33 +54,6 @@ private enum FloatingSignalPanelLayout {
     }
 }
 
-struct FloatingAlertSoundRepeatLimiter {
-    static let defaultMaximumRepeats = 3
-
-    var maximumRepeats = Self.defaultMaximumRepeats
-    private(set) var episodeKey: String?
-    private(set) var repeatCount = 0
-
-    var canPlay: Bool {
-        repeatCount < maximumRepeats
-    }
-
-    mutating func startEpisode(_ key: String) {
-        guard episodeKey != key else { return }
-        episodeKey = key
-        repeatCount = 0
-    }
-
-    mutating func recordPlay() {
-        repeatCount += 1
-    }
-
-    mutating func reset() {
-        episodeKey = nil
-        repeatCount = 0
-    }
-}
-
 @MainActor
 final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
     private let model: MenuBarStatusModel
@@ -90,8 +63,6 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
     private var cancellables = Set<AnyCancellable>()
     private let soundPlayer = FloatingSignalSoundPlayer()
     private var lastSoundSignature: String?
-    private var lastAlertSoundAt = Date.distantPast
-    private var alertSoundRepeatLimiter = FloatingAlertSoundRepeatLimiter()
     private var didPrimeSoundState = false
     private var isApplyingFrame = false
     private var nextScaleResizeAnchor: ResizeAnchor?
@@ -106,7 +77,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
 
     func start() {
         updateVisibility()
-        evaluateAlertSound()
+        evaluateCompletionSound()
     }
 
     func applyAppearance() {
@@ -192,17 +163,12 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         .store(in: &cancellables)
 
         model.$floatingSignalSoundTestTick.dropFirst().sink { [weak self] _ in
-            Task { @MainActor in self?.previewAlertSound(cue: .completion) }
+            Task { @MainActor in self?.previewSignalSound(cue: .completion) }
         }
         .store(in: &cancellables)
 
         model.$floatingSignalWaitingSoundTestTick.dropFirst().sink { [weak self] _ in
-            Task { @MainActor in self?.previewAlertSound(cue: .waiting) }
-        }
-        .store(in: &cancellables)
-
-        model.$floatingSignalAlertSoundTestTick.dropFirst().sink { [weak self] _ in
-            Task { @MainActor in self?.previewAlertSound(cue: .alert) }
+            Task { @MainActor in self?.previewSignalSound(cue: .waiting) }
         }
         .store(in: &cancellables)
 
@@ -219,7 +185,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         for publisher in soundStatePublishers {
             publisher.sink { [weak self] _ in
                 Task { @MainActor in
-                    self?.evaluateAlertSound()
+                    self?.evaluateCompletionSound()
                     self?.evaluateActiveGreenPulseSound()
                 }
             }
@@ -228,7 +194,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
 
         model.animationClock.$tick.sink { [weak self] tick in
             Task { @MainActor in
-                self?.evaluateAlertSound()
+                self?.evaluateCompletionSound()
                 self?.evaluateActiveGreenPulseSound(tickOverride: tick)
             }
         }
@@ -434,64 +400,46 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         model.setFloatingSignalOrigin(movedPanel.frame.origin)
     }
 
-    private enum AlertSoundMode {
-        case none
-        case once
-        case repeating
-    }
-
-    private func evaluateAlertSound() {
+    private func evaluateCompletionSound() {
         guard model.isSignalSoundSurfaceEnabled, model.isFloatingSignalSoundEnabled else {
+            didPrimeSoundState = true
+            lastSoundSignature = nil
+            soundPlayer.stopAll()
             return
         }
 
-        let mode = alertSoundMode(for: model.floatingSignalLightSnapshot.aggregate)
-        guard mode != .none else {
+        guard isSoundEnabled(for: .completion) else {
+            soundPlayer.stop(cue: .completion)
+            return
+        }
+
+        guard model.floatingSignalLightSnapshot.aggregate.displayState == .completed else {
             didPrimeSoundState = true
             lastSoundSignature = nil
-            alertSoundRepeatLimiter.reset()
+            soundPlayer.stop(cue: .completion)
             return
         }
 
         let signature = soundSignature()
-        let episodeKey = soundEpisodeKey()
-        alertSoundRepeatLimiter.startEpisode(episodeKey)
-
         if !didPrimeSoundState {
             didPrimeSoundState = true
             lastSoundSignature = signature
-            lastAlertSoundAt = Date()
             return
         }
 
-        let now = Date()
-        switch mode {
-        case .none:
-            return
-        case .once:
-            guard signature != lastSoundSignature else { return }
-        case .repeating:
-            guard alertSoundRepeatLimiter.canPlay else { return }
-            guard signature != lastSoundSignature || now.timeIntervalSince(lastAlertSoundAt) >= 12 else {
-                return
-            }
-        }
+        guard signature != lastSoundSignature else { return }
 
         lastSoundSignature = signature
-        lastAlertSoundAt = now
-        if mode == .repeating {
-            alertSoundRepeatLimiter.recordPlay()
-        }
-        playAlertSound(force: false, cue: soundCue(for: model.floatingSignalLightSnapshot.aggregate))
+        playSignalSound(force: false, cue: .completion)
     }
 
-    private func playAlertSound(force: Bool, cue: FloatingSignalSoundCue) {
+    private func playSignalSound(force: Bool, cue: FloatingSignalSoundCue) {
         guard force || isSoundEnabled(for: cue) else { return }
         guard let asset = soundAsset(for: cue) else { return }
-        soundPlayer.play(asset: asset, level: model.floatingSignalSoundLevel)
+        soundPlayer.play(asset: asset, cue: cue, level: model.floatingSignalSoundLevel)
     }
 
-    private func previewAlertSound(cue: FloatingSignalSoundCue) {
+    private func previewSignalSound(cue: FloatingSignalSoundCue) {
         guard let asset = soundAsset(for: cue) else { return }
         soundPlayer.preview(asset: asset, level: model.floatingSignalSoundLevel)
     }
@@ -499,12 +447,14 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
     private func evaluateActiveGreenPulseSound(tickOverride: Int? = nil) {
         guard model.isSignalSoundSurfaceEnabled, isSoundEnabled(for: .waiting) else {
             wasActiveGreenLitForSound = false
+            soundPlayer.stop(cue: .waiting)
             return
         }
 
         let signal = model.floatingSignalLightSnapshot.aggregate
         guard signal.displayState == .active, !model.floatingSignalLightAllLightsOn else {
             wasActiveGreenLitForSound = false
+            soundPlayer.stop(cue: .waiting)
             return
         }
 
@@ -523,7 +473,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         guard isGreenLit, !wasActiveGreenLitForSound else {
             return
         }
-        playAlertSound(force: false, cue: .waiting)
+        playSignalSound(force: false, cue: .waiting)
     }
 
     private func isSoundEnabled(for cue: FloatingSignalSoundCue) -> Bool {
@@ -536,8 +486,6 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
             return model.isFloatingSignalCompletionSoundEnabled
         case .waiting:
             return model.isFloatingSignalWaitingSoundEnabled
-        case .alert:
-            return model.isFloatingSignalAlertSoundEnabled
         }
     }
 
@@ -553,34 +501,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
                 return nil
             }
             return .resource(resourceName)
-        case .alert:
-            switch model.floatingSignalAlertSound {
-            case .off:
-                return nil
-            case .defaultPulse:
-                return .defaultPulse
-            case .aiBeacon, .aiUrgent:
-                guard let resourceName = model.floatingSignalAlertSound.resourceName else {
-                    return nil
-                }
-                return .resource(resourceName)
-            }
         }
-    }
-
-    private func alertSoundMode(for signal: AgentSignal) -> AlertSoundMode {
-        switch signal.displayState {
-        case .completed, .stale:
-            return .once
-        case .needsReview, .permission, .blocked:
-            return .repeating
-        case .ready, .active, .paused:
-            return .none
-        }
-    }
-
-    private func soundCue(for signal: AgentSignal) -> FloatingSignalSoundCue {
-        signal.displayState == .completed ? .completion : .alert
     }
 
     private func soundSignature() -> String {
@@ -589,26 +510,6 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         return "\(snapshot.aggregate.rawValue)|\(Int(updatedAt))|\(snapshot.sessions.count)"
     }
 
-    private func soundEpisodeKey() -> String {
-        let snapshot = model.floatingSignalLightSnapshot
-        let alertSessions = snapshot.sessions
-            .filter { $0.signal.displayState == snapshot.aggregate.displayState }
-            .map { session in
-                [
-                    session.sessionID,
-                    session.signal.rawValue,
-                    session.agent ?? "",
-                    session.lastEvent ?? ""
-                ].joined(separator: "|")
-            }
-            .sorted()
-
-        guard !alertSessions.isEmpty else {
-            return snapshot.aggregate.rawValue
-        }
-
-        return "\(snapshot.aggregate.rawValue):\(alertSessions.joined(separator: ","))"
-    }
 }
 
 private extension NSRect {
@@ -2952,12 +2853,10 @@ private func floatingInfoColor(for signal: AgentSignal) -> Color {
 private enum FloatingSignalSoundCue {
     case completion
     case waiting
-    case alert
 }
 
 private enum FloatingSignalSoundAsset {
     case resource(String)
-    case defaultPulse
 }
 
 struct FloatingSignalSoundResourceResolver {
@@ -3036,10 +2935,14 @@ struct FloatingSignalSoundResourceResolver {
 private final class FloatingSignalSoundPlayer: NSObject, AVAudioPlayerDelegate {
     private var players: [UUID: AVAudioPlayer] = [:]
     private var previewToken: UUID?
+    private var activeToken: UUID?
+    private var activeCue: FloatingSignalSoundCue?
     private let resourceResolver = FloatingSignalSoundResourceResolver()
-    private static let wavData = makeCrossingPulseWAV()
+    private static let fallbackWavData = makeCrossingPulseWAV()
 
-    func play(asset: FloatingSignalSoundAsset, level: FloatingSignalSoundLevel) {
+    func play(asset: FloatingSignalSoundAsset, cue: FloatingSignalSoundCue, level: FloatingSignalSoundLevel) {
+        stopPlayback()
+
         do {
             let player = try makePlayer(asset: asset)
             player.delegate = self
@@ -3047,6 +2950,8 @@ private final class FloatingSignalSoundPlayer: NSObject, AVAudioPlayerDelegate {
             player.prepareToPlay()
             let token = retain(player)
             let playerID = ObjectIdentifier(player)
+            activeToken = token
+            activeCue = cue
             if !player.play() {
                 release(token, matching: playerID)
             }
@@ -3056,7 +2961,7 @@ private final class FloatingSignalSoundPlayer: NSObject, AVAudioPlayerDelegate {
     }
 
     func preview(asset: FloatingSignalSoundAsset, level: FloatingSignalSoundLevel) {
-        stopPreview()
+        stopPlayback()
 
         do {
             let player = try makePlayer(asset: asset)
@@ -3072,6 +2977,18 @@ private final class FloatingSignalSoundPlayer: NSObject, AVAudioPlayerDelegate {
         } catch {
             NSSound.beep()
         }
+    }
+
+    func stop(cue: FloatingSignalSoundCue) {
+        guard activeCue == cue else {
+            return
+        }
+
+        stopPlayback()
+    }
+
+    func stopAll() {
+        stopPlayback()
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
@@ -3116,20 +3033,23 @@ private final class FloatingSignalSoundPlayer: NSObject, AVAudioPlayerDelegate {
         if previewToken == token {
             previewToken = nil
         }
+        if activeToken == token {
+            activeToken = nil
+            activeCue = nil
+        }
         player.delegate = nil
         players.removeValue(forKey: token)
     }
 
-    private func stopPreview() {
-        guard let token = previewToken, let player = players[token] else {
-            previewToken = nil
-            return
+    private func stopPlayback() {
+        for player in players.values {
+            player.stop()
+            player.delegate = nil
         }
-
-        player.stop()
-        player.delegate = nil
-        players.removeValue(forKey: token)
+        players.removeAll()
         previewToken = nil
+        activeToken = nil
+        activeCue = nil
     }
 
     private func makePlayer(asset: FloatingSignalSoundAsset) throws -> AVAudioPlayer {
@@ -3138,9 +3058,7 @@ private final class FloatingSignalSoundPlayer: NSObject, AVAudioPlayerDelegate {
             if let url = resourceResolver.url(named: resourceName) {
                 return try AVAudioPlayer(contentsOf: url)
             }
-            return try AVAudioPlayer(data: Self.wavData)
-        case .defaultPulse:
-            return try AVAudioPlayer(data: Self.wavData)
+            return try AVAudioPlayer(data: Self.fallbackWavData)
         }
     }
 

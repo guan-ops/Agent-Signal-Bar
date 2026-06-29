@@ -466,19 +466,6 @@ extension MenuBarStatusModel {
         }
     }
 
-    func displayName(for sound: FloatingSignalAlertSound) -> String {
-        switch sound {
-        case .off:
-            return text("关闭", "Off")
-        case .defaultPulse:
-            return text("脉冲", "Pulse")
-        case .aiBeacon:
-            return text("提醒", "Beacon")
-        case .aiUrgent:
-            return text("警示", "Alert")
-        }
-    }
-
     func displayName(for layout: TrafficSignalLayout) -> String {
         switch layout {
         case .horizontal:

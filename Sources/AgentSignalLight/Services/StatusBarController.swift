@@ -16,6 +16,9 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         return menu
     }()
     private var popover: NSPopover?
+    private var popoverOutsideLocalMonitor: Any?
+    private var popoverOutsideGlobalMonitor: Any?
+    private var popoverEscapeKeyMonitor: Any?
     private var recoveryWindow: NSWindow?
     private var didPresentRecoveryWindowForCurrentDisable = false
     private var lastRenderKey: StatusRenderKey?
@@ -804,6 +807,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         popover.contentViewController?.view.appearance = model.appTheme.nsAppearance
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         self.popover = popover
+        installPopoverAutoCloseMonitors()
 
         DispatchQueue.main.async { [weak self] in
             guard let self,
@@ -819,6 +823,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     private func closePopover() {
+        removePopoverAutoCloseMonitors()
         popover?.performClose(nil)
         popover = nil
         popoverOpenedAt = .distantPast
@@ -831,8 +836,87 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             return
         }
 
+        removePopoverAutoCloseMonitors()
         popover = nil
         popoverOpenedAt = .distantPast
+    }
+
+    private func installPopoverAutoCloseMonitors() {
+        removePopoverAutoCloseMonitors()
+
+        popoverOutsideLocalMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] event in
+            guard let self else {
+                return event
+            }
+
+            if self.shouldClosePopover(for: event) {
+                self.closePopover()
+            }
+            return event
+        }
+
+        popoverOutsideGlobalMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.closePopover()
+            }
+        }
+
+        popoverEscapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  event.keyCode == 53,
+                  self.popover?.isShown == true
+            else {
+                return event
+            }
+
+            self.closePopover()
+            return nil
+        }
+    }
+
+    private func removePopoverAutoCloseMonitors() {
+        [
+            popoverOutsideLocalMonitor,
+            popoverOutsideGlobalMonitor,
+            popoverEscapeKeyMonitor
+        ]
+        .compactMap { $0 }
+        .forEach(NSEvent.removeMonitor)
+
+        popoverOutsideLocalMonitor = nil
+        popoverOutsideGlobalMonitor = nil
+        popoverEscapeKeyMonitor = nil
+    }
+
+    private func shouldClosePopover(for event: NSEvent) -> Bool {
+        guard popover?.isShown == true else {
+            return false
+        }
+
+        let screenPoint = Self.screenPoint(for: event)
+        if let popoverWindow = popover?.contentViewController?.view.window,
+           popoverWindow.frame.contains(screenPoint) {
+            return false
+        }
+
+        if let statusButtonWindow = statusItem?.button?.window,
+           statusButtonWindow.frame.contains(screenPoint) {
+            return false
+        }
+
+        return true
+    }
+
+    private static func screenPoint(for event: NSEvent) -> NSPoint {
+        guard let window = event.window else {
+            return NSEvent.mouseLocation
+        }
+
+        return window.convertPoint(toScreen: event.locationInWindow)
     }
 
     func showDebugWindow() {

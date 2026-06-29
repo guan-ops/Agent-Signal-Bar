@@ -215,25 +215,3 @@ enum FloatingSignalWaitingSound: String, CaseIterable, Hashable {
         }
     }
 }
-
-enum FloatingSignalAlertSound: String, CaseIterable, Hashable {
-    case off
-    case defaultPulse
-    case aiBeacon
-    case aiUrgent
-
-    var isEnabled: Bool {
-        self != .off
-    }
-
-    var resourceName: String? {
-        switch self {
-        case .off, .defaultPulse:
-            return nil
-        case .aiBeacon:
-            return "alert-ai-beacon"
-        case .aiUrgent:
-            return "alert-ai-urgent"
-        }
-    }
-}

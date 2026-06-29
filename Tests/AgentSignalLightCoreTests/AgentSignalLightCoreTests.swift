@@ -62,51 +62,6 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(horizontalBacking.height, (16 + 12) * scale.visualScale, accuracy: 0.01)
     }
 
-    func testFloatingAlertSoundRepeatLimiterCapsSingleEpisode() {
-        var limiter = FloatingAlertSoundRepeatLimiter(maximumRepeats: 3)
-
-        limiter.startEpisode("permission:codex-cli")
-        XCTAssertTrue(limiter.canPlay)
-        limiter.recordPlay()
-        XCTAssertTrue(limiter.canPlay)
-        limiter.recordPlay()
-        XCTAssertTrue(limiter.canPlay)
-        limiter.recordPlay()
-        XCTAssertFalse(limiter.canPlay)
-
-        limiter.startEpisode("permission:claude-cli")
-        XCTAssertTrue(limiter.canPlay)
-        XCTAssertEqual(limiter.repeatCount, 0)
-
-        limiter.recordPlay()
-        limiter.reset()
-        XCTAssertTrue(limiter.canPlay)
-        XCTAssertNil(limiter.episodeKey)
-        XCTAssertEqual(limiter.repeatCount, 0)
-    }
-
-    func testSoundRepeatLimitDoesNotClearLampState() throws {
-        let fixture = try makeTemporaryStore()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        var limiter = FloatingAlertSoundRepeatLimiter(maximumRepeats: 3)
-
-        _ = try fixture.store.applySessionSignal(
-            .permissionRequest,
-            sessionID: "codex-cli:thread",
-            agent: "codex-cli",
-            lastEvent: "PermissionRequest"
-        )
-        limiter.startEpisode("permission:codex-cli:thread")
-        limiter.recordPlay()
-        limiter.recordPlay()
-        limiter.recordPlay()
-
-        let snapshot = fixture.store.readSnapshot()
-        XCTAssertFalse(limiter.canPlay)
-        XCTAssertEqual(snapshot.aggregate, .permission)
-        XCTAssertEqual(snapshot.sessions.first?.signal, .permissionRequest)
-    }
-
     func testSignalNormalizationAcceptsHumanInputVariants() {
         XCTAssert(AgentSignal.normalized("tool-done") == .toolDone)
         XCTAssert(AgentSignal.normalized(" session start ") == .sessionStart)

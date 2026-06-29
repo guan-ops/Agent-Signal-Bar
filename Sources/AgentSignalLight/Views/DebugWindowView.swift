@@ -364,7 +364,6 @@ struct DebugWindowView: View {
         case doneEffect
         case completionSound
         case waitingSound
-        case alertSound
     }
 
     private struct SignalLightAgentDropdownSection: Identifiable {
@@ -521,7 +520,7 @@ struct DebugWindowView: View {
 
     private var isGeneralDropdownExpanded: Bool {
         switch expandedSettingsDropdown {
-        case .language, .theme, .completionSound, .waitingSound, .alertSound:
+        case .language, .theme, .completionSound, .waitingSound:
             return true
         default:
             return false
@@ -602,26 +601,6 @@ struct DebugWindowView: View {
                         width: settingsPickerWidth
                     ) {
                         model.setFloatingSignalWaitingSound(sound)
-                    }
-                }
-            }
-        }
-    }
-
-    private var alertSoundMenu: some View {
-        inlineDropdown(
-            id: .alertSound,
-            title: model.displayName(for: model.floatingSignalAlertSound),
-            width: settingsPickerWidth
-        ) {
-            dropdownOptions(width: settingsPickerWidth) {
-                ForEach(FloatingSignalAlertSound.allCases, id: \.self) { sound in
-                    dropdownOption(
-                        model.displayName(for: sound),
-                        isSelected: model.floatingSignalAlertSound == sound,
-                        width: settingsPickerWidth
-                    ) {
-                        model.setFloatingSignalAlertSound(sound)
                     }
                 }
             }
@@ -2838,18 +2817,7 @@ struct DebugWindowView: View {
                     }
                 }
 
-                settingRow(model.text("告警提示音", "Alert sound")) {
-                    alertSoundMenu
-                }
-                .zIndex(expandedSettingsDropdown == .alertSound ? 1000 : 0)
-
-                settingControlRow {
-                    soundPreviewButton(disabled: !model.isFloatingSignalAlertSoundEnabled) {
-                        model.previewFloatingSignalAlertSound()
-                    }
-                }
-
-                settingRow(model.text("提醒音量", "Alert volume")) {
+                settingRow(model.text("声音音量", "Sound volume")) {
                     compactSegmentedControl(
                         options: FloatingSignalSoundLevel.allCases,
                         selection: floatingSignalSoundLevelBinding

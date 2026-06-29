@@ -418,10 +418,8 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var isFloatingSignalSoundEnabled: Bool
     @Published var floatingSignalCompletionSound: FloatingSignalCompletionSound
     @Published var floatingSignalWaitingSound: FloatingSignalWaitingSound
-    @Published var floatingSignalAlertSound: FloatingSignalAlertSound
     @Published var isFloatingSignalCompletionSoundEnabled: Bool
     @Published var isFloatingSignalWaitingSoundEnabled: Bool
-    @Published var isFloatingSignalAlertSoundEnabled: Bool
     @Published var floatingSignalSoundLevel: FloatingSignalSoundLevel
     @Published var isFloatingSignalInfoBadgeEnabled: Bool
     @Published var isFloatingSignalQuotaBadgeEnabled: Bool
@@ -455,7 +453,6 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var lastError: String?
     @Published private(set) var floatingSignalSoundTestTick = 0
     @Published private(set) var floatingSignalWaitingSoundTestTick = 0
-    @Published private(set) var floatingSignalAlertSoundTestTick = 0
     @Published private(set) var tokenActivityDays: [CodexTokenActivityDay] = []
     @Published private(set) var isTokenActivityLoading = false
     @Published private(set) var isCodexRateLimitFetchInFlight = false
@@ -646,16 +643,12 @@ final class MenuBarStatusModel: ObservableObject {
             UserDefaults.standard.string(forKey: "floatingSignalCompletionSound")
         let storedFloatingSignalWaitingSound =
             UserDefaults.standard.string(forKey: "floatingSignalWaitingSound")
-        let storedFloatingSignalAlertSound =
-            UserDefaults.standard.string(forKey: "floatingSignalAlertSound")
         let storedFloatingSignalSoundEnabled =
             UserDefaults.standard.object(forKey: "isFloatingSignalSoundEnabled") as? Bool
         let storedFloatingSignalCompletionSoundEnabled =
             UserDefaults.standard.object(forKey: "isFloatingSignalCompletionSoundEnabled") as? Bool
         let storedFloatingSignalWaitingSoundEnabled =
             UserDefaults.standard.object(forKey: "isFloatingSignalWaitingSoundEnabled") as? Bool
-        let storedFloatingSignalAlertSoundEnabled =
-            UserDefaults.standard.object(forKey: "isFloatingSignalAlertSoundEnabled") as? Bool
         let storedAutomaticUpdateCheckEnabled =
             UserDefaults.standard.object(forKey: "isAutomaticUpdateCheckEnabled") as? Bool
         let storedLastAutomaticUpdateCheckAt =
@@ -787,13 +780,6 @@ final class MenuBarStatusModel: ObservableObject {
                 : .off)
         floatingSignalWaitingSound = resolvedFloatingSignalWaitingSound
         isFloatingSignalWaitingSoundEnabled = resolvedFloatingSignalWaitingSound.isEnabled
-        let resolvedFloatingSignalAlertSound =
-            storedFloatingSignalAlertSound.flatMap(FloatingSignalAlertSound.init(rawValue:))
-            ?? ((storedFloatingSignalAlertSoundEnabled ?? resolvedFloatingSignalSoundEnabled)
-                ? .defaultPulse
-                : .off)
-        floatingSignalAlertSound = resolvedFloatingSignalAlertSound
-        isFloatingSignalAlertSoundEnabled = resolvedFloatingSignalAlertSound.isEnabled
         floatingSignalSoundLevel =
             storedFloatingSignalSoundLevel.flatMap(FloatingSignalSoundLevel.init(rawValue:)) ?? .standard
         isFloatingSignalInfoBadgeEnabled = storedFloatingSignalInfoBadgeEnabled ?? true
@@ -1329,10 +1315,6 @@ final class MenuBarStatusModel: ObservableObject {
         setFloatingSignalWaitingSound(enabled ? .newZealandCrossing : .off)
     }
 
-    func setFloatingSignalAlertSoundEnabled(_ enabled: Bool) {
-        setFloatingSignalAlertSound(enabled ? .defaultPulse : .off)
-    }
-
     func setFloatingSignalCompletionSound(_ sound: FloatingSignalCompletionSound) {
         floatingSignalCompletionSound = sound
         isFloatingSignalCompletionSoundEnabled = sound.isEnabled
@@ -1345,13 +1327,6 @@ final class MenuBarStatusModel: ObservableObject {
         isFloatingSignalWaitingSoundEnabled = sound.isEnabled
         UserDefaults.standard.set(sound.rawValue, forKey: "floatingSignalWaitingSound")
         UserDefaults.standard.set(sound.isEnabled, forKey: "isFloatingSignalWaitingSoundEnabled")
-    }
-
-    func setFloatingSignalAlertSound(_ sound: FloatingSignalAlertSound) {
-        floatingSignalAlertSound = sound
-        isFloatingSignalAlertSoundEnabled = sound.isEnabled
-        UserDefaults.standard.set(sound.rawValue, forKey: "floatingSignalAlertSound")
-        UserDefaults.standard.set(sound.isEnabled, forKey: "isFloatingSignalAlertSoundEnabled")
     }
 
     func setFloatingSignalSoundLevel(_ level: FloatingSignalSoundLevel) {
@@ -1467,10 +1442,6 @@ final class MenuBarStatusModel: ObservableObject {
 
     func previewFloatingSignalWaitingSound() {
         floatingSignalWaitingSoundTestTick &+= 1
-    }
-
-    func previewFloatingSignalAlertSound() {
-        floatingSignalAlertSoundTestTick &+= 1
     }
 
     func savedFloatingSignalOrigin() -> NSPoint? {

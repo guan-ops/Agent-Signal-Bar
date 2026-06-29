@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/release-v1.5.1-111827.svg" alt="Latest release: v1.5.1"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/release-v1.5.2-111827.svg" alt="Latest release: v1.5.2"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-111827.svg" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Swift-6.0-F05138.svg" alt="Swift 6.0">
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/download-DMG-0ea5e9.svg" alt="Download DMG"></a>
@@ -57,7 +57,7 @@ Agent Signal Bar is a local-first macOS app that uses three red, yellow, and gre
   <img src="docs/assets/floating-signal-light-v1.4.1.png" alt="Agent Signal Bar floating desktop signal light with quota, running-agent, and token badges" width="286">
 </p>
 
-The floating signal light stays visible on the desktop, syncs with the menu bar light, and supports dragging, resizing, vertical or horizontal layouts, compact running-agent, quota, and token badges, plus small popovers for current sessions and usage. Sound alerts can be configured separately for completion, green flashing, and warning states.
+The floating signal light stays visible on the desktop, syncs with the menu bar light, and supports dragging, resizing, vertical or horizontal layouts, compact running-agent, quota, and token badges, plus small popovers for current sessions and usage. Sound alerts can be configured separately for completion and green flashing.
 
 Listen to the bundled New Zealand crossing sounds: [green flash sound](Sources/AgentSignalLight/Resources/waiting-signal-nz.m4a) · [completion sound](Sources/AgentSignalLight/Resources/completion-signal-nz.m4a).
 
@@ -118,7 +118,7 @@ Both images are real screenshots of the current Activity page. The left image sh
 
 - macOS menu bar signal light with horizontal and vertical layouts.
 - Floating desktop signal light with drag, resize, badges, current-session popover, and synced animation.
-- Separate sound choices for completion, green flashing, and warning states, including New Zealand crossing sounds.
+- Separate sound choices for completion and green flashing, including New Zealand crossing sounds.
 - Two visual styles: classic signal board and minimal dots.
 - Menu bar panel with current status, running agents, recent activity, pause/settings actions, and quit.
 - Settings window with Activity, General, Connections, Advanced, and About pages.
