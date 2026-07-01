@@ -603,6 +603,9 @@ extension MenuBarStatusModel {
              "claude-terminal", "terminal-claude", "claude-ide",
              "idea-claude", "intellij-claude", "jetbrains-claude":
             return "Claude"
+        case "antigravity", "antigravity-ide", "antigravity-app", "antigravity-cli",
+             "antigravity-terminal", "agy", "localharness":
+            return "Antigravity"
         case "manual":
             return text("手动", "Manual")
         default:
@@ -616,6 +619,8 @@ extension MenuBarStatusModel {
             return "Codex"
         case .claude:
             return "Claude"
+        case .antigravity:
+            return "Antigravity"
         case .codexDesktop:
             return text("Codex 桌面版", "Codex Desktop")
         case .codexCLI:
@@ -630,6 +635,10 @@ extension MenuBarStatusModel {
             return text("Claude 桌面版", "Claude Desktop")
         case .claudeDesktop:
             return "Claude Desktop"
+        case .antigravityCLI:
+            return text("Antigravity 终端", "Antigravity CLI")
+        case .antigravityIDE:
+            return text("Antigravity IDE", "Antigravity IDE")
         case .localScript:
             return text("本地脚本", "Local Script")
         }
@@ -669,6 +678,8 @@ extension MenuBarStatusModel {
             return "Codex"
         case .claude:
             return "Claude"
+        case .antigravity:
+            return "Antigravity"
         case .other:
             return text("其他 Agent", "Other Agents")
         }

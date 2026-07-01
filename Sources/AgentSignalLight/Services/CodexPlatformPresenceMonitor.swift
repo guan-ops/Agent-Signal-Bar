@@ -143,6 +143,25 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
                 return commandLine.contains("/applications/claude.app/")
                     && commandLine.contains("/contents/macos/claude")
             }
+        ),
+        PlatformDefinition(
+            sessionID: "platform-presence:antigravity",
+            agent: "antigravity",
+            event: "PlatformPresence:Antigravity",
+            appBundleIdentifiers: [
+                "com.google.antigravity",
+                "com.google.antigravity.ide",
+                "com.google.antigravity.app"
+            ],
+            appNameTokens: ["antigravity"],
+            processMatch: { process in
+                let commandLine = process.commandLine
+                return commandLine.contains("/applications/antigravity.app/")
+                    || commandLine.contains("/contents/macos/antigravity")
+                    || commandLine.contains("localharness")
+                    || commandLine.contains("agy ")
+                    || commandLine.contains("/bin/agy")
+            }
         )
     ]
 

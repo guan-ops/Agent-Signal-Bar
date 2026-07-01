@@ -2573,7 +2573,15 @@ struct DebugWindowView: View {
             agent = "claude-code"
             sessionID = "idle:claude-code"
             event = "PlatformPresence:Desktop"
-        case .codex, .claude, .claudeDesktop, .localScript:
+        case .antigravityCLI:
+            agent = "antigravity"
+            sessionID = "idle:antigravity"
+            event = "PlatformPresence:CLI"
+        case .antigravityIDE:
+            agent = "antigravity-ide"
+            sessionID = "idle:antigravity-ide"
+            event = "PlatformPresence:IDE"
+        case .codex, .claude, .claudeDesktop, .antigravity, .localScript:
             return nil
         }
 
@@ -2592,6 +2600,8 @@ struct DebugWindowView: View {
             return model.isCodexDesktopMonitoringEnabled
         case .claude:
             return model.isClaudeDesktopMonitoringEnabled
+        case .antigravity:
+            return model.isAntigravityMonitoringEnabled
         case .other:
             return false
         }
