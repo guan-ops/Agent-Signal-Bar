@@ -115,6 +115,9 @@ enum ActivityPresentation {
              "claude-terminal", "terminal-claude", "claude-ide",
              "idea-claude", "intellij-claude", "jetbrains-claude":
             return "claude"
+        case "antigravity", "antigravity-ide", "antigravity-app", "antigravity-cli",
+             "antigravity-terminal", "agy", "localharness":
+            return "antigravity"
         default:
             return normalized
         }
@@ -205,7 +208,8 @@ enum ActivityPresentation {
             || sessionID.hasPrefix("claude-cli:")
             || agent == "codex-cli" || agent == "codex-terminal"
             || agent == "codex-tui" || agent == "codex-shell"
-            || agent == "codex" || sessionID.hasPrefix("codex-cli:") {
+            || agent == "codex" || sessionID.hasPrefix("codex-cli:")
+            || agent == "agy" || agent == "antigravity-cli" {
             return .terminal
         }
 
@@ -213,6 +217,7 @@ enum ActivityPresentation {
             || sessionID.hasPrefix("codex-desktop:")
             || agent == "codex-desktop"
             || agent == "claude-desktop"
+            || agent == "antigravity-app"
             || event.hasPrefix("desktop") {
             return .desktop
         }

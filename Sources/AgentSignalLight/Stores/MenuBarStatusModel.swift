@@ -22,12 +22,14 @@ final class SignalAnimationClock: ObservableObject {
 enum SignalLightAgentScopeGroup: Int, CaseIterable, Hashable {
     case codex
     case claude
+    case antigravity
     case other
 }
 
 enum SignalLightAgentScope: String, CaseIterable, Hashable {
     case codex
     case claude
+    case antigravity
     case codexDesktop = "codex-desktop"
     case codexCLI = "codex-cli"
     case codexVSCode = "codex-vscode"
@@ -35,6 +37,8 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
     case codexIDEA = "codex-idea"
     case claudeCode = "claude-code"
     case claudeDesktop = "claude-desktop"
+    case antigravityCLI = "antigravity-cli"
+    case antigravityIDE = "antigravity-ide"
     case localScript = "local-script"
 
     static let selectableCases: [SignalLightAgentScope] = [
@@ -44,6 +48,8 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
         .codexXcode,
         .codexIDEA,
         .claudeCode,
+        .antigravityCLI,
+        .antigravityIDE,
         .localScript
     ]
 
@@ -53,7 +59,9 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
         .codexVSCode,
         .codexXcode,
         .codexIDEA,
-        .claudeCode
+        .claudeCode,
+        .antigravityCLI,
+        .antigravityIDE
     ]
 
     static let allCases: [SignalLightAgentScope] = selectableCases
@@ -63,7 +71,10 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
         .codexCLI,
         .codexVSCode,
         .codexXcode,
-        .codexIDEA
+        .codexIDEA,
+        .claudeCode,
+        .antigravityCLI,
+        .antigravityIDE
     ]
 
     static let codexCases: Set<SignalLightAgentScope> = [
@@ -78,12 +89,19 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
         .claudeCode
     ]
 
+    static let antigravityCases: Set<SignalLightAgentScope> = [
+        .antigravityCLI,
+        .antigravityIDE
+    ]
+
     var group: SignalLightAgentScopeGroup {
         switch self {
         case .codex, .codexDesktop, .codexCLI, .codexVSCode, .codexXcode, .codexIDEA:
             return .codex
         case .claude, .claudeCode, .claudeDesktop:
             return .claude
+        case .antigravity, .antigravityCLI, .antigravityIDE:
+            return .antigravity
         case .localScript:
             return .other
         }
@@ -105,12 +123,18 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
             return 5
         case .claudeDesktop:
             return 6
-        case .localScript:
+        case .antigravityCLI:
             return 7
+        case .antigravityIDE:
+            return 8
+        case .localScript:
+            return 9
         case .codex:
             return 100
         case .claude:
             return 101
+        case .antigravity:
+            return 102
         }
     }
 
@@ -120,6 +144,8 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
             return Self.codexCases
         case .claude:
             return Self.claudeCases
+        case .antigravity:
+            return Self.antigravityCases
         default:
             return Self.selectableCases.contains(self) ? [self] : []
         }
@@ -150,6 +176,8 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
             return sourceKey.hasPrefix("codex:")
         case .claude:
             return sourceKey.hasPrefix("claude:")
+        case .antigravity:
+            return sourceKey.hasPrefix("antigravity:")
         case .codexDesktop:
             return sourceKey == "codex:desktop"
                 || normalizedAgent == "codex-desktop"
@@ -189,9 +217,21 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
             return sourceKey == "claude:desktop"
                 || normalizedAgent == "claude-desktop"
                 || normalizedSessionID.hasPrefix("claude-desktop:")
+        case .antigravityCLI:
+            return sourceKey == "antigravity:terminal"
+                || normalizedAgent == "antigravity"
+                || normalizedAgent == "antigravity-cli"
+                || normalizedAgent == "agy"
+                || normalizedSessionID.hasPrefix("antigravity:")
+        case .antigravityIDE:
+            return sourceKey == "antigravity:ide"
+                || normalizedAgent == "antigravity-ide"
+                || normalizedAgent == "localharness"
+                || normalizedSessionID.hasPrefix("antigravity-ide:")
         case .localScript:
             return !sourceKey.hasPrefix("codex:")
                 && !sourceKey.hasPrefix("claude:")
+                && !sourceKey.hasPrefix("antigravity:")
                 && !normalizedAgent.isEmpty
         }
     }
@@ -401,6 +441,7 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var statusMenuMode: StatusMenuMode
     @Published var isCodexDesktopMonitoringEnabled: Bool
     @Published var isClaudeDesktopMonitoringEnabled: Bool
+    @Published var isAntigravityMonitoringEnabled: Bool
     @Published var appLanguage: AppLanguage
     @Published var appTheme: AppTheme
     @Published var isSettingsGlassEnabled: Bool
@@ -863,6 +904,8 @@ final class MenuBarStatusModel: ObservableObject {
             UserDefaults.standard.object(forKey: "isCodexDesktopMonitoringEnabled") as? Bool ?? true
         isClaudeDesktopMonitoringEnabled =
             UserDefaults.standard.object(forKey: "isClaudeDesktopMonitoringEnabled") as? Bool ?? true
+        isAntigravityMonitoringEnabled =
+            UserDefaults.standard.object(forKey: "isAntigravityMonitoringEnabled") as? Bool ?? true
         let resolvedAutomaticUpdateCheckEnabled = false
         isAutomaticUpdateCheckEnabled = resolvedAutomaticUpdateCheckEnabled
         if storedAutomaticUpdateCheckEnabled != resolvedAutomaticUpdateCheckEnabled {
@@ -1549,6 +1592,12 @@ final class MenuBarStatusModel: ObservableObject {
     func setClaudeDesktopMonitoringEnabled(_ enabled: Bool) {
         isClaudeDesktopMonitoringEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isClaudeDesktopMonitoringEnabled")
+        pollDesktopAppPresence()
+    }
+
+    func setAntigravityMonitoringEnabled(_ enabled: Bool) {
+        isAntigravityMonitoringEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isAntigravityMonitoringEnabled")
         pollDesktopAppPresence()
     }
 
@@ -3077,7 +3126,7 @@ final class MenuBarStatusModel: ObservableObject {
 
     private var shouldPollPlatformPresence: Bool {
         !isMonitoringPaused
-            && (isCodexDesktopMonitoringEnabled || isClaudeDesktopMonitoringEnabled)
+            && (isCodexDesktopMonitoringEnabled || isClaudeDesktopMonitoringEnabled || isAntigravityMonitoringEnabled)
     }
 
     func filteredPlatformPresenceSessions(_ sessions: [SessionStatus]) -> [SessionStatus] {
@@ -3088,6 +3137,9 @@ final class MenuBarStatusModel: ObservableObject {
             }
             if sourceKey.hasPrefix("claude:") {
                 return isClaudeDesktopMonitoringEnabled
+            }
+            if sourceKey.hasPrefix("antigravity:") {
+                return isAntigravityMonitoringEnabled
             }
             return true
         }
