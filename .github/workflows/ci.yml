@@ -62,5 +62,13 @@ jobs:
           swift build --product agent-signal-checks
           swift build --product agent-signal-icon-preview
 
+      - name: Build Intel compatibility slices
+        run: |
+          swift build --triple x86_64-apple-macosx --product AgentSignalLight
+          swift build --triple x86_64-apple-macosx --product agent-signal-light
+          swift build --triple x86_64-apple-macosx --product agent-signal
+          swift build --triple x86_64-apple-macosx --product agent-signal-checks
+          swift build --triple x86_64-apple-macosx --product agent-signal-icon-preview
+
       - name: Verify local integrations
         run: ./script/verify_local_integrations.sh

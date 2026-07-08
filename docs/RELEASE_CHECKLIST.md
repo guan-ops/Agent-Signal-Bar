@@ -14,7 +14,8 @@ The all-in-one release gate replaces the old manual command chain. It packages r
 - shell scripts parse
 - Swift tests pass
 - release checksums match
-- Sparkle `appcast.xml` exists and is included in release checksums
+- Sparkle `appcast.xml` and `AgentSignalBar-macos-universal-appcast.xml` exist and are included in release checksums
+- release app, bundled CLI, release CLI, and icon preview CLI include `arm64 x86_64` slices for Apple Silicon and Intel Mac
 - `./scripts/agent-signal status --json` parses
 - release zip extracts, contains the expected app/scripts/docs/previews, and installs without rebuilding
 - release DMG verifies, mounts, copies to a temporary Applications directory, and preserves code signing
@@ -80,7 +81,7 @@ The all-in-one release gate replaces the old manual command chain. It packages r
 
 - For manual startup, run `./script/install_app.sh`.
 - For release zip startup, confirm `./script/install_app.sh --no-open` installs the existing `dist/AgentSignalLight.app` without rebuilding.
-- For scripted DMG startup, run `./script/install_app.sh --dmg dist/AgentSignalBar.dmg`.
+- For scripted DMG startup, run `./script/install_app.sh --dmg dist/AgentSignalBar.dmg`; for the platform-named universal artifact, also verify `dist/AgentSignalBar-v<version>-macos-universal.dmg` when present.
 - For login startup, run `./script/install_app.sh --login-item`, or toggle `开机自启动` in the app.
 - Run `./script/doctor.sh --full`.
 - If login startup is enabled, confirm:

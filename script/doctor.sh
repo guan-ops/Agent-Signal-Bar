@@ -1140,9 +1140,13 @@ assert manifest["build"]
 assert manifest["signing"]["mode"] in {"ad_hoc", "developer_id"}
 assert isinstance(manifest["notarization"]["ready_to_submit"], bool)
 
-artifacts = {item["role"]: item for item in manifest["artifacts"]}
-for role in ("source_zip", "installer_dmg"):
-    item = artifacts[role]
+required_roles = {"source_zip", "installer_dmg", "sparkle_appcast"}
+roles = {item.get("role") for item in manifest["artifacts"]}
+missing_roles = required_roles - roles
+if missing_roles:
+    raise SystemExit(f"missing artifact roles: {sorted(missing_roles)}")
+
+for item in manifest["artifacts"]:
     path = root / item["path"]
     if not path.exists():
         raise SystemExit(f"missing artifact {path}")

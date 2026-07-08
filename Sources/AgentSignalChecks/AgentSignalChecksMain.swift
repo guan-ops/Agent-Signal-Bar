@@ -14,6 +14,7 @@ struct AgentSignalChecks {
         try checkTurnEndClearsPermissionSession()
         try checkDoneClearsPermissionSession()
         try checkManualSignalsParticipateInAggregation()
+        try checkSessionUpdatesPreserveExistingAgentWhenOmitted()
         try checkNonPausedSignalResumesFromPausedAggregate()
         try checkSessionEndRemovesSession()
         try checkSessionEndPreservesCompletedAndWarningSessions()
@@ -444,6 +445,26 @@ struct AgentSignalChecks {
         let resetSnapshot = try store.setManualSignal(.idle)
         try expect(resetSnapshot.aggregate == .idle, "manual idle should clear to idle")
         try expect(resetSnapshot.sessions.isEmpty, "manual idle should clear sessions")
+    }
+
+    private static func checkSessionUpdatesPreserveExistingAgentWhenOmitted() throws {
+        let store = makeStore()
+
+        _ = try store.applySessionSignal(
+            .working,
+            sessionID: "demo",
+            agent: "script",
+            lastEvent: "SmokeStart"
+        )
+        let snapshot = try store.applySessionSignal(
+            .done,
+            sessionID: "demo",
+            lastEvent: "SmokeDone"
+        )
+
+        let session = snapshot.sessions.first { $0.sessionID == "demo" }
+        try expect(session?.agent == "script", "done without agent should preserve the existing source")
+        try expect(session?.lastEvent == "SmokeDone", "done should still update the last event")
     }
 
     private static func checkNonPausedSignalResumesFromPausedAggregate() throws {

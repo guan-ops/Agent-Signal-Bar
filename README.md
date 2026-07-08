@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/release-v1.5.2-111827.svg" alt="Latest release: v1.5.2"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/release-v1.5.3-111827.svg" alt="Latest release: v1.5.3"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-111827.svg" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Swift-6.0-F05138.svg" alt="Swift 6.0">
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/download-DMG-0ea5e9.svg" alt="Download DMG"></a>
@@ -208,7 +208,14 @@ Build local zip and DMG artifacts:
 ./script/package_release.sh
 ```
 
-Sparkle update feeds are generated as `dist/appcast.xml`. Local packaging uses the Sparkle signing key from Keychain; GitHub Actions requires the private key in the `SPARKLE_PRIVATE_KEY` secret.
+Release packaging builds universal macOS executables by default (`arm64 x86_64`)
+so the DMG and bundled CLI run on Apple Silicon and Intel Macs. It publishes
+legacy Sparkle assets (`appcast.xml`, `AgentSignalBar.dmg`) plus the migration
+assets (`AgentSignalBar-macos-universal-appcast.xml`,
+`AgentSignalBar-v<version>-macos-universal.dmg`). For a local
+single-architecture package, run `AGENT_SIGNAL_LIGHT_ARCHS=native ./script/package_release.sh`.
+
+Sparkle update feeds are generated as `dist/appcast.xml` for existing installs and `dist/AgentSignalBar-macos-universal-appcast.xml` for migrated installs. Local packaging uses the Sparkle signing key from Keychain; GitHub Actions requires the private key in the `SPARKLE_PRIVATE_KEY` secret.
 
 ## CLI
 

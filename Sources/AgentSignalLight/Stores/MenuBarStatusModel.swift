@@ -461,6 +461,7 @@ final class MenuBarStatusModel: ObservableObject {
     @Published private(set) var codexActiveSavedAccountID: UUID?
     @Published private(set) var isCodexAccountActionRunning = false
     @Published var codexAccountMessage: String?
+    @Published private(set) var isCodexAccountMessageError = false
     @Published var codexUsageDataSource: CodexUsageDataSource
     @Published var codexOpenAICookieMode: CodexOpenAICookieMode
     @Published var codexManualOpenAICookieHeader: String
@@ -913,8 +914,10 @@ final class MenuBarStatusModel: ObservableObject {
             let state = try codexAccountManager.loadMetadataState()
             applyCodexAccountState(state)
             codexAccountMessage = nil
+            isCodexAccountMessageError = false
         } catch {
             codexAccountMessage = error.localizedDescription
+            isCodexAccountMessageError = true
         }
     }
 
@@ -967,10 +970,13 @@ final class MenuBarStatusModel: ObservableObject {
             applyCodexAccountState(try codexAccountManager.loadState())
             persistCodexUsageSnapshotForCurrentAccount()
             codexAccountMessage = text("已保存 \(account.displayName)。", "Saved \(account.displayName).")
+            isCodexAccountMessageError = false
             lastError = nil
         } catch {
-            codexAccountMessage = nil
-            lastError = error.localizedDescription
+            let message = codexAccountActionFailureMessage(error)
+            codexAccountMessage = message
+            isCodexAccountMessageError = true
+            lastError = message
         }
         isCodexAccountActionRunning = false
     }
@@ -979,9 +985,10 @@ final class MenuBarStatusModel: ObservableObject {
         guard !isCodexAccountActionRunning else { return }
         isCodexAccountActionRunning = true
         codexAccountMessage = text(
-            "正在打开 Codex 登录，请在浏览器完成授权。",
-            "Opening Codex login. Complete authorization in the browser."
+            "正在打开 Codex 登录；如果浏览器未打开，可在终端运行 codex login，完成后点“保存当前”。",
+            "Opening Codex login. If the browser does not open, run codex login in Terminal, then use Save Current."
         )
+        isCodexAccountMessageError = false
 
         Task { [weak self] in
             guard let self else { return }
@@ -995,12 +1002,15 @@ final class MenuBarStatusModel: ObservableObject {
                     "已添加并切换到 \(switchedAccount.displayName)。",
                     "Added and switched to \(switchedAccount.displayName)."
                 )
+                isCodexAccountMessageError = false
                 lastError = nil
                 pollCodexRateLimitsIfNeeded(force: true)
                 refreshTokenActivityIfNeeded()
             } catch {
-                codexAccountMessage = nil
-                lastError = error.localizedDescription
+                let message = codexAccountActionFailureMessage(error)
+                codexAccountMessage = message
+                isCodexAccountMessageError = true
+                lastError = message
             }
             isCodexAccountActionRunning = false
         }
@@ -1023,34 +1033,64 @@ final class MenuBarStatusModel: ObservableObject {
                 "已切换到 \(switchedAccount.displayName)。",
                 "Switched to \(switchedAccount.displayName)."
             )
+            isCodexAccountMessageError = false
             lastError = nil
             pollCodexRateLimitsIfNeeded(force: true)
             refreshTokenActivityIfNeeded()
         } catch {
-            codexAccountMessage = nil
-            lastError = error.localizedDescription
+            let message = codexAccountActionFailureMessage(error)
+            codexAccountMessage = message
+            isCodexAccountMessageError = true
+            lastError = message
         }
         isCodexAccountActionRunning = false
     }
 
     func removeCodexAccount(_ account: CodexAccountProfile) {
         guard !isCodexAccountActionRunning else { return }
+        let removesActiveAccount = codexActiveSavedAccountID == account.id
         isCodexAccountActionRunning = true
         do {
             try codexAccountManager.removeAccount(id: account.id)
             codexUsageSnapshotStore.remove(for: account)
             applyCodexAccountState(try codexAccountManager.loadState())
+            if removesActiveAccount {
+                prepareCodexUsageAfterAccountChange()
+                codexProviderAccountEmail = nil
+                codexProviderPlanName = nil
+                codexProviderServiceStatusText = nil
+                codexProviderDetailsCheckedAt = nil
+                if codexCurrentAccount != nil {
+                    refreshCodexProviderDetails(force: true)
+                    pollCodexRateLimitsIfNeeded(force: true)
+                    refreshTokenActivityIfNeeded()
+                }
+            }
             codexAccountMessage = text("已删除保存的账户。", "Saved account removed.")
+            isCodexAccountMessageError = false
             lastError = nil
         } catch {
-            codexAccountMessage = nil
-            lastError = error.localizedDescription
+            let message = codexAccountActionFailureMessage(error)
+            codexAccountMessage = message
+            isCodexAccountMessageError = true
+            lastError = message
         }
         isCodexAccountActionRunning = false
     }
 
     func isActiveCodexAccount(_ account: CodexAccountProfile) -> Bool {
         codexActiveSavedAccountID == account.id
+    }
+
+    private func codexAccountActionFailureMessage(_ error: Error) -> String {
+        if let managerError = error as? CodexAccountManagerError,
+           managerError == .missingCodexBinary {
+            return text(
+                "没有找到 codex 命令。请先安装 Codex CLI；如果终端里可以运行 codex login，先在终端完成登录，再回到这里点“保存当前”。",
+                "Could not find the codex command. Install Codex CLI. If codex login works in Terminal, finish it there, then return here and use Save Current."
+            )
+        }
+        return error.localizedDescription
     }
 
     func setManualSignal(_ signal: AgentSignal) {
@@ -3708,6 +3748,10 @@ final class MenuBarStatusModel: ObservableObject {
             return false
         }
 
+        if ActivityPresentation.isPresenceOnlySession(session) {
+            return false
+        }
+
         switch session.signal.displayState {
         case .paused:
             return false
@@ -4033,7 +4077,7 @@ final class MenuBarStatusModel: ObservableObject {
         }
 
         if isPresenceSession(session) {
-            return true
+            return false
         }
 
         switch session.signal.displayState {

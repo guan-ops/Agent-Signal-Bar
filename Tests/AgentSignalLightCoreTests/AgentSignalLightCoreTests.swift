@@ -1256,7 +1256,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(switchedState.activeSavedAccountID, personal.id)
     }
 
-    func testCodexAccountManagerUpdatesExistingAccountAndRemovesSavedMetadataOnly() throws {
+    func testCodexAccountManagerUpdatesExistingAccountAndRemovesActiveAuthWhenLastSavedAccountIsDeleted() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let storeURL = root.appendingPathComponent("accounts.json")
@@ -1293,8 +1293,50 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         let removedState = try manager.loadState()
         XCTAssertEqual(removedState.savedAccounts.count, 0)
+        XCTAssertNil(removedState.currentAccount)
         XCTAssertNil(removedState.activeSavedAccountID)
-        XCTAssertEqual(try Data(contentsOf: authURL), refreshedAuth)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: authURL.path))
+    }
+
+    func testCodexAccountManagerRemovingActiveAccountSwitchesToNextSavedAccount() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let authURL = root.appendingPathComponent("auth.json")
+        let personalAuth = codexOAuthAuthJSON(
+            email: "personal@example.com",
+            accountID: "acct_personal",
+            accessToken: "personal-access-token"
+        )
+        try personalAuth.write(to: authURL)
+
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL
+        )
+        let personal = try manager.saveCurrentAccount()
+
+        let workAuth = codexOAuthAuthJSON(
+            email: "work@example.com",
+            accountID: "acct_work",
+            accessToken: "work-access-token"
+        )
+        try workAuth.write(to: authURL)
+        let work = try manager.saveCurrentAccount()
+
+        XCTAssertEqual(try manager.loadState().activeSavedAccountID, work.id)
+
+        try manager.removeAccount(id: work.id)
+
+        let state = try manager.loadState()
+        XCTAssertEqual(state.savedAccounts.map(\.id), [personal.id])
+        XCTAssertEqual(state.currentAccount?.email, "personal@example.com")
+        XCTAssertEqual(state.activeSavedAccountID, personal.id)
+        XCTAssertEqual(try Data(contentsOf: authURL), personalAuth)
     }
 
     func testCodexAccountManagerPreservesUnsavedCurrentAccountBeforeSwitching() throws {
@@ -1370,6 +1412,110 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(switched.id, account.id)
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("auth.json")), managedAuth)
         XCTAssertEqual(try manager.loadState().activeSavedAccountID, account.id)
+    }
+
+    func testCodexAccountManagerTimeoutErrorIncludesLoginOutput() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        let managedHomeRootURL = root.appendingPathComponent("managed-homes", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let loginOutput = """
+        Starting local login server on http://localhost:1455.
+        If your browser did not open, navigate to this URL to authenticate:
+
+        https://auth.openai.com/oauth/authorize?client_id=test
+        """
+        let loginRunner = FakeCodexAccountLoginRunner(
+            authData: nil,
+            result: CodexAccountLoginResult(outcome: .timedOut, output: loginOutput)
+        )
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL,
+            managedHomeRootURL: managedHomeRootURL,
+            loginRunner: loginRunner
+        )
+
+        do {
+            _ = try await manager.authenticateManagedAccount()
+            XCTFail("Expected Codex login timeout")
+        } catch {
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("Codex login timed out"))
+            XCTAssertTrue(message.contains("https://auth.openai.com/oauth/authorize?client_id=test"))
+            XCTAssertTrue(message.contains("Save Current"))
+        }
+    }
+
+    func testCodexAccountLoginRunnerExtractsAuthenticationURL() {
+        let output = """
+        Starting local login server on http://localhost:1455.
+        If your browser did not open, navigate to this URL to authenticate:
+
+        https://auth.openai.com/oauth/authorize?client_id=test&state=abc123.
+        """
+
+        XCTAssertEqual(
+            CodexAccountLoginRunner.authenticationURL(in: output)?.absoluteString,
+            "https://auth.openai.com/oauth/authorize?client_id=test&state=abc123"
+        )
+        XCTAssertNil(CodexAccountLoginRunner.authenticationURL(in: "Open https://example.com instead."))
+    }
+
+    func testCodexExecutableResolverAcceptsCodexCLIPathAlias() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let binURL = root.appendingPathComponent("codex", isDirectory: false)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try "#!/bin/sh\nexit 0\n".write(to: binURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
+
+        XCTAssertEqual(
+            CodexExecutableResolver.resolve(environment: ["CODEX_CLI_PATH": binURL.path]),
+            binURL.path
+        )
+    }
+
+    func testCodexExecutableResolverCanUseLoginShellPathWhenRequested() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let binDir = root.appendingPathComponent("bin", isDirectory: true)
+        let codexURL = binDir.appendingPathComponent("codex", isDirectory: false)
+        let shellURL = root.appendingPathComponent("fake-shell", isDirectory: false)
+        try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try "#!/bin/sh\nexit 0\n".write(to: codexURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codexURL.path)
+
+        let shellScript = """
+        #!/bin/sh
+        last=""
+        for arg in "$@"; do
+          last="$arg"
+        done
+        PATH="$CODEX_TEST_LOGIN_BIN:/usr/bin:/bin" /bin/sh -c "$last"
+        """
+        try shellScript.write(to: shellURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shellURL.path)
+
+        XCTAssertEqual(
+            CodexExecutableResolver.resolve(
+                environment: [
+                    "SHELL": shellURL.path,
+                    "PATH": "/usr/bin:/bin",
+                    "CODEX_TEST_LOGIN_BIN": binDir.path
+                ],
+                includeLoginShellLookup: true
+            ),
+            codexURL.path
+        )
     }
 
     func testCodexAccountUsageSnapshotsStayScopedToAccountIDWhenEmailsMatch() throws {
@@ -2348,6 +2494,57 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(snapshot.recentEvents.first?.event, "DesktopToolCall:exec_command")
     }
 
+    func testApplySessionQuotaRefreshesExistingSessionTimestampWithoutRegressing() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let signalDate = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
+        let freshQuotaDate = signalDate.addingTimeInterval(5)
+        let olderQuotaDate = signalDate.addingTimeInterval(1)
+
+        _ = try fixture.store.applySessionSignal(
+            .working,
+            sessionID: "codex-desktop:thread",
+            agent: "codex-desktop",
+            lastEvent: "DesktopToolCall:exec_command",
+            updatedAt: signalDate
+        )
+
+        let freshQuota = AgentQuotaStatus(
+            remainingPercent: 72,
+            usedPercent: 28,
+            limitName: "Codex",
+            windowMinutes: 300,
+            resetsAt: freshQuotaDate.addingTimeInterval(1_800),
+            updatedAt: freshQuotaDate
+        )
+        var snapshot = try fixture.store.applySessionQuota(
+            freshQuota,
+            sessionID: "codex-desktop:thread",
+            agent: "codex-desktop",
+            updatedAt: freshQuotaDate
+        )
+        XCTAssertEqual(snapshot.sessions.first?.updatedAt, freshQuotaDate)
+        XCTAssertEqual(snapshot.updatedAt, freshQuotaDate)
+
+        let olderQuota = AgentQuotaStatus(
+            remainingPercent: 80,
+            usedPercent: 20,
+            limitName: "Codex",
+            windowMinutes: 300,
+            resetsAt: olderQuotaDate.addingTimeInterval(1_800),
+            updatedAt: olderQuotaDate
+        )
+        snapshot = try fixture.store.applySessionQuota(
+            olderQuota,
+            sessionID: "codex-desktop:thread",
+            agent: "codex-desktop",
+            updatedAt: olderQuotaDate
+        )
+
+        XCTAssertEqual(snapshot.sessions.first?.updatedAt, freshQuotaDate)
+        XCTAssertEqual(snapshot.updatedAt, freshQuotaDate)
+    }
+
     func testApplySessionSignalIgnoresOlderEventsForSameSession() throws {
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -3150,6 +3347,38 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(release.preferredDownloadURL?.lastPathComponent, "AgentSignalLight-local.dmg")
     }
 
+    func testGitHubReleaseUpdateCheckerPrefersUniversalMacOSAsset() throws {
+        let data = Data(
+            """
+            {
+              "tag_name": "v1.5.2",
+              "html_url": "https://github.com/guan-ops/Agent-Signal-Bar/releases/tag/v1.5.2",
+              "assets": [
+                {
+                  "name": "AgentSignalBar-v1.5.2-macos-universal.zip",
+                  "browser_download_url": "https://github.com/guan-ops/Agent-Signal-Bar/releases/download/v1.5.2/AgentSignalBar-v1.5.2-macos-universal.zip"
+                },
+                {
+                  "name": "AgentSignalBar-v1.5.2-macos-universal.dmg",
+                  "browser_download_url": "https://github.com/guan-ops/Agent-Signal-Bar/releases/download/v1.5.2/AgentSignalBar-v1.5.2-macos-universal.dmg"
+                },
+                {
+                  "name": "AgentSignalBar.dmg",
+                  "browser_download_url": "https://github.com/guan-ops/Agent-Signal-Bar/releases/download/v1.5.2/AgentSignalBar.dmg"
+                }
+              ]
+            }
+            """.utf8
+        )
+
+        let release = try GitHubReleaseUpdateChecker.decodeLatestRelease(from: data)
+
+        XCTAssertEqual(
+            release.preferredDownloadURL?.lastPathComponent,
+            "AgentSignalBar-v1.5.2-macos-universal.dmg"
+        )
+    }
+
     func testGitHubReleaseUpdateCheckerFallsBackToReleasePageWhenAPIRateLimited() async throws {
         let apiResponse = HTTPURLResponse(
             url: GitHubReleaseUpdateChecker.latestReleaseAPIURL,
@@ -3264,10 +3493,15 @@ final class AgentSignalLightCoreTests: XCTestCase {
             now: now,
             limit: ActivityPresentation.currentSessionLimit
         )
+        let presenceSessions = ActivityPresentation.visiblePresenceSessions(from: snapshot, now: now)
         let floatingSessions = ActivityPresentation.visibleRunningSessions(from: snapshot, now: now)
 
-        XCTAssertTrue(currentSessions.contains { $0.sessionID == "platform-presence:codex-desktop" })
-        XCTAssertTrue(currentSessions.contains { $0.sessionID == "platform-presence:claude-desktop" })
+        XCTAssertFalse(currentSessions.contains { $0.sessionID == "platform-presence:codex-desktop" })
+        XCTAssertFalse(currentSessions.contains { $0.sessionID == "platform-presence:claude-desktop" })
+        XCTAssertEqual(Set(presenceSessions.map(\.sessionID)), [
+            "platform-presence:codex-desktop",
+            "platform-presence:claude-desktop"
+        ])
         XCTAssertEqual(Set(floatingSessions.map(\.sessionID)), [
             "codex-cli:active-thread",
             "codex-vscode:review-thread"
@@ -3391,7 +3625,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(visible.first?.lastEvent, "DesktopTaskComplete")
     }
 
-    func testActivityPresentationLetsFreshPresenceReplaceStaleTerminalThinking() {
+    func testActivityPresentationSeparatesFreshPresenceFromStaleTerminalThinking() {
         let now = Date(timeIntervalSince1970: 1_000)
         let visible = ActivityPresentation.visibleSessions(
             from: [
@@ -3412,10 +3646,30 @@ final class AgentSignalLightCoreTests: XCTestCase {
             ],
             now: now
         )
+        let presence = ActivityPresentation.visiblePresenceSessions(
+            from: [
+                SessionStatus(
+                    sessionID: "codex-cli:old-thread",
+                    signal: .thinking,
+                    updatedAt: now.addingTimeInterval(-60),
+                    agent: "codex-cli",
+                    lastEvent: "DesktopThinking"
+                ),
+                SessionStatus(
+                    sessionID: "platform-presence:codex-cli",
+                    signal: .idle,
+                    updatedAt: now,
+                    agent: "codex-cli",
+                    lastEvent: "PlatformPresence:CLI"
+                )
+            ],
+            now: now
+        )
 
-        XCTAssertEqual(visible.count, 1)
-        XCTAssertEqual(visible.first?.sessionID, "platform-presence:codex-cli")
-        XCTAssertEqual(visible.first?.signal, .idle)
+        XCTAssertTrue(visible.isEmpty)
+        XCTAssertEqual(presence.count, 1)
+        XCTAssertEqual(presence.first?.sessionID, "platform-presence:codex-cli")
+        XCTAssertEqual(presence.first?.signal, .idle)
     }
 
     func testActivityPresentationKeepsUnresolvedPermissionRequestOverPresence() {
@@ -3731,6 +3985,53 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(model.displaySignalLightAgentScopes, [.claudeCode])
         XCTAssertEqual(model.displaySnapshot.aggregate, .permission)
         XCTAssertEqual(model.displaySnapshot.sessions.map(\.sessionID), ["claude-code:thread"])
+    }
+
+    @MainActor
+    func testSignalLightFollowingIgnoresPresenceOnlySessions() throws {
+        let savedSelectionDefaults = clearSignalLightSelectionDefaults()
+        let savedMonitoringDefaults = [
+            "isCodexDesktopMonitoringEnabled",
+            "isClaudeDesktopMonitoringEnabled"
+        ].map { ($0, UserDefaults.standard.object(forKey: $0)) }
+        defer {
+            restoreSignalLightSelectionDefaults(savedSelectionDefaults)
+            restoreSignalLightSelectionDefaults(savedMonitoringDefaults)
+        }
+        UserDefaults.standard.set(false, forKey: "isCodexDesktopMonitoringEnabled")
+        UserDefaults.standard.set(false, forKey: "isClaudeDesktopMonitoringEnabled")
+
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .idle,
+                updatedAt: now,
+                sessions: [
+                    "platform-presence:codex-desktop": SessionRecord(
+                        agent: "codex-desktop",
+                        signal: .idle,
+                        lastEvent: "PlatformPresence:Desktop",
+                        updatedAt: now
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+
+        XCTAssertEqual(model.signalLightAgentSelectionMode, .following)
+        XCTAssertEqual(model.displaySignalLightAgentScopes, [])
+        XCTAssertEqual(model.displaySnapshot.aggregate, .idle)
+        XCTAssertEqual(model.displaySnapshot.sessions, [])
+        XCTAssertTrue(ActivityPresentation.visibleSessions(from: model.activitySnapshot, now: now).isEmpty)
+        XCTAssertEqual(
+            ActivityPresentation.visiblePresenceSessions(from: model.activitySnapshot, now: now).map(\.sessionID),
+            []
+        )
     }
 
     @MainActor
@@ -4474,6 +4775,23 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertTrue(sessions.contains { $0.sessionID == "platform-presence:codex-cli" })
     }
 
+    func testCodexPlatformPresenceMonitorIgnoresDesktopAppWithoutVisibleWindow() {
+        let sessions = CodexPlatformPresenceMonitor.detectSessions(
+            applications: [
+                CodexPlatformPresenceMonitor.RunningApplicationInfo(
+                    bundleIdentifier: "com.openai.codex",
+                    localizedName: "Codex",
+                    processIdentifier: 42,
+                    hasVisibleWindow: false
+                )
+            ],
+            processes: [],
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+
+        XCTAssertFalse(sessions.contains { $0.sessionID == "platform-presence:codex-desktop" })
+    }
+
     func testCodexPlatformPresenceMonitorIgnoresComputerUseClientAsCLI() {
         let now = Date(timeIntervalSince1970: 1_000)
         let processes = CodexPlatformPresenceMonitor.parseProcesses(
@@ -4585,7 +4903,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testActivityPresentationCurrentLimitIncludesAllSupportedEntrypoints() throws {
+    func testActivityPresentationPresenceLimitIncludesAllSupportedEntrypoints() throws {
         let now = Date(timeIntervalSince1970: 1_000)
         let snapshot = SignalSnapshot(
             aggregate: .idle,
@@ -4638,7 +4956,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             updatedAt: now
         )
 
-        let visible = ActivityPresentation.visibleSessions(
+        let visible = ActivityPresentation.visiblePresenceSessions(
             from: snapshot,
             limit: ActivityPresentation.currentSessionLimit
         )
@@ -4646,10 +4964,24 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(visible.count, 6)
         XCTAssertTrue(visible.contains { $0.sessionID == "platform-presence:codex-cli" })
 
+        let visibleDesktop = ActivityPresentation.visibleDesktopPresenceSessions(
+            from: snapshot,
+            limit: ActivityPresentation.currentSessionLimit
+        )
+        XCTAssertEqual(Set(visibleDesktop.map(\.sessionID)), [
+            "platform-presence:codex-desktop",
+            "platform-presence:claude-desktop"
+        ])
+
+        let desktopSession = try XCTUnwrap(visibleDesktop.first { $0.sessionID == "platform-presence:codex-desktop" })
+        let desktopModel = makeMenuBarStatusModel()
+        desktopModel.appLanguage = .zhHans
+        XCTAssertEqual(desktopModel.activitySessionTitle(for: desktopSession), "Codex · 桌面版已开启")
+
         let cliSession = try XCTUnwrap(visible.first { $0.sessionID == "platform-presence:codex-cli" })
         let model = makeMenuBarStatusModel()
         model.appLanguage = .zhHans
-        XCTAssertEqual(model.activitySessionTitle(for: cliSession), "Codex · 终端运行中")
+        XCTAssertEqual(model.activitySessionTitle(for: cliSession), "Codex · 终端已检测到")
         XCTAssertEqual(model.activitySessionStatusSubtitle(for: cliSession), "空闲")
     }
 
@@ -4692,7 +5024,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             lastEvent: "PlatformPresence:VSCode"
         )
 
-        XCTAssertEqual(model.activitySessionTitle(for: session), "Codex · VS Code 运行中")
+        XCTAssertEqual(model.activitySessionTitle(for: session), "Codex · VS Code 已检测到")
         XCTAssertEqual(model.activitySessionStatusSubtitle(for: session), "空闲")
     }
 
@@ -5031,6 +5363,34 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssertEqual(manager.metadataLoadCount, 1)
         XCTAssertEqual(manager.fullLoadCount, 0)
+    }
+
+    @MainActor
+    func testMenuBarStatusModelCodexAddFailureStaysVisibleInAccountMessage() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: FailingCodexAccountManager(.missingCodexBinary)
+        )
+
+        model.addCodexAccount()
+
+        for _ in 0..<50 {
+            if !model.isCodexAccountActionRunning {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertFalse(model.isCodexAccountActionRunning)
+        let message = try XCTUnwrap(model.codexAccountMessage)
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("codex"))
+        XCTAssertTrue(message.contains("Save Current") || message.contains("保存当前"))
+        XCTAssertEqual(model.lastError, message)
+        XCTAssertTrue(model.isCodexAccountMessageError)
     }
 
     @MainActor
@@ -5489,6 +5849,47 @@ private final class EmptyCodexAccountManager: CodexAccountManaging, @unchecked S
     }
 
     func removeAccount(id _: UUID) throws {}
+
+    func refreshSavedCurrentAccountIfPossible() throws -> CodexAccountProfile? {
+        nil
+    }
+}
+
+private final class FailingCodexAccountManager: CodexAccountManaging, @unchecked Sendable {
+    private let error: CodexAccountManagerError
+    private let state = CodexAccountState(
+        currentAccount: nil,
+        savedAccounts: [],
+        activeSavedAccountID: nil
+    )
+
+    init(_ error: CodexAccountManagerError) {
+        self.error = error
+    }
+
+    func loadState() throws -> CodexAccountState {
+        state
+    }
+
+    func loadMetadataState() throws -> CodexAccountState {
+        state
+    }
+
+    func saveCurrentAccount(label _: String?) throws -> CodexAccountProfile {
+        throw error
+    }
+
+    func switchToAccount(id _: UUID) throws -> CodexAccountProfile {
+        throw error
+    }
+
+    func authenticateManagedAccount(timeout _: TimeInterval) async throws -> CodexAccountProfile {
+        throw error
+    }
+
+    func removeAccount(id _: UUID) throws {
+        throw error
+    }
 
     func refreshSavedCurrentAccountIfPossible() throws -> CodexAccountProfile? {
         nil

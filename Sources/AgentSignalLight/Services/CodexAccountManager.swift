@@ -103,7 +103,7 @@ enum CodexAccountManagerError: LocalizedError, Equatable {
     case emptyStoredAuth
     case writeFailed(String)
     case missingCodexBinary
-    case codexLoginTimedOut
+    case codexLoginTimedOut(String)
     case codexLoginFailed(Int32, String)
     case codexLoginLaunchFailed(String)
     case missingManagedAuth(String)
@@ -125,9 +125,17 @@ enum CodexAccountManagerError: LocalizedError, Equatable {
         case let .writeFailed(path):
             return "Could not write Codex auth file at \(path)."
         case .missingCodexBinary:
-            return "Could not find the codex command. Install Codex CLI, then try adding the account again."
-        case .codexLoginTimedOut:
-            return "Codex login timed out. Try adding the account again."
+            return "Could not find the codex command. Install Codex CLI, or run `codex login` in Terminal and then use Save Current."
+        case let .codexLoginTimedOut(output):
+            let trimmed = Self.trimmedLoginOutput(output)
+            if trimmed.isEmpty {
+                return "Codex login timed out. If the browser did not open, run `codex login` in Terminal, then use Save Current."
+            }
+            return """
+            Codex login timed out. If the browser did not open, use the login output below, or run `codex login` in Terminal, then use Save Current.
+
+            \(trimmed)
+            """
         case let .codexLoginFailed(status, output):
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
@@ -143,6 +151,14 @@ enum CodexAccountManagerError: LocalizedError, Equatable {
         case let .keychainFailure(message):
             return "Could not access saved Codex account credentials: \(message)"
         }
+    }
+
+    private static func trimmedLoginOutput(_ output: String) -> String {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let limit = 1200
+        guard trimmed.count > limit else { return trimmed }
+        let end = trimmed.index(trimmed.startIndex, offsetBy: limit)
+        return "\(trimmed[..<end])..."
     }
 }
 
@@ -451,7 +467,19 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
         let removedAccounts = accounts.filter { $0.id == id }
         let filtered = accounts.filter { $0.id != id }
         guard filtered.count != accounts.count else { return }
+
+        let current = try? currentAccount()
+        let removesActiveAccount = current.flatMap { activeAccountID(for: $0, in: accounts) } == id
+        let nextActiveAuthData = try removesActiveAccount ? filtered.first.map(storedAuthData(for:)) : nil
+
         try storeAccounts(filtered)
+        if removesActiveAccount {
+            if let nextActiveAuthData {
+                try writeActiveAuthData(nextActiveAuthData)
+            } else {
+                try removeActiveAuthData()
+            }
+        }
         for account in removedAccounts {
             try? deleteStoredAuthData(for: account)
             if let managedHomeURL = managedHomeURL(for: account) {
@@ -675,6 +703,16 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
         }
     }
 
+    private func removeActiveAuthData() throws {
+        let url = authFileURL()
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        do {
+            try fileManager.removeItem(at: url)
+        } catch {
+            throw CodexAccountManagerError.writeFailed(url.path)
+        }
+    }
+
     private func makeManagedHomeURL() -> URL {
         managedHomeRootURL
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -708,7 +746,7 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
         case .success:
             return .missingManagedAuth(makeManagedHomeURL().appendingPathComponent("auth.json").path)
         case .timedOut:
-            return .codexLoginTimedOut
+            return .codexLoginTimedOut(result.output)
         case let .failed(status):
             return .codexLoginFailed(status, result.output)
         case .missingBinary:
@@ -898,9 +936,12 @@ struct CodexAccountLoginRunner: CodexAccountLoginRunning {
     ) -> CodexAccountLoginResult {
         var scopedEnvironment = environment
         scopedEnvironment["CODEX_HOME"] = homePath
-        scopedEnvironment["PATH"] = effectivePATH(from: environment)
+        scopedEnvironment = CodexExecutableResolver.effectiveEnvironment(from: scopedEnvironment)
 
-        guard let executable = resolveCodexExecutable(environment: scopedEnvironment) else {
+        guard let executable = CodexExecutableResolver.resolve(
+            environment: scopedEnvironment,
+            includeLoginShellLookup: true
+        ) else {
             return CodexAccountLoginResult(outcome: .missingBinary, output: "")
         }
 
@@ -934,7 +975,12 @@ struct CodexAccountLoginRunner: CodexAccountLoginRunning {
                 )
             }
 
-            let timedOut = waitForProcess(process, timeout: timeout)
+            let timedOut = waitForProcess(
+                process,
+                timeout: timeout,
+                stdoutURL: stdoutURL,
+                stderrURL: stderrURL
+            )
             let output = combinedOutput(stdoutURL: stdoutURL, stderrURL: stderrURL)
             if timedOut {
                 return CodexAccountLoginResult(outcome: .timedOut, output: output)
@@ -954,15 +1000,54 @@ struct CodexAccountLoginRunner: CodexAccountLoginRunning {
         }
     }
 
-    private static func waitForProcess(_ process: Process, timeout: TimeInterval) -> Bool {
+    private static func waitForProcess(
+        _ process: Process,
+        timeout: TimeInterval,
+        stdoutURL: URL,
+        stderrURL: URL
+    ) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
+        var nextOutputScan = Date()
+        var didOpenAuthenticationURL = false
         while process.isRunning && Date() < deadline {
+            let now = Date()
+            if !didOpenAuthenticationURL, now >= nextOutputScan {
+                let output = combinedOutput(stdoutURL: stdoutURL, stderrURL: stderrURL)
+                if let url = authenticationURL(in: output) {
+                    openAuthenticationURL(url)
+                    didOpenAuthenticationURL = true
+                }
+                nextOutputScan = now.addingTimeInterval(0.25)
+            }
             Thread.sleep(forTimeInterval: 0.05)
+        }
+        if !didOpenAuthenticationURL {
+            let output = combinedOutput(stdoutURL: stdoutURL, stderrURL: stderrURL)
+            if let url = authenticationURL(in: output) {
+                openAuthenticationURL(url)
+            }
         }
         guard process.isRunning else { return false }
         process.terminate()
         process.waitUntilExit()
         return true
+    }
+
+    static func authenticationURL(in output: String) -> URL? {
+        let pattern = #"https://auth\.openai\.com/[^\s"'<>)]+"#
+        guard let range = output.range(of: pattern, options: .regularExpression) else {
+            return nil
+        }
+        let rawURL = String(output[range])
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".,;:"))
+        return URL(string: rawURL)
+    }
+
+    private static func openAuthenticationURL(_ url: URL) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = [url.absoluteString]
+        try? process.run()
     }
 
     private static func combinedOutput(stdoutURL: URL, stderrURL: URL) -> String {
@@ -985,48 +1070,4 @@ struct CodexAccountLoginRunner: CodexAccountLoginRunning {
             .appendingPathComponent("agent-signal-codex-login-\(UUID().uuidString).\(suffix)")
     }
 
-    private static func effectivePATH(from environment: [String: String]) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let candidates = [
-            environment["PATH"],
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "\(home)/.local/bin",
-            "\(home)/.npm-global/bin",
-            "/usr/bin",
-            "/bin",
-            "/usr/sbin",
-            "/sbin"
-        ]
-        var seen = Set<String>()
-        return candidates
-            .flatMap { ($0 ?? "").split(separator: ":").map(String.init) }
-            .filter { path in
-                let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty, !seen.contains(trimmed) else { return false }
-                seen.insert(trimmed)
-                return true
-            }
-            .joined(separator: ":")
-    }
-
-    private static func resolveCodexExecutable(environment: [String: String]) -> String? {
-        if let explicit = environment["CODEX_BINARY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !explicit.isEmpty,
-           FileManager.default.isExecutableFile(atPath: explicit) {
-            return explicit
-        }
-
-        let pathValue = environment["PATH"] ?? ""
-        for directory in pathValue.split(separator: ":").map(String.init) {
-            let executable = URL(fileURLWithPath: directory)
-                .appendingPathComponent("codex", isDirectory: false)
-                .path
-            if FileManager.default.isExecutableFile(atPath: executable) {
-                return executable
-            }
-        }
-
-        return nil
-    }
 }

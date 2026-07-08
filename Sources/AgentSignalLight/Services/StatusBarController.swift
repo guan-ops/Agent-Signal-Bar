@@ -485,10 +485,11 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     private func isVisibleNativeAgentSession(_ session: SessionStatus) -> Bool {
-        if session.sessionID.hasPrefix("desktop-app:")
-            || session.sessionID.hasPrefix("platform-presence:")
-            || session.lastEvent == "DesktopAppRunning"
-            || session.lastEvent?.hasPrefix("PlatformPresence:") == true {
+        if ActivityPresentation.isPresenceOnlySession(session) {
+            return false
+        }
+
+        if ActivityPresentation.isPresenceSession(session) {
             return true
         }
 
@@ -573,7 +574,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         case "DesktopTurnAborted":
             return model.text("已取消", "Canceled")
         case "DesktopAppRunning":
-            return model.text("桌面版运行中", "Desktop app running")
+            return model.text("桌面版已打开", "Desktop app open")
         case let event where event.hasPrefix("PlatformPresence:"):
             return nativeShortSignalName(signal)
         case "PermissionRequest":

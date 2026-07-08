@@ -4,8 +4,9 @@ set -euo pipefail
 RELEASE_BASENAME="AgentSignalBar"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
-DMG="$DIST_DIR/$RELEASE_BASENAME.dmg"
-APPCAST="$DIST_DIR/appcast.xml"
+UPDATE_ARCHIVE="${SPARKLE_UPDATE_ARCHIVE:-$DIST_DIR/$RELEASE_BASENAME.dmg}"
+UPDATE_ARCHIVE_NAME="${SPARKLE_UPDATE_ARCHIVE_NAME:-$(basename "$UPDATE_ARCHIVE")}"
+APPCAST="${SPARKLE_APPCAST:-$DIST_DIR/appcast.xml}"
 VERSION_FILE="$ROOT_DIR/VERSION"
 SPARKLE_ACCOUNT="${SPARKLE_ACCOUNT:-com.agentsignallight.AgentSignalLight}"
 SPARKLE_BIN_DIR="${SPARKLE_BIN_DIR:-$ROOT_DIR/.build/artifacts/sparkle/Sparkle/bin}"
@@ -22,8 +23,8 @@ if [[ ! -f "$VERSION_FILE" ]]; then
   echo "missing version file: $VERSION_FILE" >&2
   exit 1
 fi
-if [[ ! -f "$DMG" ]]; then
-  echo "missing update archive: $DMG" >&2
+if [[ ! -f "$UPDATE_ARCHIVE" ]]; then
+  echo "missing update archive: $UPDATE_ARCHIVE" >&2
   exit 1
 fi
 if [[ ! -x "$GENERATE_APPCAST" ]]; then
@@ -43,11 +44,12 @@ FULL_RELEASE_NOTES_URL="${SPARKLE_FULL_RELEASE_NOTES_URL:-https://github.com/gua
 ARCHIVE_DIR="$(mktemp -d)"
 trap 'rm -rf "$ARCHIVE_DIR"' EXIT
 
-cp "$DMG" "$ARCHIVE_DIR/$RELEASE_BASENAME.dmg"
+cp "$UPDATE_ARCHIVE" "$ARCHIVE_DIR/$UPDATE_ARCHIVE_NAME"
+RELEASE_NOTES_BASENAME="${UPDATE_ARCHIVE_NAME%.*}"
 if [[ -f "$ROOT_DIR/docs/releases/$TAG_NAME.md" ]]; then
-  cp "$ROOT_DIR/docs/releases/$TAG_NAME.md" "$ARCHIVE_DIR/$RELEASE_BASENAME.md"
+  cp "$ROOT_DIR/docs/releases/$TAG_NAME.md" "$ARCHIVE_DIR/$RELEASE_NOTES_BASENAME.md"
 elif [[ -f "$ROOT_DIR/docs/releases/v$APP_VERSION.md" ]]; then
-  cp "$ROOT_DIR/docs/releases/v$APP_VERSION.md" "$ARCHIVE_DIR/$RELEASE_BASENAME.md"
+  cp "$ROOT_DIR/docs/releases/v$APP_VERSION.md" "$ARCHIVE_DIR/$RELEASE_NOTES_BASENAME.md"
 fi
 
 ARGS=(

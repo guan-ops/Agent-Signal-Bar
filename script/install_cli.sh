@@ -8,6 +8,7 @@ LEGACY_INSTALL_NAME="agent-signal"
 INSTALL_PATH="$INSTALL_DIR/$INSTALL_NAME"
 LEGACY_INSTALL_PATH="$INSTALL_DIR/$LEGACY_INSTALL_NAME"
 XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+source "$ROOT_DIR/script/universal_build.sh"
 
 cd "$ROOT_DIR"
 
@@ -21,21 +22,16 @@ swift_tool() {
   fi
 }
 
-swift_tool build -c release --product "$INSTALL_NAME"
-mkdir -p "$INSTALL_DIR"
-BIN_PATH="$(swift_tool build -c release --show-bin-path)"
-if [[ -x "$BIN_PATH/$INSTALL_NAME" ]]; then
-  SOURCE_PATH="$BIN_PATH/$INSTALL_NAME"
-elif [[ -x "$BIN_PATH/$LEGACY_INSTALL_NAME" ]]; then
-  SOURCE_PATH="$BIN_PATH/$LEGACY_INSTALL_NAME"
-elif [[ -x "$BIN_PATH/AgentSignalCLI" ]]; then
-  SOURCE_PATH="$BIN_PATH/AgentSignalCLI"
+if [[ -z "${AGENT_SIGNAL_LIGHT_ARCHS+x}" ]]; then
+  INSTALL_ARCHS="arm64 x86_64"
 else
-  echo "error: built CLI binary not found in $BIN_PATH" >&2
-  exit 1
+  INSTALL_ARCHS="${AGENT_SIGNAL_LIGHT_ARCHS:-}"
 fi
-cp "$SOURCE_PATH" "$INSTALL_PATH"
-chmod +x "$INSTALL_PATH"
+INSTALL_ARCHS="$(agent_signal_normalize_archs "$INSTALL_ARCHS")"
+
+mkdir -p "$INSTALL_DIR"
+agent_signal_build_product "$INSTALL_NAME" "$INSTALL_NAME" release "$INSTALL_PATH" "$INSTALL_ARCHS"
+agent_signal_verify_binary_archs "$INSTALL_PATH" "$INSTALL_ARCHS" "$INSTALL_NAME"
 ln -sf "$INSTALL_NAME" "$LEGACY_INSTALL_PATH"
 
 echo "Installed $INSTALL_NAME: $INSTALL_PATH"

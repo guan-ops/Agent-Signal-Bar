@@ -9,6 +9,11 @@ DMG_PATH="$ROOT_DIR/dist/$RELEASE_BASENAME.dmg"
 DEFAULT_DMG_PATH="$ROOT_DIR/dist/$RELEASE_BASENAME.dmg"
 PROFILE="${AGENT_SIGNAL_LIGHT_NOTARY_PROFILE:-${NOTARYTOOL_PROFILE:-}}"
 
+read_version_value() {
+  local key="$1"
+  awk -F= -v key="$key" '$1 == key { print $2; exit }' "$ROOT_DIR/VERSION"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --readiness|readiness|check)
@@ -70,6 +75,10 @@ import sys
 print(Path(sys.argv[1]).expanduser().resolve(strict=False))
 PY
 )"
+APP_VERSION="$(read_version_value VERSION)"
+MACOS_UNIVERSAL_BASENAME="${RELEASE_BASENAME}-v${APP_VERSION}-macos-universal"
+MACOS_UNIVERSAL_DMG="$ROOT_DIR/dist/${MACOS_UNIVERSAL_BASENAME}.dmg"
+MACOS_UNIVERSAL_APPCAST="$ROOT_DIR/dist/${RELEASE_BASENAME}-macos-universal-appcast.xml"
 
 developer_id_count() {
   security find-identity -v -p codesigning 2>/dev/null \
@@ -122,11 +131,10 @@ print_readiness() {
 
 refresh_release_metadata_after_staple() {
   local manifest="$ROOT_DIR/dist/$RELEASE_BASENAME-release-manifest.json"
-  local appcast="$ROOT_DIR/dist/appcast.xml"
   local checksums="$ROOT_DIR/dist/$RELEASE_BASENAME-SHA256SUMS.txt"
 
   if [[ -f "$manifest" ]]; then
-    /usr/bin/python3 - "$ROOT_DIR" "$manifest" "$DMG_PATH" "$appcast" <<'PY'
+    /usr/bin/python3 - "$ROOT_DIR" "$manifest" <<'PY'
 import hashlib
 import json
 import sys
@@ -135,8 +143,6 @@ from pathlib import Path
 
 root = Path(sys.argv[1]).resolve()
 manifest_path = Path(sys.argv[2]).resolve()
-dmg_path = Path(sys.argv[3]).resolve()
-appcast_path = Path(sys.argv[4]).resolve()
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -147,26 +153,15 @@ def sha256(path: Path) -> str:
 
 manifest = json.loads(manifest_path.read_text())
 
-def relative_path(path: Path):
-    try:
-        return str(path.relative_to(root))
-    except ValueError:
-        return None
-
-def refresh_artifact(role: str, path: Path):
+for artifact in manifest.get("artifacts", []):
+    artifact_path = artifact.get("path")
+    if not artifact_path:
+        continue
+    path = root / artifact_path
     if not path.exists():
-        return
-    relative = relative_path(path)
-    for artifact in manifest.get("artifacts", []):
-        if artifact.get("role") != role and artifact.get("path") != relative:
-            continue
-        artifact["bytes"] = path.stat().st_size
-        artifact["sha256"] = sha256(path)
-        if relative:
-            artifact["path"] = relative
-
-refresh_artifact("installer_dmg", dmg_path)
-refresh_artifact("sparkle_appcast", appcast_path)
+        continue
+    artifact["bytes"] = path.stat().st_size
+    artifact["sha256"] = sha256(path)
 
 notarization = manifest.setdefault("notarization", {})
 notarization["status"] = "stapled"
@@ -179,16 +174,14 @@ PY
   if [[ -f "$checksums" ]]; then
     (
       cd "$ROOT_DIR"
-      if [[ "$DMG_PATH" == "$ROOT_DIR/"* ]]; then
-        dmg_checksum_target="${DMG_PATH#$ROOT_DIR/}"
-      else
-        dmg_checksum_target="$DMG_PATH"
-      fi
       checksum_targets=()
       for candidate in \
         "dist/$RELEASE_BASENAME.zip" \
-        "$dmg_checksum_target" \
+        "dist/$RELEASE_BASENAME.dmg" \
         "dist/appcast.xml" \
+        "dist/${MACOS_UNIVERSAL_BASENAME}.zip" \
+        "dist/${MACOS_UNIVERSAL_BASENAME}.dmg" \
+        "dist/$RELEASE_BASENAME-macos-universal-appcast.xml" \
         "dist/$RELEASE_BASENAME-release-manifest.json"; do
         if [[ -f "$candidate" ]]; then
           checksum_targets+=("$candidate")
@@ -224,7 +217,11 @@ submit_notarization() {
   xcrun stapler staple "$DMG_PATH"
   xcrun stapler validate "$DMG_PATH"
   if [[ "$DMG_PATH" == "$DEFAULT_DMG_PATH" ]]; then
+    ditto --norsrc --noextattr "$DMG_PATH" "$MACOS_UNIVERSAL_DMG"
     "$ROOT_DIR/script/generate_appcast.sh" >/dev/null
+    SPARKLE_UPDATE_ARCHIVE="$MACOS_UNIVERSAL_DMG" \
+      SPARKLE_APPCAST="$MACOS_UNIVERSAL_APPCAST" \
+      "$ROOT_DIR/script/generate_appcast.sh" >/dev/null
   else
     echo "Skipping appcast regeneration for non-default DMG path: $DMG_PATH" >&2
   fi

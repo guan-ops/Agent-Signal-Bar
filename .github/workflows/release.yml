@@ -78,6 +78,7 @@ jobs:
               echo "### Release verification"
               echo
               echo "- GitHub Actions built the app, ran Swift tests, packaged the release, and verified SHA-256 checksums."
+              echo "- macOS release binaries are universal and include Apple Silicon and Intel Mac slices."
               echo "- Checksums are published in AgentSignalBar-SHA256SUMS.txt."
               echo "- This is a local/self-use macOS build. It is ad-hoc signed and not notarized."
               echo
@@ -90,6 +91,7 @@ jobs:
               echo "### 发布验证"
               echo
               echo "- GitHub Actions 已完成 App 构建、Swift 测试、发布打包和 SHA-256 校验。"
+              echo "- macOS 发布二进制为 universal，包含 Apple Silicon 和 Intel Mac 架构。"
               echo "- 校验值见 AgentSignalBar-SHA256SUMS.txt。"
               echo "- 这是本地 / 自用 macOS 构建，使用 ad-hoc 签名，尚未进行 notarization 公证。"
             } > dist/release-notes.md
@@ -107,5 +109,8 @@ jobs:
             dist/AgentSignalBar.zip
             dist/AgentSignalBar.dmg
             dist/appcast.xml
+            dist/AgentSignalBar-v*-macos-universal.zip
+            dist/AgentSignalBar-v*-macos-universal.dmg
+            dist/AgentSignalBar-macos-universal-appcast.xml
             dist/AgentSignalBar-release-manifest.json
             dist/AgentSignalBar-SHA256SUMS.txt

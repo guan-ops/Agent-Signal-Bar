@@ -261,7 +261,7 @@ public final class SignalStateStore: @unchecked Sendable {
                 }
             case .idle, .sessionStart:
                 document.sessions[sessionID] = SessionRecord(
-                    agent: agent,
+                    agent: agent ?? existingBeforePrune?.agent,
                     signal: .idle,
                     lastEvent: lastEvent,
                     updatedAt: eventDate,
@@ -270,7 +270,7 @@ public final class SignalStateStore: @unchecked Sendable {
             case .done:
                 if document.sessions[sessionID]?.signal.preserveAgainstCompletedSignal != true {
                     document.sessions[sessionID] = SessionRecord(
-                        agent: agent,
+                        agent: agent ?? existingBeforePrune?.agent,
                         signal: signal,
                         lastEvent: lastEvent,
                         updatedAt: eventDate,
@@ -280,7 +280,7 @@ public final class SignalStateStore: @unchecked Sendable {
             default:
                 if !shouldHoldCurrentAlert {
                     document.sessions[sessionID] = SessionRecord(
-                        agent: agent,
+                        agent: agent ?? existingBeforePrune?.agent,
                         signal: signal,
                         lastEvent: lastEvent,
                         updatedAt: eventDate,
@@ -319,6 +319,7 @@ public final class SignalStateStore: @unchecked Sendable {
 
             if var record = document.sessions[sessionID] {
                 record.quota = quota
+                record.updatedAt = max(record.updatedAt, updatedAt)
                 if record.agent == nil {
                     record.agent = agent
                 }
@@ -334,7 +335,7 @@ public final class SignalStateStore: @unchecked Sendable {
             }
 
             updateAggregateAfterPruning(in: &document, pruneResult: pruneResult)
-            document.updatedAt = updatedAt
+            document.updatedAt = max(document.updatedAt ?? updatedAt, updatedAt)
             try writeDocument(document)
             return document.snapshot(stateFileURL: stateFileURL)
         }

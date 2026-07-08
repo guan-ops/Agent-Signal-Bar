@@ -197,12 +197,6 @@ struct GitHubLatestRelease: Decodable, Equatable, Sendable {
     let htmlURL: URL
     let assets: [Asset]
 
-    var preferredDownloadURL: URL? {
-        assets.first { $0.name == "AgentSignalLight-local.dmg" }?.browserDownloadURL
-            ?? assets.first { $0.name.hasSuffix(".dmg") }?.browserDownloadURL
-            ?? assets.first { $0.name.hasSuffix(".zip") }?.browserDownloadURL
-    }
-
     private enum CodingKeys: String, CodingKey {
         case tagName = "tag_name"
         case htmlURL = "html_url"
@@ -217,6 +211,21 @@ struct GitHubLatestRelease: Decodable, Equatable, Sendable {
             case name
             case browserDownloadURL = "browser_download_url"
         }
+    }
+}
+
+extension GitHubLatestRelease {
+    var preferredDownloadURL: URL? {
+        preferredMacOSAsset?.browserDownloadURL
+    }
+
+    private var preferredMacOSAsset: Asset? {
+        assets.first { $0.name.hasPrefix("AgentSignalBar-v") && $0.name.contains("-macos-universal") && $0.name.hasSuffix(".dmg") }
+            ?? assets.first { $0.name == "AgentSignalBar.dmg" }
+            ?? assets.first { $0.name == "AgentSignalLight-local.dmg" }
+            ?? assets.first { $0.name.hasSuffix(".dmg") }
+            ?? assets.first { $0.name.hasPrefix("AgentSignalBar-v") && $0.name.contains("-macos-universal") && $0.name.hasSuffix(".zip") }
+            ?? assets.first { $0.name.hasSuffix(".zip") }
     }
 }
 

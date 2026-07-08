@@ -1,11 +1,26 @@
 import AgentSignalLightCore
 import AppKit
+import CoreGraphics
 import Foundation
 
 final class CodexPlatformPresenceMonitor: @unchecked Sendable {
     struct RunningApplicationInfo: Equatable, Sendable {
         let bundleIdentifier: String?
         let localizedName: String?
+        let processIdentifier: Int?
+        let hasVisibleWindow: Bool
+
+        init(
+            bundleIdentifier: String?,
+            localizedName: String?,
+            processIdentifier: Int? = nil,
+            hasVisibleWindow: Bool = true
+        ) {
+            self.bundleIdentifier = bundleIdentifier
+            self.localizedName = localizedName
+            self.processIdentifier = processIdentifier
+            self.hasVisibleWindow = hasVisibleWindow
+        }
     }
 
     struct RunningProcessInfo: Equatable, Sendable {
@@ -20,6 +35,7 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
         let event: String
         let appBundleIdentifiers: Set<String>
         let appNameTokens: Set<String>
+        let requiresVisibleWindow: Bool
         let processMatch: @Sendable (RunningProcessInfo) -> Bool
     }
 
@@ -34,11 +50,14 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
     }
 
     func detectSessions(now: Date = Date()) -> [SessionStatus] {
-        Self.detectSessions(
+        let visibleWindowProcessIDs = Self.visibleWindowProcessIDs()
+        return Self.detectSessions(
             applications: NSWorkspace.shared.runningApplications.map {
                 RunningApplicationInfo(
                     bundleIdentifier: $0.bundleIdentifier,
-                    localizedName: $0.localizedName
+                    localizedName: $0.localizedName,
+                    processIdentifier: Int($0.processIdentifier),
+                    hasVisibleWindow: visibleWindowProcessIDs.contains(Int($0.processIdentifier))
                 )
             },
             processes: runningProcesses(now: now),
@@ -74,6 +93,7 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
             event: "PlatformPresence:Desktop",
             appBundleIdentifiers: ["com.openai.codex"],
             appNameTokens: ["codex"],
+            requiresVisibleWindow: true,
             processMatch: { process in
                 let commandLine = process.commandLine
                 return commandLine.contains("/applications/codex.app/")
@@ -86,6 +106,7 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
             event: "PlatformPresence:CLI",
             appBundleIdentifiers: [],
             appNameTokens: [],
+            requiresVisibleWindow: false,
             processMatch: { process in
                 process.looksLikeCodexCLI
             }
@@ -96,6 +117,7 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
             event: "PlatformPresence:VSCode",
             appBundleIdentifiers: [],
             appNameTokens: [],
+            requiresVisibleWindow: false,
             processMatch: { process in
                 let commandLine = process.commandLine
                 return commandLine.contains("/openai.chatgpt/")
@@ -111,6 +133,7 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
             event: "PlatformPresence:Xcode",
             appBundleIdentifiers: [],
             appNameTokens: [],
+            requiresVisibleWindow: false,
             processMatch: { process in
                 let commandLine = process.commandLine
                 return commandLine.contains("/library/developer/xcode/codingassistant/")
@@ -123,6 +146,7 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
             event: "PlatformPresence:IDEA",
             appBundleIdentifiers: [],
             appNameTokens: [],
+            requiresVisibleWindow: false,
             processMatch: { process in
                 let commandLine = process.commandLine
                 return commandLine.contains("/library/caches/jetbrains/")
@@ -138,6 +162,7 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
                 "com.anthropic.claude"
             ],
             appNameTokens: ["claude"],
+            requiresVisibleWindow: true,
             processMatch: { process in
                 let commandLine = process.commandLine
                 return commandLine.contains("/applications/claude.app/")
@@ -151,6 +176,10 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
         applications: [RunningApplicationInfo]
     ) -> Bool {
         applications.contains { application in
+            if definition.requiresVisibleWindow, !application.hasVisibleWindow {
+                return false
+            }
+
             if let bundleIdentifier = normalized(application.bundleIdentifier),
                definition.appBundleIdentifiers.contains(bundleIdentifier) {
                 return true
@@ -162,6 +191,33 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
 
             return definition.appNameTokens.contains(localizedName)
         }
+    }
+
+    private static func visibleWindowProcessIDs() -> Set<Int> {
+        guard let windowList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return []
+        }
+
+        return Set(
+            windowList.compactMap { window -> Int? in
+                guard let ownerPID = window[kCGWindowOwnerPID as String] as? Int else {
+                    return nil
+                }
+                let layer = window[kCGWindowLayer as String] as? Int ?? 0
+                guard layer == 0 else { return nil }
+                let alpha = window[kCGWindowAlpha as String] as? Double ?? 1
+                guard alpha > 0 else { return nil }
+                guard let bounds = window[kCGWindowBounds as String] as? [String: Any] else {
+                    return ownerPID
+                }
+                let width = bounds["Width"] as? Double ?? 0
+                let height = bounds["Height"] as? Double ?? 0
+                return width > 0 && height > 0 ? ownerPID : nil
+            }
+        )
     }
 
     private static func runningProcesses() -> [RunningProcessInfo] {

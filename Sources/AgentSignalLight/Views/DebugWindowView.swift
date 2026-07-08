@@ -1444,6 +1444,12 @@ struct DebugWindowView: View {
                     codexAccountSwitchMenu
                     codexAccountMoreMenu(activeSavedAccount: activeSavedAccount)
 
+                    if model.isCodexAccountActionRunning {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.65)
+                    }
+
                     Spacer(minLength: 0)
                 }
 
@@ -1456,9 +1462,9 @@ struct DebugWindowView: View {
             if let message = model.codexAccountMessage {
                 Text(message)
                     .font(settingsDetailFont)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .foregroundStyle(model.isCodexAccountMessageError ? .red : .secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
         }
         .padding(10)
@@ -2517,7 +2523,11 @@ struct DebugWindowView: View {
     }
 
     private var activitySessionRows: [SessionStatus] {
-        visibleActivitySessions.isEmpty ? selectedIdleActivitySessions : visibleActivitySessions
+        if !visibleActivitySessions.isEmpty {
+            return visibleActivitySessions
+        }
+
+        return visibleDesktopPresenceSessions
     }
 
     private var visibleActivitySessions: [SessionStatus] {
@@ -2528,73 +2538,12 @@ struct DebugWindowView: View {
         .filter(isVisibleActivitySession)
     }
 
-    private var selectedIdleActivitySessions: [SessionStatus] {
-        guard model.signalLightAgentSelectionMode == .manual,
-              !model.isMonitoringPaused
-        else {
-            return []
-        }
-
-        return model.signalLightAgentScopes
-            .intersection(visibleSignalLightAgentScopeSet)
-            .sorted { $0.sortOrder < $1.sortOrder }
-            .compactMap(idleActivitySession)
-    }
-
-    private func idleActivitySession(for scope: SignalLightAgentScope) -> SessionStatus? {
-        guard shouldShowIdleActivitySession(for: scope) else { return nil }
-
-        let agent: String
-        let sessionID: String
-        let event: String
-
-        switch scope {
-        case .codexDesktop:
-            agent = "codex-desktop"
-            sessionID = "idle:codex-desktop"
-            event = "PlatformPresence:Desktop"
-        case .codexCLI:
-            agent = "codex-cli"
-            sessionID = "idle:codex-cli"
-            event = "PlatformPresence:CLI"
-        case .codexVSCode:
-            agent = "codex-vscode"
-            sessionID = "idle:codex-vscode"
-            event = "PlatformPresence:VSCode"
-        case .codexXcode:
-            agent = "codex-xcode"
-            sessionID = "idle:codex-xcode"
-            event = "PlatformPresence:Xcode"
-        case .codexIDEA:
-            agent = "codex-idea"
-            sessionID = "idle:codex-idea"
-            event = "PlatformPresence:IDEA"
-        case .claudeCode:
-            agent = "claude-code"
-            sessionID = "idle:claude-code"
-            event = "PlatformPresence:Desktop"
-        case .codex, .claude, .claudeDesktop, .localScript:
-            return nil
-        }
-
-        return SessionStatus(
-            sessionID: sessionID,
-            signal: .idle,
-            updatedAt: Date(),
-            agent: agent,
-            lastEvent: event
+    private var visibleDesktopPresenceSessions: [SessionStatus] {
+        ActivityPresentation.visibleDesktopPresenceSessions(
+            from: model.activitySnapshot,
+            limit: ActivityPresentation.currentSessionLimit
         )
-    }
-
-    private func shouldShowIdleActivitySession(for scope: SignalLightAgentScope) -> Bool {
-        switch scope.group {
-        case .codex:
-            return model.isCodexDesktopMonitoringEnabled
-        case .claude:
-            return model.isClaudeDesktopMonitoringEnabled
-        case .other:
-            return false
-        }
+        .filter(isVisibleActivitySession)
     }
 
     private var activityEvents: some View {

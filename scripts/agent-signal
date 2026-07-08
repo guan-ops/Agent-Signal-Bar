@@ -2,11 +2,16 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PACKAGE_BIN="$ROOT_DIR/bin/agent-signal"
 RELEASE_BIN="$ROOT_DIR/dist/bin/agent-signal"
 DEBUG_BIN="$ROOT_DIR/.build/debug/agent-signal"
 
 if [[ -x "${AGENT_SIGNAL_BIN:-}" ]]; then
   exec "$AGENT_SIGNAL_BIN" "$@"
+fi
+
+if [[ -x "$PACKAGE_BIN" ]]; then
+  exec "$PACKAGE_BIN" "$@"
 fi
 
 if [[ -x "$DEBUG_BIN" && ( ! -x "$RELEASE_BIN" || "$DEBUG_BIN" -nt "$RELEASE_BIN" ) ]]; then

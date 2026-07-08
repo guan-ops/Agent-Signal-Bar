@@ -50,14 +50,25 @@ The release workflow runs tests, packages the app, verifies checksums, and uploa
 - `AgentSignalBar.zip`
 - `AgentSignalBar.dmg`
 - `appcast.xml`
+- `AgentSignalBar-v<version>-macos-universal.zip`
+- `AgentSignalBar-v<version>-macos-universal.dmg`
+- `AgentSignalBar-macos-universal-appcast.xml`
 - `AgentSignalBar-release-manifest.json`
 - `AgentSignalBar-SHA256SUMS.txt`
 
-`appcast.xml` is the Sparkle update feed used by installed apps. The app points to:
+The release package builds universal macOS binaries by default (`arm64 x86_64`),
+so the app, bundled CLI, release CLI, and icon preview CLI are verified for both
+Apple Silicon and Intel Mac.
+
+`appcast.xml` is the legacy Sparkle update feed used by existing installed apps.
+New builds point to the platform-named universal feed:
 
 ```text
-https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/appcast.xml
+https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/AgentSignalBar-macos-universal-appcast.xml
 ```
+
+Keep publishing both feeds during the migration so older installs can still
+update through `appcast.xml`.
 
 Before publishing Sparkle-enabled releases from GitHub Actions, configure the repository secret:
 
@@ -112,8 +123,8 @@ Before tagging a new version, confirm:
 - `docs/releases/<tag>.md` exists and includes clear Chinese and English release notes.
 - `README.md` and `README.zh-CN.md` describe the current behavior.
 - `SPARKLE_PRIVATE_KEY` is configured for GitHub Actions before pushing a tag.
-- `./script/verify_release_all.sh --skip-package` passes if artifacts already exist.
-- `./script/verify_release_all.sh` passes for a full local release gate.
+- `./script/verify_release_all.sh --skip-package` passes if artifacts already exist, including universal architecture checks.
+- `./script/verify_release_all.sh` passes for a full local release gate and confirms the app/CLI contain `arm64 x86_64` slices.
 
 ## Commit Identity
 

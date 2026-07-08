@@ -105,6 +105,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Preview changes without writing. This is the default.",
     )
+    mode.add_argument(
+        "--rollback",
+        type=Path,
+        metavar="BACKUP",
+        help="Restore a config file from a timestamped .bak-* backup created by --install.",
+    )
     parser.add_argument(
         "--remove",
         action="store_true",
@@ -418,7 +424,16 @@ def remove_hooks(spec: TargetSpec) -> MergeResult:
 
 def backup_path(path: Path) -> Path:
     stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    return path.with_name(f"{path.name}.bak-{stamp}")
+    candidate = path.with_name(f"{path.name}.bak-{stamp}")
+    if not candidate.exists():
+        return candidate
+
+    index = 1
+    while True:
+        next_candidate = path.with_name(f"{path.name}.bak-{stamp}-{index}")
+        if not next_candidate.exists():
+            return next_candidate
+        index += 1
 
 
 def write_result(result: MergeResult) -> Path | None:
@@ -435,6 +450,25 @@ def write_result(result: MergeResult) -> Path | None:
         handle.write("\n")
 
     return backup
+
+
+def rollback_backup(backup_path: Path) -> Path:
+    backup = backup_path.expanduser()
+    if not backup.is_file():
+        raise ValueError(f"rollback backup not found: {backup}")
+
+    marker = ".bak-"
+    if marker not in backup.name:
+        raise ValueError(f"rollback backup must be a timestamped .bak-* file: {backup}")
+
+    target_name = backup.name.split(marker, 1)[0]
+    if not target_name:
+        raise ValueError(f"cannot infer rollback target from backup name: {backup}")
+
+    target = backup.with_name(target_name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(backup, target)
+    return target
 
 
 def print_result(result: MergeResult, *, installed: bool, backup: Path | None = None) -> None:
@@ -509,6 +543,15 @@ def print_claude_runtime_diagnostics(home: Path) -> None:
 
 def main() -> int:
     args = parse_args()
+    if args.rollback is not None:
+        try:
+            target = rollback_backup(args.rollback)
+        except (OSError, ValueError) as error:
+            print(f"install_hooks.py: {error}", file=sys.stderr)
+            return 1
+        print(f"[rollback] restored {target} from {args.rollback.expanduser()}")
+        return 0
+
     target_specs = specs_for(
         args.home,
         codex_scope=args.codex_scope,

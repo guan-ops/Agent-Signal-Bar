@@ -783,7 +783,7 @@ extension MenuBarStatusModel {
         case "DesktopTurnAborted":
             return text("已取消", "Canceled")
         case "DesktopAppRunning":
-            return text("桌面版运行中", "Desktop app running")
+            return text("桌面版已打开", "Desktop app open")
         default:
             return rawValue
                 .replacingOccurrences(of: "_", with: " ")
@@ -1051,6 +1051,7 @@ private enum AppLocalization {
         "Prompt Received": localized(zhHant: "收到任務", ja: "プロンプト受信", ko: "프롬프트 수신", es: "Prompt recibido", fr: "Prompt recu", de: "Prompt empfangen", pt: "Prompt recebido"),
         "Running Step": localized(zhHant: "正在執行步驟", ja: "ステップ実行中", ko: "단계 실행 중", es: "Ejecutando paso", fr: "Execution de l'etape", de: "Schritt wird ausgefuehrt", pt: "Executando etapa"),
         "Step Done": localized(zhHant: "步驟完成", ja: "ステップ完了", ko: "단계 완료", es: "Paso listo", fr: "Etape terminee", de: "Schritt fertig", pt: "Etapa concluida"),
+        "Desktop app open": localized(zhHant: "桌面版已開啟", ja: "デスクトップ版が開いています", ko: "데스크톱 앱 열림", es: "App de escritorio abierta", fr: "App de bureau ouverte", de: "Desktop App geoeffnet", pt: "App desktop aberto"),
         "Desktop app running": localized(zhHant: "桌面版執行中", ja: "デスクトップ版実行中", ko: "데스크톱 앱 실행 중", es: "App de escritorio en ejecucion", fr: "App de bureau en cours", de: "Desktop App laeuft", pt: "App desktop em execucao"),
         "Desktop app is running": localized(zhHant: "桌面端正在執行", ja: "デスクトップ版が実行中", ko: "데스크톱 앱 실행 중", es: "La app de escritorio esta en ejecucion", fr: "L'app de bureau est en cours", de: "Desktop App laeuft", pt: "O app desktop esta em execucao"),
         "CLI / hook is running": localized(zhHant: "CLI / Hook 正在執行", ja: "CLI / Hook が実行中", ko: "CLI / Hook 실행 중", es: "CLI / hook en ejecucion", fr: "CLI / hook en cours", de: "CLI / Hook laeuft", pt: "CLI / hook em execucao"),

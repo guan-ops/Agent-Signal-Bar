@@ -54,55 +54,11 @@ final class CodexRPCStatusProbe: @unchecked Sendable {
     }
 
     private func effectiveEnvironment() -> [String: String] {
-        var scoped = environment
-        scoped["PATH"] = effectivePATH()
-        return scoped
-    }
-
-    private func effectivePATH() -> String {
-        let home = fileManager.homeDirectoryForCurrentUser.path
-        let candidates = [
-            environment["PATH"],
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "\(home)/.local/bin",
-            "\(home)/.npm-global/bin",
-            "/usr/bin",
-            "/bin",
-            "/usr/sbin",
-            "/sbin"
-        ]
-        var seen = Set<String>()
-        return candidates
-            .flatMap { ($0 ?? "").split(separator: ":").map(String.init) }
-            .compactMap { rawPath in
-                let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty, !seen.contains(trimmed) else { return nil }
-                seen.insert(trimmed)
-                return trimmed
-            }
-            .joined(separator: ":")
+        CodexExecutableResolver.effectiveEnvironment(from: environment, fileManager: fileManager)
     }
 
     private func resolveCodexExecutable() -> String? {
-        if let explicit = environment["CODEX_BINARY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !explicit.isEmpty {
-            let expanded = (explicit as NSString).expandingTildeInPath
-            if fileManager.isExecutableFile(atPath: expanded) {
-                return expanded
-            }
-        }
-
-        for directory in effectivePATH().split(separator: ":").map(String.init) {
-            let executable = URL(fileURLWithPath: directory)
-                .appendingPathComponent("codex", isDirectory: false)
-                .path
-            if fileManager.isExecutableFile(atPath: executable) {
-                return executable
-            }
-        }
-
-        return nil
+        CodexExecutableResolver.resolve(environment: environment, fileManager: fileManager)
     }
 }
 

@@ -28,6 +28,7 @@ done
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${AGENT_SIGNAL_LIGHT_DIST_DIR:-${DIST_DIR:-$ROOT_DIR/dist}}"
+source "$ROOT_DIR/script/universal_build.sh"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 STAGING_DIR="$(mktemp -d)"
 STAGED_APP_BUNDLE="$STAGING_DIR/$APP_NAME.app"
@@ -41,7 +42,7 @@ APP_ICON="$APP_RESOURCES/AppIcon.icns"
 RELEASE_INFO="$APP_RESOURCES/$APP_NAME-release-info.json"
 VERSION_FILE="$ROOT_DIR/VERSION"
 VERSION_RESOURCE="$APP_RESOURCES/$APP_NAME-version.env"
-SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/appcast.xml}"
+SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/AgentSignalBar-macos-universal-appcast.xml}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-lEr2AUplk4vAvH+IwB4DygGqobWmBkbyy1YYr1nRy70=}"
 trap 'rm -rf "$STAGING_DIR"' EXIT
 
@@ -67,6 +68,13 @@ if [[ ! "$APP_BUILD" =~ ^[0-9]+$ ]]; then
   echo "invalid BUILD in $VERSION_FILE: $APP_BUILD" >&2
   exit 1
 fi
+
+if [[ -z "${AGENT_SIGNAL_LIGHT_ARCHS+x}" && "$CONFIGURATION" == "release" ]]; then
+  PACKAGE_ARCHS="arm64 x86_64"
+else
+  PACKAGE_ARCHS="${AGENT_SIGNAL_LIGHT_ARCHS:-}"
+fi
+PACKAGE_ARCHS="$(agent_signal_normalize_archs "$PACKAGE_ARCHS")"
 
 swift_tool() {
   if [[ -n "${DEVELOPER_DIR:-}" ]]; then
@@ -201,21 +209,52 @@ clear_signature_detritus() {
     done <"$dirty_paths"
     rm -f "$dirty_paths"
   done
+
+  /usr/bin/python3 - "$path" <<'PY'
+import os
+import subprocess
+import sys
+
+root = sys.argv[1]
+dangerous_attrs = (
+    "com.apple.FinderInfo",
+    "com.apple.ResourceFork",
+    "com.apple.fileprovider.fpfs#P",
+)
+
+def remove_attr(path, attr):
+    subprocess.run(["xattr", "-d", attr, path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if os.path.islink(path):
+        subprocess.run(["xattr", "-s", "-d", attr, path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def clear_path(path):
+    for attr in dangerous_attrs:
+        remove_attr(path, attr)
+
+clear_path(root)
+for current, dirs, files in os.walk(root, topdown=True, followlinks=False):
+    clear_path(current)
+    for name in dirs + files:
+        clear_path(os.path.join(current, name))
+PY
+
+  local attr
+  for attr in \
+    com.apple.FinderInfo \
+    com.apple.ResourceFork \
+    "com.apple.fileprovider.fpfs#P"
+  do
+    find "$path" -xdev \( -type f -o -type d -o -type l \) -print0 \
+      | xargs -0 -n 50 xattr -d "$attr" 2>/dev/null || true
+  done
 }
 
-BUILD_ARGS=(--product "$APP_NAME")
-CLI_BUILD_ARGS=(--product agent-signal-light)
-if [[ "$CONFIGURATION" == "release" ]]; then
-  BUILD_ARGS=(-c release "${BUILD_ARGS[@]}")
-  CLI_BUILD_ARGS=(-c release "${CLI_BUILD_ARGS[@]}")
-fi
-
-swift_tool build "${BUILD_ARGS[@]}" >&2
-swift_tool build "${CLI_BUILD_ARGS[@]}" >&2
-BUILD_BIN_DIR="$(swift_tool build "${BUILD_ARGS[@]}" --show-bin-path)"
-CLI_BIN_DIR="$(swift_tool build "${CLI_BUILD_ARGS[@]}" --show-bin-path)"
-BUILD_BINARY="$BUILD_BIN_DIR/$APP_NAME"
-CLI_BINARY="$CLI_BIN_DIR/agent-signal-light"
+BUILD_OUTPUT_DIR="$STAGING_DIR/build"
+BUILD_BINARY="$BUILD_OUTPUT_DIR/$APP_NAME"
+CLI_BINARY="$BUILD_OUTPUT_DIR/agent-signal-light"
+agent_signal_build_product "$APP_NAME" "$APP_NAME" "$CONFIGURATION" "$BUILD_BINARY" "$PACKAGE_ARCHS"
+agent_signal_build_product "agent-signal-light" "agent-signal-light" "$CONFIGURATION" "$CLI_BINARY" "$PACKAGE_ARCHS"
+BUILD_BIN_DIR="$(agent_signal_product_bin_path "$APP_NAME" "$CONFIGURATION" "$(agent_signal_first_arch "$PACKAGE_ARCHS")")"
 SPARKLE_FRAMEWORK="$BUILD_BIN_DIR/Sparkle.framework"
 if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
   SPARKLE_FRAMEWORK="$(find "$ROOT_DIR/.build" -path '*/Sparkle.framework' -type d -print | head -n 1 || true)"
@@ -230,6 +269,8 @@ mkdir -p "$APP_MACOS" "$APP_FRAMEWORKS" "$APP_RESOURCES" "$APP_RESOURCES/script"
 cp "$BUILD_BINARY" "$APP_BINARY"
 cp "$CLI_BINARY" "$APP_RESOURCES/dist/bin/agent-signal-light"
 ln -sf agent-signal-light "$APP_RESOURCES/dist/bin/agent-signal"
+agent_signal_verify_binary_archs "$APP_BINARY" "$PACKAGE_ARCHS" "$APP_NAME app executable"
+agent_signal_verify_binary_archs "$APP_RESOURCES/dist/bin/agent-signal-light" "$PACKAGE_ARCHS" "bundled agent-signal-light CLI"
 ditto --norsrc --noextattr "$SPARKLE_FRAMEWORK" "$APP_FRAMEWORKS/Sparkle.framework"
 cp "$ROOT_DIR/script/export_diagnostics.sh" "$APP_RESOURCES/script/export_diagnostics.sh"
 cp "$ROOT_DIR/script/install_hooks.py" "$APP_RESOURCES/script/install_hooks.py"

@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/release-v1.5.2-111827.svg" alt="最新版本：v1.5.2"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/release-v1.5.3-111827.svg" alt="最新版本：v1.5.3"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-111827.svg" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Swift-6.0-F05138.svg" alt="Swift 6.0">
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/download-DMG-0ea5e9.svg" alt="下载 DMG"></a>
@@ -206,7 +206,9 @@ paused > blocked > permission > needs_review > stale > active > completed > read
 ./script/package_release.sh
 ```
 
-Sparkle 更新 feed 会生成到 `dist/appcast.xml`。本地打包使用 Keychain 里的 Sparkle 签名密钥；GitHub Actions 需要在仓库 secret 中配置 `SPARKLE_PRIVATE_KEY`。
+发布打包默认生成 universal macOS 可执行文件（`arm64 x86_64`），因此 DMG 和随附 CLI 可同时运行在 Apple Silicon 与 Intel Mac。发布产物会同时保留旧 Sparkle 入口（`appcast.xml`、`AgentSignalBar.dmg`）和迁移后的新入口（`AgentSignalBar-macos-universal-appcast.xml`、`AgentSignalBar-v<version>-macos-universal.dmg`）。只想生成本机单架构包时，可运行 `AGENT_SIGNAL_LIGHT_ARCHS=native ./script/package_release.sh`。
+
+Sparkle 更新 feed 会同时生成 `dist/appcast.xml`（给现有安装使用）和 `dist/AgentSignalBar-macos-universal-appcast.xml`（给迁移后的安装使用）。本地打包使用 Keychain 里的 Sparkle 签名密钥；GitHub Actions 需要在仓库 secret 中配置 `SPARKLE_PRIVATE_KEY`。
 
 ## CLI 用法
 

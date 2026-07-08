@@ -22,17 +22,74 @@ enum ActivityPresentation {
         visibleSessions(from: snapshot.sessions, now: now, limit: limit)
     }
 
+    static func visiblePresenceSessions(
+        from snapshot: SignalSnapshot,
+        now: Date = Date(),
+        limit: Int? = nil
+    ) -> [SessionStatus] {
+        visiblePresenceSessions(from: snapshot.sessions, now: now, limit: limit)
+    }
+
+    static func visiblePresenceSessions(
+        from sourceSessions: [SessionStatus],
+        now: Date = Date(),
+        limit: Int? = nil
+    ) -> [SessionStatus] {
+        visibleSessions(
+            from: sourceSessions,
+            now: now,
+            limit: limit,
+            includePresenceOnly: true
+        ).filter(isPresenceOnlySession)
+    }
+
+    static func visibleDesktopPresenceSessions(
+        from snapshot: SignalSnapshot,
+        now: Date = Date(),
+        limit: Int? = nil
+    ) -> [SessionStatus] {
+        visibleDesktopPresenceSessions(from: snapshot.sessions, now: now, limit: limit)
+    }
+
+    static func visibleDesktopPresenceSessions(
+        from sourceSessions: [SessionStatus],
+        now: Date = Date(),
+        limit: Int? = nil
+    ) -> [SessionStatus] {
+        let sessions = visiblePresenceSessions(from: sourceSessions, now: now, limit: nil)
+            .filter { session in
+                if case .desktop = runtimeKind(for: session) {
+                    return true
+                }
+                return false
+            }
+
+        if let limit {
+            return Array(sessions.prefix(limit))
+        }
+        return sessions
+    }
+
     static func visibleSessions(
         from sourceSessions: [SessionStatus],
         now: Date = Date(),
         limit: Int? = nil
+    ) -> [SessionStatus] {
+        visibleSessions(from: sourceSessions, now: now, limit: limit, includePresenceOnly: false)
+    }
+
+    private static func visibleSessions(
+        from sourceSessions: [SessionStatus],
+        now: Date,
+        limit: Int?,
+        includePresenceOnly: Bool
     ) -> [SessionStatus] {
         var seenSources: Set<String> = []
         var sourceIndexes: [String: Int] = [:]
         var sessions: [SessionStatus] = []
 
         for session in sourceSessions {
-            guard isVisibleSession(session, now: now) else { continue }
+            guard isVisibleSession(session, now: now, includePresenceOnly: includePresenceOnly) else { continue }
 
             let sourceKey = activitySourceKey(for: session)
             if let index = sourceIndexes[sourceKey] {
@@ -287,9 +344,13 @@ enum ActivityPresentation {
         return friendlyEventName(eventName)
     }
 
-    private static func isVisibleSession(_ session: SessionStatus, now: Date) -> Bool {
-        if isPresenceSession(session) {
-            return true
+    private static func isVisibleSession(
+        _ session: SessionStatus,
+        now: Date,
+        includePresenceOnly: Bool
+    ) -> Bool {
+        if isPresenceOnlySession(session) {
+            return includePresenceOnly
         }
 
         switch session.signal.displayState {
@@ -409,7 +470,17 @@ enum ActivityPresentation {
         displayState == .active || displayState == .completed
     }
 
-    private static func isPresenceSession(_ session: SessionStatus) -> Bool {
+    static func isPresenceOnlySession(_ session: SessionStatus) -> Bool {
+        guard isPresenceSession(session) else { return false }
+        switch session.signal.displayState {
+        case .ready, .paused:
+            return true
+        case .active, .completed, .needsReview, .permission, .blocked, .stale:
+            return false
+        }
+    }
+
+    static func isPresenceSession(_ session: SessionStatus) -> Bool {
         session.sessionID.hasPrefix("desktop-app:")
             || session.sessionID.hasPrefix("platform-presence:")
             || session.lastEvent == "DesktopAppRunning"
@@ -432,18 +503,30 @@ extension MenuBarStatusModel {
     }
 
     func activitySessionRuntimeLabel(for session: SessionStatus) -> String {
+        let presenceOnly = ActivityPresentation.isPresenceOnlySession(session)
+
         switch ActivityPresentation.runtimeKind(for: session) {
         case .desktop:
-            return text("桌面版运行中", "Desktop running")
+            return presenceOnly
+                ? text("桌面版已开启", "Desktop app open")
+                : text("桌面版运行中", "Desktop running")
         case .terminal:
-            return text("终端运行中", "Terminal running")
+            return presenceOnly
+                ? text("终端已检测到", "Terminal detected")
+                : text("终端运行中", "Terminal running")
         case .ide:
             if let detail = ActivityPresentation.sourceDetail(for: session) {
-                return text("\(detail) 运行中", "\(detail) running")
+                return presenceOnly
+                    ? text("\(detail) 已检测到", "\(detail) detected")
+                    : text("\(detail) 运行中", "\(detail) running")
             }
-            return text("IDE 运行中", "IDE running")
+            return presenceOnly
+                ? text("IDE 已检测到", "IDE detected")
+                : text("IDE 运行中", "IDE running")
         case .local:
-            return text("本地运行中", "Local running")
+            return presenceOnly
+                ? text("本地已检测到", "Local detected")
+                : text("本地运行中", "Local running")
         }
     }
 
