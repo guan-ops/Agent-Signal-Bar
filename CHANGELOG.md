@@ -4,6 +4,7 @@ Detailed bilingual release notes live in `docs/releases/` and are used as the Gi
 
 | Version | Date | Notes |
 | --- | --- | --- |
+| 1.5.5 | 2026-07-11 | [English + 简体中文](docs/releases/v1.5.5.md) |
 | 1.5.4 | 2026-07-11 | [English + 简体中文](docs/releases/v1.5.4.md) |
 | 1.5.3 | 2026-07-08 | [English + 简体中文](docs/releases/v1.5.3.md) |
 | 1.5.2 | 2026-06-30 | [English + 简体中文](docs/releases/v1.5.2.md) |

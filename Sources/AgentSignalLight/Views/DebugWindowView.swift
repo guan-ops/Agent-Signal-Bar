@@ -989,9 +989,12 @@ struct DebugWindowView: View {
                 subtitle: codexOpenAICookieSubtitle
             ) {
                 codexOpenAICookieModeMenu
+                    .disabled(!model.isCodexCookieControlEnabled)
+                    .opacity(model.isCodexCookieControlEnabled ? 1 : 0.55)
             }
 
-            if model.codexOpenAICookieMode == .manual {
+            if model.isCodexCookieControlEnabled,
+               model.codexOpenAICookieMode == .manual {
                 codexManualOpenAICookieInput
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -1040,11 +1043,26 @@ struct DebugWindowView: View {
 
     private var codexProviderDetailsContent: some View {
         VStack(alignment: .leading, spacing: 7) {
-            codexDetailRow(model.text("状态", "Status"), codexProviderEnabledText)
-            codexDetailRow(model.text("来源", "Source"), codexResolvedUsageSourceText)
-            codexDetailRow(model.text("版本", "Version"), codexProviderVersionText)
-            codexDetailRow(model.text("已更新", "Updated"), codexProviderUpdatedText)
+            codexDetailRow(model.text("监控", "Monitoring"), codexProviderEnabledText)
+            codexDetailRow(model.text("用量状态", "Usage Status"), codexUsageStatusText)
+            codexDetailRow(model.text("实际来源", "Actual Source"), codexResolvedUsageSourceText)
+            codexDetailRow(model.text("用量更新", "Usage Updated"), codexUsageUpdatedText)
+            codexDetailRow(model.text("重置额度", "Reset Credits"), codexResetCreditsStatusText)
+            codexDetailRow(model.text("CLI 版本", "CLI Version"), codexProviderVersionText)
             codexDetailRow(model.text("服务状态", "Service Status"), codexProviderServiceStatusText)
+
+            if let errorMessage = model.codexUsageFetchState?.errorMessage {
+                codexFetchErrorText(
+                    model.text("用量刷新失败", "Usage refresh failed"),
+                    message: errorMessage
+                )
+            }
+            if let errorMessage = model.codexResetCreditsFetchState?.errorMessage {
+                codexFetchErrorText(
+                    model.text("重置额度刷新失败", "Reset credits refresh failed"),
+                    message: errorMessage
+                )
+            }
         }
     }
 
@@ -1164,6 +1182,13 @@ struct DebugWindowView: View {
     }
 
     private var codexOpenAICookieSubtitle: String {
+        if !model.isCodexCookieControlEnabled {
+            return model.text(
+                "当前使用 Codex 凭据；Cookie 设置不会参与请求。",
+                "Codex credentials are selected; Cookie settings are not used."
+            )
+        }
+
         switch model.codexOpenAICookieMode {
         case .manual:
             return model.text(
@@ -1172,13 +1197,13 @@ struct DebugWindowView: View {
             )
         case .automatic:
             return model.text(
-                "自动读取浏览器 Cookie；不可用时回退 OAuth API。",
-                "Automatically reads browser cookies; falls back to the OAuth API when unavailable."
+                "自动读取浏览器 Cookie；不可用时回退 Codex 凭据。",
+                "Automatically reads browser cookies; falls back to Codex credentials when unavailable."
             )
         case .off:
             return model.text(
-                "不使用浏览器 Cookie；用量会走 OAuth API。",
-                "Browser cookies are disabled; usage uses the OAuth API."
+                "不使用浏览器 Cookie；用量会走 Codex 凭据。",
+                "Browser cookies are disabled; usage uses Codex credentials."
             )
         }
     }
@@ -1658,23 +1683,83 @@ struct DebugWindowView: View {
     }
 
     private var codexResolvedUsageSourceText: String {
-        switch model.codexUsageDataSource {
-        case .automatic:
-            switch model.codexCurrentAccount?.credentialKind {
-            case .oauth:
-                return "oauth"
-            case .apiKey:
-                return "api-key"
-            case .unknown:
-                return "unknown"
-            case nil:
-                return "auto"
-            }
-        case .oauthAPI:
-            return "oauth"
-        case .cliRPCPTY:
-            return "cli"
+        guard let source = model.codexUsageFetchState?.source else {
+            return model.isCodexRateLimitFetchInFlight
+                ? model.text("检测中", "Detecting")
+                : "--"
         }
+        switch source {
+        case .manualCookie:
+            return model.text("手动 Cookie", "Manual Cookie")
+        case .browserCookie:
+            return model.text("浏览器 Cookie", "Browser Cookie")
+        case .oauth:
+            return "Codex OAuth"
+        case .apiKey:
+            return "API Key"
+        case .unknown:
+            return model.text("未知", "Unknown")
+        }
+    }
+
+    private var codexUsageStatusText: String {
+        if !model.isCodexDesktopMonitoringEnabled {
+            return model.text("已停用", "Disabled")
+        }
+        if model.isCodexRateLimitFetchInFlight {
+            return model.text("正在刷新", "Refreshing")
+        }
+        if let state = model.codexUsageFetchState,
+           state.errorMessage != nil {
+            return state.isStale
+                ? model.text("刷新失败 · 显示缓存", "Refresh failed · Showing cached data")
+                : model.text("获取失败", "Fetch failed")
+        }
+        if model.codexUsageFetchState?.isStale == true {
+            return model.text("缓存数据", "Cached data")
+        }
+        if model.codexUsageFetchState?.lastSuccessfulAt != nil {
+            return model.text("正常", "Up to date")
+        }
+        if model.latestAgentQuota != nil {
+            return model.text("缓存数据", "Cached data")
+        }
+        return model.text("等待刷新", "Waiting to refresh")
+    }
+
+    private var codexUsageUpdatedText: String {
+        guard let updatedAt = model.codexUsageFetchState?.lastSuccessfulAt else {
+            return "--"
+        }
+        return codexDetailDateText(updatedAt)
+    }
+
+    private var codexResetCreditsStatusText: String {
+        guard let state = model.codexResetCreditsFetchState else {
+            return model.text("等待刷新", "Waiting to refresh")
+        }
+        if state.errorMessage != nil {
+            return state.isStale
+                ? model.text("刷新失败 · 显示缓存", "Refresh failed · Showing cached data")
+                : model.text("不可用", "Unavailable")
+        }
+        if state.isStale {
+            guard let updatedAt = state.lastSuccessfulAt else {
+                return model.text("缓存数据", "Cached data")
+            }
+            return "\(model.text("缓存数据", "Cached data")) · \(codexDetailDateText(updatedAt))"
+        }
+        guard let updatedAt = state.lastSuccessfulAt else {
+            return model.text("等待刷新", "Waiting to refresh")
+        }
+        return "\(model.text("正常", "Up to date")) · \(codexDetailDateText(updatedAt))"
+    }
+
+    private func codexDetailDateText(_ date: Date) -> String {
+        if Calendar.current.isDateInToday(date) {
+            return date.formatted(date: .omitted, time: .shortened)
+        }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 
     private func codexUsageDataSourceName(_ source: CodexUsageDataSource) -> String {
@@ -1682,7 +1767,7 @@ struct DebugWindowView: View {
         case .automatic:
             return model.text("自动", "Auto")
         case .oauthAPI:
-            return "OAuth API"
+            return model.text("Codex 凭据", "Codex Credentials")
         case .cliRPCPTY:
             return "CLI (RPC/PTY)"
         }
@@ -1716,6 +1801,14 @@ struct DebugWindowView: View {
 
             Spacer(minLength: 0)
         }
+    }
+
+    private func codexFetchErrorText(_ title: String, message: String) -> some View {
+        Text("\(title)：\(message)")
+            .font(settingsDetailFont)
+            .foregroundStyle(.red)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
     }
 
     private var claudeAccountStatusCard: some View {

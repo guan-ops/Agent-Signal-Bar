@@ -1052,7 +1052,11 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         let response = try JSONDecoder().decode(CodexUsageResponse.self, from: data)
         let updatedAt = Date(timeIntervalSince1970: 1_781_700_000)
-        let usageStatus = try CodexRateLimitFetcher.usageStatus(from: response, updatedAt: updatedAt)
+        let usageStatus = try CodexRateLimitFetcher.usageStatus(
+            from: response,
+            updatedAt: updatedAt,
+            source: .unknown
+        )
         let quota = usageStatus.quota
 
         XCTAssertEqual(quota.remainingPercent, 97.5, accuracy: 0.01)
@@ -1070,6 +1074,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(usageStatus.credits?.remaining ?? -1, 0, accuracy: 0.01)
         XCTAssertEqual(usageStatus.credits?.remainingPercent ?? -1, 0, accuracy: 0.01)
         XCTAssertEqual(usageStatus.credits?.resetsAt, Date(timeIntervalSince1970: 1_782_375_582))
+        XCTAssertEqual(usageStatus.source, .unknown)
     }
 
     func testCodexRateLimitFetcherDoesNotInventCreditQuotaWhenBalanceIsMissing() throws {
@@ -1093,7 +1098,11 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         let response = try JSONDecoder().decode(CodexUsageResponse.self, from: data)
         let updatedAt = Date(timeIntervalSince1970: 1_782_483_230)
-        let usageStatus = try CodexRateLimitFetcher.usageStatus(from: response, updatedAt: updatedAt)
+        let usageStatus = try CodexRateLimitFetcher.usageStatus(
+            from: response,
+            updatedAt: updatedAt,
+            source: .unknown
+        )
 
         XCTAssertEqual(usageStatus.quota.remainingPercent, 95, accuracy: 0.01)
         XCTAssertEqual(usageStatus.quota.primaryWindow?.windowMinutes, 43_200)
@@ -1281,13 +1290,23 @@ final class AgentSignalLightCoreTests: XCTestCase {
             session: session
         )
 
-        let quota = try await fetcher.fetchQuota(now: Date(timeIntervalSince1970: 1_781_700_000))
+        let usage = try await fetcher.fetchUsageStatus(
+            now: Date(timeIntervalSince1970: 1_781_700_000),
+            route: .oauthAPI
+        )
+        let quota = usage.quota
 
         XCTAssertEqual(quota.usedPercent ?? -1, 10, accuracy: 0.01)
+        XCTAssertEqual(usage.source, .apiKey)
         XCTAssertEqual(try Data(contentsOf: authURL), originalAuth)
     }
 
     func testCodexRateLimitFetcherUsesManualCookieHeader() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
         let session = URLSession(configuration: configuration)
@@ -1315,12 +1334,16 @@ final class AgentSignalLightCoreTests: XCTestCase {
         }
         defer { CodexRateLimitFetcherURLProtocol.handler = nil }
 
-        let fetcher = CodexRateLimitFetcher(session: session)
+        let fetcher = CodexRateLimitFetcher(
+            environment: ["CODEX_HOME": root.path],
+            session: session
+        )
         let usage = try await fetcher.fetchUsageStatus(
             route: .manualCookie("-H 'Cookie: foo=bar; baz=qux'")
         )
 
         XCTAssertEqual(usage.quota.usedPercent ?? -1, 25, accuracy: 0.01)
+        XCTAssertEqual(usage.source, .manualCookie)
     }
 
     func testCodexRateLimitFetcherOAuthRouteDoesNotSendCookieHeader() async throws {
@@ -1365,17 +1388,26 @@ final class AgentSignalLightCoreTests: XCTestCase {
         }
         defer { CodexRateLimitFetcherURLProtocol.handler = nil }
 
+        let importer = RecordingOpenAIBrowserCookieImporter(cookieHeader: "unused_cookie=1")
         let fetcher = CodexRateLimitFetcher(
             environment: ["CODEX_HOME": root.path],
             fileManager: .default,
-            session: session
+            session: session,
+            browserCookieImporter: importer
         )
         let usage = try await fetcher.fetchUsageStatus(route: .oauthAPI)
 
         XCTAssertEqual(usage.quota.usedPercent ?? -1, 15, accuracy: 0.01)
+        XCTAssertEqual(usage.source, .oauth)
+        XCTAssertEqual(importer.callCount, 0)
     }
 
     func testCodexRateLimitFetcherAutomaticRouteUsesImportedBrowserCookie() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
         let session = URLSession(configuration: configuration)
@@ -1404,6 +1436,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         defer { CodexRateLimitFetcherURLProtocol.handler = nil }
 
         let fetcher = CodexRateLimitFetcher(
+            environment: ["CODEX_HOME": root.path],
             session: session,
             browserCookieImporter: FakeOpenAIBrowserCookieImporter(cookieHeader: "auto_cookie=1")
         )
@@ -1412,6 +1445,926 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
 
         XCTAssertEqual(usage.quota.usedPercent ?? -1, 35, accuracy: 0.01)
+        XCTAssertEqual(usage.source, .browserCookie)
+    }
+
+    func testCodexRateLimitFetcherAutomaticCookieFailureFallsBackToOAuthSource() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let auth = try XCTUnwrap(String(data: codexOAuthAuthJSON(
+            email: "fallback@example.com",
+            accountID: "acct_fallback",
+            accessToken: "oauth-fallback-token"
+        ), encoding: .utf8))
+            .replacingOccurrences(of: "2026-06-01T00:00:00Z", with: "2026-07-11T00:00:00Z")
+        try Data(auth.utf8).write(to: root.appendingPathComponent("auth.json"))
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let recorder = URLRequestRecorder()
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            recorder.append(request)
+            if request.url?.path == "/backend-api/me" {
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (response, Data("{\"email\":\"fallback@example.com\"}".utf8))
+            }
+            if request.value(forHTTPHeaderField: "Cookie") != nil {
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 401,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (response, Data())
+            }
+
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "Authorization"),
+                "Bearer oauth-fallback-token"
+            )
+            let data = Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 45,
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, data)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let fetcher = CodexRateLimitFetcher(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            session: session
+        )
+        let usage = try await fetcher.fetchUsageStatus(
+            route: .automatic(cookieHeader: "session=expired", importsBrowserCookies: false)
+        )
+
+        XCTAssertEqual(usage.quota.usedPercent ?? -1, 45, accuracy: 0.01)
+        XCTAssertEqual(usage.source, .oauth)
+        XCTAssertEqual(recorder.requests.count, 3)
+        XCTAssertEqual(recorder.requests.first?.url?.path, "/backend-api/me")
+        XCTAssertEqual(recorder.requests.first?.value(forHTTPHeaderField: "Cookie"), "session=expired")
+        XCTAssertEqual(
+            recorder.requests.last?.value(forHTTPHeaderField: "Authorization"),
+            "Bearer oauth-fallback-token"
+        )
+    }
+
+    func testCodexRateLimitFetcherRejectsCookieFromDifferentAccountBeforeUsageRequest() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let auth = try XCTUnwrap(String(data: codexOAuthAuthJSON(
+            email: "selected@example.com",
+            accountID: "acct_selected",
+            accessToken: "selected-oauth-token"
+        ), encoding: .utf8))
+            .replacingOccurrences(of: "2026-06-01T00:00:00Z", with: "2026-07-11T00:00:00Z")
+        try Data(auth.utf8).write(to: root.appendingPathComponent("auth.json"))
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let recorder = URLRequestRecorder()
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            recorder.append(request)
+            if request.url?.path == "/backend-api/me" {
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (response, Data("{\"email\":\"other@example.com\"}".utf8))
+            }
+
+            XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "Authorization"),
+                "Bearer selected-oauth-token"
+            )
+            let data = Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 33,
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, data)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let fetcher = CodexRateLimitFetcher(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            session: session
+        )
+        let usage = try await fetcher.fetchUsageStatus(
+            route: .automatic(cookieHeader: "session=other-account", importsBrowserCookies: false)
+        )
+
+        XCTAssertEqual(usage.quota.usedPercent ?? -1, 33, accuracy: 0.01)
+        XCTAssertEqual(usage.source, .oauth)
+        XCTAssertEqual(recorder.requests.count, 2)
+        XCTAssertEqual(recorder.requests.first?.url?.path, "/backend-api/me")
+        XCTAssertEqual(recorder.requests.last?.url?.path, "/backend-api/wham/usage")
+    }
+
+    func testOpenAIBrowserCookieImporterFiltersCookiesToOfficialSharedScope() throws {
+        func cookie(
+            name: String,
+            domain: String,
+            path: String = "/",
+            secure: Bool = true,
+            expires: Date? = Date().addingTimeInterval(3_600)
+        ) throws -> HTTPCookie {
+            var properties: [HTTPCookiePropertyKey: Any] = [
+                .name: name,
+                .value: "1",
+                .domain: domain,
+                .path: path,
+            ]
+            if secure {
+                properties[.secure] = "TRUE"
+            }
+            if let expires {
+                properties[.expires] = expires
+            }
+            return try XCTUnwrap(HTTPCookie(properties: properties))
+        }
+
+        let cookies = try [
+            cookie(name: "valid", domain: ".chatgpt.com"),
+            cookie(name: "openai", domain: ".openai.com"),
+            cookie(name: "subdomain", domain: "auth.chatgpt.com"),
+            cookie(name: "pathScoped", domain: ".chatgpt.com", path: "/backend-api"),
+            cookie(
+                name: "expired",
+                domain: ".chatgpt.com",
+                expires: Date().addingTimeInterval(-60)
+            ),
+        ]
+
+        let header = try XCTUnwrap(OpenAIBrowserCookieImporter.cookieHeader(
+            from: cookies,
+            for: OpenAIBrowserCookieImporter.officialCookieScopeURL
+        ))
+
+        XCTAssertTrue(header.contains("valid=1"))
+        XCTAssertFalse(header.contains("openai=1"))
+        XCTAssertFalse(header.contains("subdomain=1"))
+        XCTAssertFalse(header.contains("pathScoped=1"))
+        XCTAssertFalse(header.contains("expired=1"))
+        XCTAssertNil(OpenAIBrowserCookieImporter.cookieHeader(
+            from: [cookies[0]],
+            for: URL(string: "http://chatgpt.com/")!
+        ))
+        XCTAssertNil(OpenAIBrowserCookieImporter.cookieHeader(
+            from: [cookies[0]],
+            for: URL(string: "https://example.com/")!
+        ))
+    }
+
+    func testCodexCookieRoutesIgnoreConfiguredBaseURL() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "chatgpt_base_url = \"https://attacker.example/proxy\"\n"
+            .write(to: root.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let recorder = URLRequestRecorder()
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            recorder.append(request)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 21,
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8))
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let fetcher = CodexRateLimitFetcher(
+            environment: ["CODEX_HOME": root.path],
+            session: session,
+            browserCookieImporter: FakeOpenAIBrowserCookieImporter(cookieHeader: "browser=1")
+        )
+        _ = try await fetcher.fetchUsageStatus(route: .manualCookie("manual=1"))
+        _ = try await fetcher.fetchUsageStatus(
+            route: .automatic(cookieHeader: nil, importsBrowserCookies: true)
+        )
+
+        XCTAssertEqual(recorder.requests.count, 2)
+        XCTAssertTrue(recorder.requests.allSatisfy {
+            $0.url?.absoluteString == "https://chatgpt.com/backend-api/wham/usage"
+        })
+    }
+
+    func testCodexCookieRoutingRejectsCorruptAuthBeforeImportOrRequest() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("{not-json".utf8).write(to: root.appendingPathComponent("auth.json"))
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let recorder = URLRequestRecorder()
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            recorder.append(request)
+            throw URLError(.badServerResponse)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let importer = RecordingOpenAIBrowserCookieImporter(cookieHeader: "browser=1")
+        let fetcher = CodexRateLimitFetcher(
+            environment: ["CODEX_HOME": root.path],
+            session: session,
+            browserCookieImporter: importer
+        )
+        let routes: [CodexRateLimitFetchRoute] = [
+            .automatic(cookieHeader: nil, importsBrowserCookies: true),
+            .manualCookie("manual=1"),
+        ]
+        for route in routes {
+            do {
+                _ = try await fetcher.fetchUsageStatus(route: route)
+                XCTFail("Corrupt auth.json must stop Cookie routing")
+            } catch {
+                // Expected: invalid or unreadable credentials must not become an unbound Cookie route.
+            }
+        }
+
+        XCTAssertEqual(importer.callCount, 0)
+        XCTAssertTrue(recorder.requests.isEmpty)
+    }
+
+    func testCodexUsageRejectsAuthFileChangedBehindSelectedAccount() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try codexOAuthAuthJSON(
+            email: "other@example.com",
+            accountID: "acct_other",
+            accessToken: "other-access"
+        ).write(to: root.appendingPathComponent("auth.json"))
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let recorder = URLRequestRecorder()
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            recorder.append(request)
+            throw URLError(.badServerResponse)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let importer = RecordingOpenAIBrowserCookieImporter(cookieHeader: "browser=1")
+        let fetcher = CodexRateLimitFetcher(
+            environment: ["CODEX_HOME": root.path],
+            session: session,
+            browserCookieImporter: importer
+        )
+        do {
+            _ = try await fetcher.fetchUsageStatus(
+                route: .automatic(cookieHeader: nil, importsBrowserCookies: true),
+                expectedAuthFingerprint: "selected-account-fingerprint"
+            )
+            XCTFail("A changed auth.json must not be attributed to the selected account")
+        } catch CodexRateLimitFetchError.credentialsChanged {
+            // Expected before browser import or network access.
+        }
+
+        XCTAssertEqual(importer.callCount, 0)
+        XCTAssertTrue(recorder.requests.isEmpty)
+    }
+
+    func testCodexOAuthRefreshPersistsOriginalAccountWithoutOverwritingSwitchedAccount() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        let authURL = root.appendingPathComponent("auth.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let credentialStore = RecordingSecretStore()
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL,
+            credentialStore: credentialStore
+        )
+        try codexOAuthAuthJSON(
+            email: "alpha@example.com",
+            accountID: "acct_alpha",
+            accessToken: "alpha-old-access"
+        ).write(to: authURL)
+        let alpha = try manager.saveCurrentAccount()
+
+        let freshTimestamp = ISO8601DateFormatter().string(from: Date())
+        let betaData = try XCTUnwrap(String(data: codexOAuthAuthJSON(
+            email: "beta@example.com",
+            accountID: "acct_beta",
+            accessToken: "beta-access"
+        ), encoding: .utf8))
+            .replacingOccurrences(of: "2026-06-01T00:00:00Z", with: freshTimestamp)
+        try Data(betaData.utf8).write(to: authURL)
+        let beta = try manager.saveCurrentAccount()
+        _ = try manager.switchToAccount(id: alpha.id)
+
+        let refreshStarted = TestSemaphoreGate()
+        let releaseRefresh = TestSemaphoreGate()
+        let recorder = URLRequestRecorder()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            recorder.append(request)
+            if request.url?.host == "auth.openai.com" {
+                refreshStarted.signal()
+                guard releaseRefresh.wait(seconds: 5) else {
+                    throw URLError(.timedOut)
+                }
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (response, Data("""
+                {
+                  "access_token": "alpha-refreshed-access",
+                  "refresh_token": "alpha-refreshed-refresh"
+                }
+                """.utf8))
+            }
+            XCTFail("A stale account refresh must not continue to the usage endpoint")
+            throw URLError(.cancelled)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let fetcher = CodexRateLimitFetcher(
+            environment: ["CODEX_HOME": root.path],
+            session: session,
+            credentialPersistence: manager
+        )
+        let fetchTask = Task {
+            try await fetcher.fetchUsageStatus(route: .oauthAPI)
+        }
+
+        var didStartRefresh = false
+        for _ in 0..<100 {
+            if refreshStarted.tryConsumeSignal() {
+                didStartRefresh = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(didStartRefresh)
+
+        _ = try manager.switchToAccount(id: beta.id)
+        XCTAssertTrue(try String(contentsOf: authURL).contains("beta-access"))
+        releaseRefresh.signal()
+
+        do {
+            _ = try await fetchTask.value
+            XCTFail("The stale alpha refresh must not write into beta auth.json")
+        } catch CodexRateLimitFetchError.credentialsChanged {
+            // Expected: the refreshed alpha credentials were saved to alpha's slot instead.
+        }
+
+        XCTAssertEqual(try manager.currentAccount().accountID, "acct_beta")
+        XCTAssertTrue(try String(contentsOf: authURL).contains("beta-access"))
+        XCTAssertEqual(
+            recorder.requests.filter { $0.url?.host == "auth.openai.com" }.count,
+            1
+        )
+
+        _ = try manager.switchToAccount(id: alpha.id)
+        let restoredAlpha = try String(contentsOf: authURL)
+        XCTAssertTrue(restoredAlpha.contains("alpha-refreshed-access"))
+        XCTAssertTrue(restoredAlpha.contains("alpha-refreshed-refresh"))
+    }
+
+    func testDeletingAccountDuringOAuthRefreshDoesNotResurrectPendingCredentials() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        let authURL = root.appendingPathComponent("auth.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL,
+            credentialStore: RecordingSecretStore()
+        )
+        try codexOAuthAuthJSON(
+            email: "delete@example.com",
+            accountID: "acct_delete",
+            accessToken: "delete-old-access"
+        ).write(to: authURL)
+        let deletedAccount = try manager.saveCurrentAccount()
+        let betaData = try XCTUnwrap(String(data: codexOAuthAuthJSON(
+            email: "keep@example.com",
+            accountID: "acct_keep",
+            accessToken: "keep-access"
+        ), encoding: .utf8))
+            .replacingOccurrences(
+                of: "2026-06-01T00:00:00Z",
+                with: ISO8601DateFormatter().string(from: Date())
+            )
+        try Data(betaData.utf8).write(to: authURL)
+        let keptAccount = try manager.saveCurrentAccount()
+        _ = try manager.switchToAccount(id: deletedAccount.id)
+
+        let refreshStarted = TestSemaphoreGate()
+        let releaseRefresh = TestSemaphoreGate()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            guard request.url?.host == "auth.openai.com" else {
+                throw URLError(.cancelled)
+            }
+            refreshStarted.signal()
+            guard releaseRefresh.wait(seconds: 5) else {
+                throw URLError(.timedOut)
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("""
+            {
+              "access_token": "deleted-refreshed-access",
+              "refresh_token": "deleted-refreshed-refresh"
+            }
+            """.utf8))
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let fetchTask = Task {
+            try await CodexRateLimitFetcher(
+                environment: ["CODEX_HOME": root.path],
+                session: session,
+                credentialPersistence: manager
+            ).fetchUsageStatus(route: .oauthAPI)
+        }
+        var didStartRefresh = false
+        for _ in 0..<100 {
+            if refreshStarted.tryConsumeSignal() {
+                didStartRefresh = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(didStartRefresh)
+
+        try manager.removeAccount(id: deletedAccount.id)
+        releaseRefresh.signal()
+        do {
+            _ = try await fetchTask.value
+            XCTFail("A removed account refresh must not continue")
+        } catch CodexRateLimitFetchError.credentialsChanged {
+            // Expected: the remaining account owns active auth.json.
+        }
+
+        let state = try manager.loadState()
+        XCTAssertEqual(state.savedAccounts.map(\.id), [keptAccount.id])
+        XCTAssertEqual(state.activeSavedAccountID, keptAccount.id)
+        XCTAssertNil(CodexActiveAuthFileCoordinator.refreshedAuthData(
+            replacingAuthFingerprint: deletedAccount.authFingerprint
+        ))
+        let pendingDirectory = storeURL.deletingLastPathComponent()
+            .appendingPathComponent("PendingCodexCredentialRefreshes", isDirectory: true)
+        let pendingFiles = (try? FileManager.default.contentsOfDirectory(
+            at: pendingDirectory,
+            includingPropertiesForKeys: nil
+        )) ?? []
+        XCTAssertTrue(pendingFiles.isEmpty)
+    }
+
+    func testCodexOAuthRefreshKeepsActiveRotatedTokenWhenSavedCredentialWriteFails() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let credentialStore = RecordingSecretStore()
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: root.appendingPathComponent("accounts.json"),
+            credentialStore: credentialStore
+        )
+        try codexOAuthAuthJSON(
+            email: "active@example.com",
+            accountID: "acct_active",
+            accessToken: "active-old-access"
+        ).write(to: authURL)
+        let account = try manager.saveCurrentAccount()
+        let betaData = try XCTUnwrap(String(data: codexOAuthAuthJSON(
+            email: "beta@example.com",
+            accountID: "acct_beta",
+            accessToken: "beta-access"
+        ), encoding: .utf8))
+            .replacingOccurrences(
+                of: "2026-06-01T00:00:00Z",
+                with: ISO8601DateFormatter().string(from: Date())
+            )
+        try Data(betaData.utf8).write(to: authURL)
+        let beta = try manager.saveCurrentAccount()
+        _ = try manager.switchToAccount(id: account.id)
+        defer {
+            CodexActiveAuthFileCoordinator.clearRefreshedAuthData(
+                replacingAuthFingerprint: account.authFingerprint
+            )
+        }
+        credentialStore.setFailsSetOperations(true)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            if request.url?.host == "auth.openai.com" {
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (response, Data("""
+                {
+                  "access_token": "active-refreshed-access",
+                  "refresh_token": "active-refreshed-refresh"
+                }
+                """.utf8))
+            }
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "Authorization"),
+                "Bearer active-refreshed-access"
+            )
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 19,
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8))
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let usage = try await CodexRateLimitFetcher(
+            environment: ["CODEX_HOME": root.path],
+            session: session,
+            credentialPersistence: manager
+        ).fetchUsageStatus(route: .oauthAPI)
+
+        XCTAssertEqual(usage.quota.usedPercent ?? -1, 19, accuracy: 0.01)
+        let activeAuth = try String(contentsOf: authURL)
+        XCTAssertTrue(activeAuth.contains("active-refreshed-access"))
+        XCTAssertTrue(activeAuth.contains("active-refreshed-refresh"))
+
+        // Simulate an app restart by discarding the in-memory rescue copy.
+        CodexActiveAuthFileCoordinator.clearRefreshedAuthData(
+            replacingAuthFingerprint: account.authFingerprint
+        )
+        _ = try manager.switchToAccount(id: beta.id)
+        XCTAssertTrue(try String(contentsOf: authURL).contains("beta-access"))
+        let restartedManager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: root.appendingPathComponent("accounts.json"),
+            credentialStore: credentialStore
+        )
+        _ = try restartedManager.switchToAccount(id: account.id)
+        let restoredActiveAuth = try String(contentsOf: authURL)
+        XCTAssertTrue(restoredActiveAuth.contains("active-refreshed-access"))
+        XCTAssertTrue(restoredActiveAuth.contains("active-refreshed-refresh"))
+    }
+
+    func testExternalSameAccountAuthChangeSurvivesKeychainFailureSwitchAndRestart() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        let authURL = root.appendingPathComponent("auth.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let credentialStore = RecordingSecretStore()
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL,
+            credentialStore: credentialStore
+        )
+        try codexOAuthAuthJSON(
+            email: "external-save@example.com",
+            accountID: "acct_external_save",
+            accessToken: "external-save-old"
+        ).write(to: authURL)
+        let alpha = try manager.saveCurrentAccount()
+        defer {
+            CodexActiveAuthFileCoordinator.clearRefreshedAuthData(
+                replacingAuthFingerprint: alpha.authFingerprint
+            )
+        }
+        try codexOAuthAuthJSON(
+            email: "external-beta@example.com",
+            accountID: "acct_external_beta",
+            accessToken: "external-beta-access"
+        ).write(to: authURL)
+        let beta = try manager.saveCurrentAccount()
+        _ = try manager.switchToAccount(id: alpha.id)
+
+        let externalAuth = codexOAuthAuthJSON(
+            email: "external-save@example.com",
+            accountID: "acct_external_save",
+            accessToken: "external-save-new"
+        )
+        try externalAuth.write(to: authURL, options: .atomic)
+        credentialStore.setFailsSetOperations(true)
+
+        _ = try manager.switchToAccount(id: beta.id)
+        XCTAssertTrue(try String(contentsOf: authURL).contains("external-beta-access"))
+        CodexActiveAuthFileCoordinator.clearRefreshedAuthData(
+            replacingAuthFingerprint: alpha.authFingerprint
+        )
+
+        let restartedManager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL,
+            credentialStore: credentialStore
+        )
+        _ = try restartedManager.switchToAccount(id: alpha.id)
+        XCTAssertEqual(try Data(contentsOf: authURL), externalAuth)
+    }
+
+    @MainActor
+    func testModelAccountSwitchDuringOAuthRefreshPreservesRotatedOriginalToken() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let storeURL = fixture.directory.appendingPathComponent("accounts.json")
+        let authURL = fixture.directory.appendingPathComponent("auth.json")
+        let credentialStore = RecordingSecretStore()
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": fixture.directory.path],
+            fileManager: .default,
+            storeURL: storeURL,
+            credentialStore: credentialStore
+        )
+
+        try codexOAuthAuthJSON(
+            email: "alpha@example.com",
+            accountID: "acct_alpha",
+            accessToken: "alpha-old-access"
+        ).write(to: authURL)
+        let alpha = try manager.saveCurrentAccount()
+        let betaData = try XCTUnwrap(String(data: codexOAuthAuthJSON(
+            email: "beta@example.com",
+            accountID: "acct_beta",
+            accessToken: "beta-access"
+        ), encoding: .utf8))
+            .replacingOccurrences(
+                of: "2026-06-01T00:00:00Z",
+                with: ISO8601DateFormatter().string(from: Date())
+            )
+        try Data(betaData.utf8).write(to: authURL)
+        let beta = try manager.saveCurrentAccount()
+        _ = try manager.switchToAccount(id: alpha.id)
+
+        let refreshStarted = TestSemaphoreGate()
+        let releaseRefresh = TestSemaphoreGate()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            if request.url?.host == "auth.openai.com" {
+                refreshStarted.signal()
+                guard releaseRefresh.wait(seconds: 5) else {
+                    throw URLError(.timedOut)
+                }
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (response, Data("""
+                {
+                  "access_token": "alpha-refreshed-access",
+                  "refresh_token": "alpha-refreshed-refresh"
+                }
+                """.utf8))
+            }
+            if request.url?.path.contains("rate-limit-reset-credits") == true {
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (response, Data("{\"credits\":[],\"available_count\":0}".utf8))
+            }
+
+            let authorization = request.value(forHTTPHeaderField: "Authorization")
+            let usedPercent = authorization == "Bearer beta-access" ? 72 : 33
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": \(usedPercent),
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8))
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: CodexAccountUsageSnapshotStore(
+                fileURL: fixture.directory.appendingPathComponent("usage.json")
+            ),
+            codexRateLimitFetcher: CodexRateLimitFetcher(
+                environment: ["CODEX_HOME": fixture.directory.path],
+                session: session,
+                credentialPersistence: manager
+            )
+        )
+        model.codexUsageDataSource = .oauthAPI
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.pollCodexRateLimitsIfNeeded(force: true)
+
+        var didStartRefresh = false
+        for _ in 0..<100 {
+            if refreshStarted.tryConsumeSignal() {
+                didStartRefresh = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(didStartRefresh)
+
+        model.switchCodexAccount(beta)
+        releaseRefresh.signal()
+        for _ in 0..<200 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.codexActiveSavedAccountID == beta.id,
+               model.latestAgentQuota?.usedPercent == 72 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertFalse(model.isCodexRateLimitFetchInFlight)
+        XCTAssertEqual(model.codexActiveSavedAccountID, beta.id)
+        XCTAssertEqual(model.latestAgentQuota?.usedPercent ?? -1, 72, accuracy: 0.01)
+        XCTAssertTrue(try String(contentsOf: authURL).contains("beta-access"))
+
+        model.switchCodexAccount(alpha)
+        for _ in 0..<200 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.codexActiveSavedAccountID == alpha.id,
+               model.latestAgentQuota?.usedPercent == 33 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let restoredAlpha = try String(contentsOf: authURL)
+        XCTAssertTrue(restoredAlpha.contains("alpha-refreshed-access"))
+        XCTAssertTrue(restoredAlpha.contains("alpha-refreshed-refresh"))
+    }
+
+    func testCodexOAuthRefreshDistinguishesTransientServerFailureFromRejectedToken() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try codexOAuthAuthJSON(
+            email: "refresh@example.com",
+            accountID: "acct_refresh",
+            accessToken: "old-access"
+        ).write(to: root.appendingPathComponent("auth.json"))
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let fetcher = CodexRateLimitFetcher(
+            environment: ["CODEX_HOME": root.path],
+            session: session
+        )
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 503,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data())
+        }
+        do {
+            _ = try await fetcher.fetchUsageStatus(route: .oauthAPI)
+            XCTFail("A refresh service outage must fail")
+        } catch CodexRateLimitFetchError.serverError(let statusCode) {
+            XCTAssertEqual(statusCode, 503)
+        }
+
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 401,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data())
+        }
+        do {
+            _ = try await fetcher.fetchUsageStatus(route: .oauthAPI)
+            XCTFail("A rejected refresh token must fail")
+        } catch CodexRateLimitFetchError.refreshRejected {
+            // Expected permanent authentication failure.
+        }
     }
 
     func testCodexAccountManagerSavesAndSwitchesAccounts() throws {
@@ -1456,6 +2409,228 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(switchedState.currentAccount?.email, "personal@example.com")
         XCTAssertEqual(switchedState.currentAccount?.accountID, "acct_personal")
         XCTAssertEqual(switchedState.activeSavedAccountID, personal.id)
+    }
+
+    func testCodexAccountManagerLoadingMigratedStateDoesNotReadCredentials() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let authURL = root.appendingPathComponent("auth.json")
+        let credentialStore = RecordingSecretStore()
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL,
+            credentialStore: credentialStore
+        )
+
+        try codexOAuthAuthJSON(
+            email: "personal@example.com",
+            accountID: "acct_personal",
+            accessToken: "personal-access-token"
+        ).write(to: authURL)
+        _ = try manager.saveCurrentAccount()
+
+        try codexOAuthAuthJSON(
+            email: "work@example.com",
+            accountID: "acct_work",
+            accessToken: "work-access-token"
+        ).write(to: authURL)
+        _ = try manager.saveCurrentAccount()
+
+        credentialStore.resetRecordedCalls()
+        let state = try manager.loadState()
+
+        XCTAssertEqual(state.savedAccounts.count, 2)
+        XCTAssertEqual(credentialStore.dataReadKeys, [])
+        XCTAssertEqual(credentialStore.setKeys, [])
+    }
+
+    func testCodexAccountManagerRefreshSkipsKeychainWhenSavedCredentialIsCurrent() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let authURL = root.appendingPathComponent("auth.json")
+        let credentialStore = RecordingSecretStore()
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL,
+            credentialStore: credentialStore
+        )
+        try codexOAuthAuthJSON(
+            email: "current@example.com",
+            accountID: "acct_current",
+            accessToken: "current-access-token"
+        ).write(to: authURL)
+        let saved = try manager.saveCurrentAccount()
+
+        credentialStore.resetRecordedCalls()
+        let refreshed = try manager.refreshSavedCurrentAccountIfPossible()
+
+        XCTAssertEqual(refreshed?.id, saved.id)
+        XCTAssertEqual(credentialStore.dataReadKeys, [])
+        XCTAssertEqual(credentialStore.setKeys, [])
+    }
+
+    func testCodexAccountManagerSwitchReadsOnlyTargetCredentialWhenCurrentCredentialIsUnchanged() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let authURL = root.appendingPathComponent("auth.json")
+        let credentialStore = RecordingSecretStore()
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL,
+            credentialStore: credentialStore
+        )
+
+        let personalAuth = codexOAuthAuthJSON(
+            email: "personal@example.com",
+            accountID: "acct_personal",
+            accessToken: "personal-access-token"
+        )
+        try personalAuth.write(to: authURL)
+        let personal = try manager.saveCurrentAccount()
+
+        try codexOAuthAuthJSON(
+            email: "work@example.com",
+            accountID: "acct_work",
+            accessToken: "work-access-token"
+        ).write(to: authURL)
+        _ = try manager.saveCurrentAccount()
+
+        credentialStore.resetRecordedCalls()
+        _ = try manager.switchToAccount(id: personal.id)
+
+        XCTAssertEqual(credentialStore.dataReadKeys, [try XCTUnwrap(personal.credentialReference)])
+        XCTAssertEqual(credentialStore.setKeys, [])
+        XCTAssertEqual(try Data(contentsOf: authURL), personalAuth)
+    }
+
+    func testCodexAccountManagerSwitchPersistsCurrentCredentialOnlyWhenItChanged() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let authURL = root.appendingPathComponent("auth.json")
+        let credentialStore = RecordingSecretStore()
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL,
+            credentialStore: credentialStore
+        )
+
+        let personalAuth = codexOAuthAuthJSON(
+            email: "personal@example.com",
+            accountID: "acct_personal",
+            accessToken: "personal-access-token"
+        )
+        try personalAuth.write(to: authURL)
+        let personal = try manager.saveCurrentAccount()
+
+        try codexOAuthAuthJSON(
+            email: "work@example.com",
+            accountID: "acct_work",
+            accessToken: "original-work-access-token"
+        ).write(to: authURL)
+        let work = try manager.saveCurrentAccount()
+
+        let refreshedWorkAuth = codexOAuthAuthJSON(
+            email: "work@example.com",
+            accountID: "acct_work",
+            accessToken: "refreshed-work-access-token"
+        )
+        try refreshedWorkAuth.write(to: authURL)
+
+        credentialStore.resetRecordedCalls()
+        _ = try manager.switchToAccount(id: personal.id)
+
+        XCTAssertEqual(credentialStore.dataReadKeys, [try XCTUnwrap(personal.credentialReference)])
+        XCTAssertEqual(credentialStore.setKeys, [try XCTUnwrap(work.credentialReference)])
+
+        _ = try manager.switchToAccount(id: work.id)
+        XCTAssertEqual(try Data(contentsOf: authURL), refreshedWorkAuth)
+    }
+
+    func testCodexAccountManagerReauthenticatingExistingAccountDoesNotScanSavedCredentials() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = root.appendingPathComponent("accounts.json")
+        let managedHomeRootURL = root.appendingPathComponent("managed-homes", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let authURL = root.appendingPathComponent("auth.json")
+        let originalAuth = codexOAuthAuthJSON(
+            email: "user@example.com",
+            accountID: "acct_user",
+            accessToken: "original-access-token"
+        )
+        try originalAuth.write(to: authURL)
+
+        let credentialStore = RecordingSecretStore()
+        let initialManager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL,
+            managedHomeRootURL: managedHomeRootURL,
+            credentialStore: credentialStore
+        )
+        let originalAccount = try initialManager.saveCurrentAccount()
+
+        let refreshedAuth = codexOAuthAuthJSON(
+            email: "user@example.com",
+            accountID: "acct_user",
+            accessToken: "refreshed-access-token"
+        )
+        credentialStore.setFailsSetOperations(true)
+        try initialManager.persistRefreshedAuthData(
+            refreshedAuth,
+            replacingAuthFingerprint: originalAccount.authFingerprint
+        )
+        credentialStore.setFailsSetOperations(false)
+        XCTAssertNotNil(CodexActiveAuthFileCoordinator.refreshedAuthData(
+            replacingAuthFingerprint: originalAccount.authFingerprint
+        ))
+        let loginRunner = FakeCodexAccountLoginRunner(authData: refreshedAuth)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: storeURL,
+            managedHomeRootURL: managedHomeRootURL,
+            loginRunner: loginRunner,
+            credentialStore: credentialStore
+        )
+
+        credentialStore.resetRecordedCalls()
+        let refreshedAccount = try await manager.authenticateManagedAccount()
+
+        XCTAssertEqual(refreshedAccount.id, originalAccount.id)
+        XCTAssertEqual(credentialStore.dataReadKeys, [])
+        XCTAssertEqual(credentialStore.setKeys, [try XCTUnwrap(originalAccount.credentialReference)])
+        XCTAssertNil(CodexActiveAuthFileCoordinator.refreshedAuthData(
+            replacingAuthFingerprint: originalAccount.authFingerprint
+        ))
+        let pendingDirectory = storeURL.deletingLastPathComponent()
+            .appendingPathComponent("PendingCodexCredentialRefreshes", isDirectory: true)
+        XCTAssertTrue(((try? FileManager.default.contentsOfDirectory(
+            at: pendingDirectory,
+            includingPropertiesForKeys: nil
+        )) ?? []).isEmpty)
     }
 
     func testCodexAccountManagerUpdatesExistingAccountAndRemovesActiveAuthWhenLastSavedAccountIsDeleted() throws {
@@ -1775,11 +2950,39 @@ final class AgentSignalLightCoreTests: XCTestCase {
             updatedAt: 1_782_500_200,
             lifetimeDays: 365
         )
+        let alphaUsageFetchState = CodexUsageFetchState(
+            source: .browserCookie,
+            lastSuccessfulAt: Date(timeIntervalSince1970: 1_782_500_100),
+            lastAttemptedAt: Date(timeIntervalSince1970: 1_782_500_100),
+            errorMessage: nil,
+            isStale: false
+        )
+        let betaUsageFetchState = CodexUsageFetchState(
+            source: .oauth,
+            lastSuccessfulAt: Date(timeIntervalSince1970: 1_782_500_200),
+            lastAttemptedAt: Date(timeIntervalSince1970: 1_782_500_250),
+            errorMessage: "Timed out",
+            isStale: true
+        )
+        let alphaResetFetchState = CodexResetCreditsFetchState(
+            lastSuccessfulAt: Date(timeIntervalSince1970: 1_782_500_100),
+            lastAttemptedAt: Date(timeIntervalSince1970: 1_782_500_100),
+            errorMessage: nil,
+            isStale: false
+        )
+        let betaResetFetchState = CodexResetCreditsFetchState(
+            lastSuccessfulAt: Date(timeIntervalSince1970: 1_782_500_200),
+            lastAttemptedAt: Date(timeIntervalSince1970: 1_782_500_250),
+            errorMessage: "Server error",
+            isStale: true
+        )
         usageStore.store(
             account: alphaCurrent,
             quota: alphaQuota,
             credits: nil,
             resetCredits: alphaResetCredits,
+            usageFetchState: alphaUsageFetchState,
+            resetCreditsFetchState: alphaResetFetchState,
             tokenUsage: AgentTokenUsage(totalTokens: 1_000),
             tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
             tokenActivityDays: [CodexTokenActivityDay(day: Date(timeIntervalSince1970: 1_782_432_000), totalTokens: 1_000)]
@@ -1789,6 +2992,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
             quota: betaQuota,
             credits: nil,
             resetCredits: betaResetCredits,
+            usageFetchState: betaUsageFetchState,
+            resetCreditsFetchState: betaResetFetchState,
             tokenUsage: AgentTokenUsage(totalTokens: 2_000),
             tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
             tokenActivityDays: [CodexTokenActivityDay(day: Date(timeIntervalSince1970: 1_782_432_000), totalTokens: 2_000)]
@@ -1831,24 +3036,38 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(model.latestAgentQuota?.remainingPercent, 42)
         XCTAssertEqual(model.latestCodexResetCredits?.availableCount, 2)
         XCTAssertEqual(model.codexResetCreditsPresentation()?.availableText, "2 available")
+        XCTAssertEqual(model.codexUsageFetchState, betaUsageFetchState)
+        XCTAssertEqual(model.codexResetCreditsFetchState, betaResetFetchState)
 
         model.switchCodexAccount(alpha)
         XCTAssertEqual(model.codexActiveSavedAccountID, alpha.id)
         XCTAssertEqual(model.latestAgentQuota?.remainingPercent, 84)
         XCTAssertEqual(model.latestCodexResetCredits?.availableCount, 1)
         XCTAssertEqual(model.codexResetCreditsPresentation()?.availableText, "1 available")
+        XCTAssertEqual(model.codexUsageFetchState?.source, alphaUsageFetchState.source)
+        XCTAssertEqual(model.codexUsageFetchState?.lastSuccessfulAt, alphaUsageFetchState.lastSuccessfulAt)
+        XCTAssertTrue(model.codexUsageFetchState?.isStale ?? false)
+        XCTAssertEqual(
+            model.codexResetCreditsFetchState?.lastSuccessfulAt,
+            alphaResetFetchState.lastSuccessfulAt
+        )
+        XCTAssertTrue(model.codexResetCreditsFetchState?.isStale ?? false)
 
         model.switchCodexAccount(gamma)
         XCTAssertEqual(model.codexActiveSavedAccountID, gamma.id)
         XCTAssertNil(model.latestAgentQuota)
         XCTAssertNil(model.latestCodexResetCredits)
         XCTAssertNil(model.codexResetCreditsPresentation())
+        XCTAssertNil(model.codexUsageFetchState)
+        XCTAssertNil(model.codexResetCreditsFetchState)
 
         model.switchCodexAccount(beta)
         XCTAssertEqual(model.codexActiveSavedAccountID, beta.id)
         XCTAssertEqual(model.latestAgentQuota?.remainingPercent, 42)
         XCTAssertEqual(model.latestCodexResetCredits?.availableCount, 2)
         XCTAssertEqual(model.codexResetCreditsPresentation()?.availableText, "2 available")
+        XCTAssertEqual(model.codexUsageFetchState, betaUsageFetchState)
+        XCTAssertEqual(model.codexResetCreditsFetchState, betaResetFetchState)
     }
 
     @MainActor
@@ -5686,6 +6905,34 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testMenuBarStatusModelExplainsKeychainAuthenticationFailure() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: FailingCodexAccountManager(
+                .keychainFailure("Keychain operation failed with status -25293")
+            )
+        )
+
+        model.addCodexAccount()
+
+        for _ in 0..<50 {
+            if !model.isCodexAccountActionRunning {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        let message = try XCTUnwrap(model.codexAccountMessage)
+        XCTAssertTrue(message.contains("钥匙串") || message.localizedCaseInsensitiveContains("keychain"))
+        XCTAssertTrue(message.contains("不是 Codex 密码") || message.contains("not your Codex password"))
+        XCTAssertFalse(message.contains("-25293"))
+    }
+
+    @MainActor
     func testCodexUsageRefreshDoesNotRefreshSavedAccountCredentials() async throws {
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -5746,6 +6993,1015 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(manager.refreshSavedCurrentAccountCount, 0)
         XCTAssertEqual(manager.fullLoadCount, 0)
         XCTAssertGreaterThanOrEqual(manager.metadataLoadCount, 2)
+    }
+
+    @MainActor
+    func testCodexUsageSourceChangeDuringInFlightQueuesLatestRoute() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let auth = try XCTUnwrap(String(data: codexOAuthAuthJSON(
+            email: "selected@example.com",
+            accountID: "acct_selected",
+            accessToken: "selected-oauth-token"
+        ), encoding: .utf8))
+            .replacingOccurrences(
+                of: "2026-06-01T00:00:00Z",
+                with: ISO8601DateFormatter().string(from: Date())
+            )
+        try Data(auth.utf8).write(to: fixture.directory.appendingPathComponent("auth.json"))
+
+        let oldUsageStarted = TestSemaphoreGate()
+        let releaseOldUsage = TestSemaphoreGate()
+        let recorder = URLRequestRecorder()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            recorder.append(request)
+            if request.url?.path == "/backend-api/me" {
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (response, Data("{\"email\":\"selected@example.com\"}".utf8))
+            }
+            if request.value(forHTTPHeaderField: "Cookie") == "session=old-route" {
+                oldUsageStarted.signal()
+                guard releaseOldUsage.wait(seconds: 5) else {
+                    throw URLError(.timedOut)
+                }
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (response, Data("""
+                {
+                  "rate_limit": {
+                    "primary_window": {
+                      "used_percent": 11,
+                      "reset_at": 1781788782,
+                      "limit_window_seconds": 18000
+                    }
+                  }
+                }
+                """.utf8))
+            }
+            if request.url?.path.contains("rate-limit-reset-credits") == true {
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (response, Data("{\"credits\":[],\"available_count\":0}".utf8))
+            }
+
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "Authorization"),
+                "Bearer selected-oauth-token"
+            )
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 72,
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8))
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let defaults = UserDefaults.standard
+        let originalSource = defaults.object(forKey: "codexUsageDataSource")
+        defer {
+            if let originalSource {
+                defaults.set(originalSource, forKey: "codexUsageDataSource")
+            } else {
+                defaults.removeObject(forKey: "codexUsageDataSource")
+            }
+        }
+
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": fixture.directory.path],
+            fileManager: .default,
+            storeURL: fixture.directory.appendingPathComponent("accounts.json"),
+            credentialStore: RecordingSecretStore()
+        )
+        _ = try manager.saveCurrentAccount()
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexRateLimitFetcher: CodexRateLimitFetcher(
+                environment: ["CODEX_HOME": fixture.directory.path],
+                session: session
+            )
+        )
+        model.codexUsageDataSource = .automatic
+        model.codexOpenAICookieMode = .manual
+        model.codexManualOpenAICookieHeader = "session=old-route"
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.pollCodexRateLimitsIfNeeded(force: true)
+        var didStartOldUsage = false
+        for _ in 0..<100 {
+            if oldUsageStarted.tryConsumeSignal() {
+                didStartOldUsage = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(didStartOldUsage)
+
+        model.setCodexUsageDataSource(.oauthAPI)
+        releaseOldUsage.signal()
+
+        for _ in 0..<200 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.codexUsageFetchState?.source == .oauth,
+               model.latestAgentQuota?.usedPercent == 72 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertFalse(model.isCodexRateLimitFetchInFlight)
+        XCTAssertEqual(model.codexUsageFetchState?.source, .oauth)
+        XCTAssertEqual(model.latestAgentQuota?.usedPercent ?? -1, 72, accuracy: 0.01)
+        XCTAssertNotEqual(model.latestAgentQuota?.usedPercent, 11)
+        XCTAssertEqual(
+            recorder.requests.filter {
+                $0.url?.path == "/backend-api/wham/usage"
+                    && $0.value(forHTTPHeaderField: "Cookie") == "session=old-route"
+            }.count,
+            1
+        )
+        XCTAssertEqual(
+            recorder.requests.filter {
+                $0.url?.path == "/backend-api/wham/usage"
+                    && $0.value(forHTTPHeaderField: "Authorization") == "Bearer selected-oauth-token"
+            }.count,
+            1,
+            recorder.requests.map {
+                "\($0.url?.absoluteString ?? "--") cookie=\($0.value(forHTTPHeaderField: "Cookie") ?? "--") auth=\($0.value(forHTTPHeaderField: "Authorization") ?? "--")"
+            }.joined(separator: "\n")
+        )
+    }
+
+    @MainActor
+    func testCodexUsageAutomaticallyRecoversAfterExternalSameAccountAuthRefresh() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let authURL = fixture.directory.appendingPathComponent("auth.json")
+        let freshTimestamp = ISO8601DateFormatter().string(from: Date())
+        let originalAuth = try XCTUnwrap(String(data: codexOAuthAuthJSON(
+            email: "external@example.com",
+            accountID: "acct_external",
+            accessToken: "external-old-access"
+        ), encoding: .utf8))
+            .replacingOccurrences(of: "2026-06-01T00:00:00Z", with: freshTimestamp)
+        try Data(originalAuth.utf8).write(to: authURL)
+
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": fixture.directory.path],
+            fileManager: .default,
+            storeURL: fixture.directory.appendingPathComponent("accounts.json"),
+            credentialStore: RecordingSecretStore()
+        )
+        _ = try manager.saveCurrentAccount()
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        func response(for request: URLRequest, usedPercent: Int) -> (HTTPURLResponse, Data) {
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            if request.url?.path.contains("rate-limit-reset-credits") == true {
+                return (response, Data("{\"credits\":[],\"available_count\":0}".utf8))
+            }
+            return (response, Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": \(usedPercent),
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8))
+        }
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            response(for: request, usedPercent: 20)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: CodexAccountUsageSnapshotStore(
+                fileURL: fixture.directory.appendingPathComponent("usage.json")
+            ),
+            codexRateLimitFetcher: CodexRateLimitFetcher(
+                environment: ["CODEX_HOME": fixture.directory.path],
+                session: session,
+                credentialPersistence: manager
+            )
+        )
+        model.codexUsageDataSource = .oauthAPI
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.pollCodexRateLimitsIfNeeded(force: true)
+        for _ in 0..<100 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.latestAgentQuota?.usedPercent == 20 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(model.latestAgentQuota?.usedPercent ?? -1, 20, accuracy: 0.01)
+
+        let externallyRefreshedAuth = try XCTUnwrap(String(data: codexOAuthAuthJSON(
+            email: "external@example.com",
+            accountID: "acct_external",
+            accessToken: "external-new-access"
+        ), encoding: .utf8))
+            .replacingOccurrences(of: "2026-06-01T00:00:00Z", with: freshTimestamp)
+        try Data(externallyRefreshedAuth.utf8).write(to: authURL, options: .atomic)
+
+        let recorder = URLRequestRecorder()
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            recorder.append(request)
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "Authorization"),
+                "Bearer external-new-access"
+            )
+            return response(for: request, usedPercent: 80)
+        }
+        model.pollCodexRateLimitsIfNeeded(force: true)
+        for _ in 0..<200 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.latestAgentQuota?.usedPercent == 80,
+               model.codexUsageFetchState?.errorMessage == nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertFalse(model.isCodexRateLimitFetchInFlight)
+        XCTAssertEqual(model.latestAgentQuota?.usedPercent ?? -1, 80, accuracy: 0.01)
+        XCTAssertEqual(model.codexUsageFetchState?.source, .oauth)
+        XCTAssertNil(model.codexUsageFetchState?.errorMessage)
+        XCTAssertEqual(
+            recorder.requests.filter { $0.url?.path == "/backend-api/wham/usage" }.count,
+            1
+        )
+    }
+
+    @MainActor
+    func testExternalAccountSwitchDuringUsageCannotMixQuotaAndResetCredits() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let authURL = fixture.directory.appendingPathComponent("auth.json")
+        let freshTimestamp = ISO8601DateFormatter().string(from: Date())
+        let alphaAuth = try XCTUnwrap(String(data: codexOAuthAuthJSON(
+            email: "alpha-live@example.com",
+            accountID: "acct_alpha_live",
+            accessToken: "alpha-live-access"
+        ), encoding: .utf8))
+            .replacingOccurrences(of: "2026-06-01T00:00:00Z", with: freshTimestamp)
+        try Data(alphaAuth.utf8).write(to: authURL)
+
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": fixture.directory.path],
+            fileManager: .default,
+            storeURL: fixture.directory.appendingPathComponent("accounts.json"),
+            credentialStore: RecordingSecretStore()
+        )
+        _ = try manager.saveCurrentAccount()
+
+        let alphaUsageStarted = TestSemaphoreGate()
+        let releaseAlphaUsage = TestSemaphoreGate()
+        let recorder = URLRequestRecorder()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            recorder.append(request)
+            let authorization = request.value(forHTTPHeaderField: "Authorization")
+            if request.url?.path == "/backend-api/wham/usage",
+               authorization == "Bearer alpha-live-access" {
+                alphaUsageStarted.signal()
+                guard releaseAlphaUsage.wait(seconds: 5) else {
+                    throw URLError(.timedOut)
+                }
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (response, Data("""
+                {
+                  "rate_limit": {
+                    "primary_window": {
+                      "used_percent": 21,
+                      "reset_at": 1781788782,
+                      "limit_window_seconds": 18000
+                    }
+                  }
+                }
+                """.utf8))
+            }
+            if request.url?.path.contains("rate-limit-reset-credits") == true {
+                XCTAssertEqual(authorization, "Bearer beta-live-access")
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (response, Data("""
+                {
+                  "credits": [
+                    {"status":"available","granted_at":"2026-07-01T00:00:00Z","expires_at":"2026-08-01T00:00:00Z"},
+                    {"status":"available","granted_at":"2026-07-02T00:00:00Z","expires_at":"2026-08-02T00:00:00Z"}
+                  ],
+                  "available_count": 2
+                }
+                """.utf8))
+            }
+
+            XCTAssertEqual(authorization, "Bearer beta-live-access")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 80,
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8))
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: CodexAccountUsageSnapshotStore(
+                fileURL: fixture.directory.appendingPathComponent("usage.json")
+            ),
+            codexRateLimitFetcher: CodexRateLimitFetcher(
+                environment: ["CODEX_HOME": fixture.directory.path],
+                session: session,
+                credentialPersistence: manager
+            )
+        )
+        model.codexUsageDataSource = .oauthAPI
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.pollCodexRateLimitsIfNeeded(force: true)
+
+        var didStartAlphaUsage = false
+        for _ in 0..<100 {
+            if alphaUsageStarted.tryConsumeSignal() {
+                didStartAlphaUsage = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(didStartAlphaUsage)
+
+        let betaAuth = try XCTUnwrap(String(data: codexOAuthAuthJSON(
+            email: "beta-live@example.com",
+            accountID: "acct_beta_live",
+            accessToken: "beta-live-access"
+        ), encoding: .utf8))
+            .replacingOccurrences(of: "2026-06-01T00:00:00Z", with: freshTimestamp)
+        try Data(betaAuth.utf8).write(to: authURL, options: .atomic)
+        releaseAlphaUsage.signal()
+
+        for _ in 0..<200 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.codexCurrentAccount?.accountID == "acct_beta_live",
+               model.latestAgentQuota?.usedPercent == 80,
+               model.latestCodexResetCredits?.availableCount == 2 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertFalse(model.isCodexRateLimitFetchInFlight)
+        XCTAssertEqual(model.codexCurrentAccount?.accountID, "acct_beta_live")
+        XCTAssertEqual(model.latestAgentQuota?.usedPercent ?? -1, 80, accuracy: 0.01)
+        XCTAssertEqual(model.latestCodexResetCredits?.availableCount, 2)
+        XCTAssertNotEqual(model.latestAgentQuota?.usedPercent, 21)
+        XCTAssertFalse(recorder.requests.contains {
+            $0.url?.path.contains("rate-limit-reset-credits") == true
+                && $0.value(forHTTPHeaderField: "Authorization") == "Bearer alpha-live-access"
+        })
+    }
+
+    @MainActor
+    func testPausingMonitoringRejectsInFlightUsageFailureWithoutClearingCache() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let successData = Data("""
+        {
+          "rate_limit": {
+            "primary_window": {
+              "used_percent": 25,
+              "reset_at": 1781788782,
+              "limit_window_seconds": 18000
+            }
+          }
+        }
+        """.utf8)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, successData)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: CountingCodexAccountManager(),
+            codexRateLimitFetcher: CodexRateLimitFetcher(
+                environment: ["CODEX_HOME": fixture.directory.path],
+                session: session
+            )
+        )
+        model.codexUsageDataSource = .automatic
+        model.codexOpenAICookieMode = .manual
+        model.codexManualOpenAICookieHeader = "session=pause-test"
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.pollCodexRateLimitsIfNeeded(force: true)
+        for _ in 0..<100 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.latestAgentQuota?.usedPercent == 25 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let successfulAt = try XCTUnwrap(model.codexUsageFetchState?.lastSuccessfulAt)
+
+        let failedRequestStarted = TestSemaphoreGate()
+        let releaseFailedRequest = TestSemaphoreGate()
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            failedRequestStarted.signal()
+            guard releaseFailedRequest.wait(seconds: 5) else {
+                throw URLError(.timedOut)
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 401,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data())
+        }
+        model.pollCodexRateLimitsIfNeeded(force: true)
+        var didStartFailedRequest = false
+        for _ in 0..<100 {
+            if failedRequestStarted.tryConsumeSignal() {
+                didStartFailedRequest = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(didStartFailedRequest)
+
+        model.setMonitoringPaused(true)
+        releaseFailedRequest.signal()
+        for _ in 0..<100 {
+            if !model.isCodexRateLimitFetchInFlight {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertFalse(model.isCodexRateLimitFetchInFlight)
+        XCTAssertEqual(model.latestAgentQuota?.usedPercent ?? -1, 25, accuracy: 0.01)
+        XCTAssertEqual(model.codexUsageFetchState?.lastSuccessfulAt, successfulAt)
+        XCTAssertNil(model.codexUsageFetchState?.errorMessage)
+    }
+
+    @MainActor
+    func testCodexUsageRefreshFailureKeepsCachedQuotaAndMarksStateStale() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "session=manual")
+            let data = Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 18,
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, data)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: CountingCodexAccountManager(),
+            codexRateLimitFetcher: CodexRateLimitFetcher(
+                environment: ["CODEX_HOME": fixture.directory.path],
+                session: session
+            )
+        )
+        model.codexUsageDataSource = .automatic
+        model.codexOpenAICookieMode = .manual
+        model.codexManualOpenAICookieHeader = "session=manual"
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        XCTAssertTrue(model.isCodexCookieControlEnabled)
+        model.pollCodexRateLimitsIfNeeded(force: true)
+        for _ in 0..<100 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.codexUsageFetchState?.lastSuccessfulAt != nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        let successfulAt = try XCTUnwrap(model.codexUsageFetchState?.lastSuccessfulAt)
+        XCTAssertEqual(model.latestAgentQuota?.usedPercent ?? -1, 18, accuracy: 0.01)
+        XCTAssertEqual(model.codexUsageFetchState?.source, .manualCookie)
+        XCTAssertNil(model.codexUsageFetchState?.errorMessage)
+        XCTAssertFalse(model.codexUsageFetchState?.isStale ?? true)
+
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "session=manual")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 500,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data())
+        }
+        model.pollCodexRateLimitsIfNeeded(force: true)
+        for _ in 0..<100 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.codexUsageFetchState?.errorMessage != nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertEqual(model.latestAgentQuota?.usedPercent ?? -1, 18, accuracy: 0.01)
+        XCTAssertEqual(model.codexUsageFetchState?.source, .manualCookie)
+        XCTAssertEqual(model.codexUsageFetchState?.lastSuccessfulAt, successfulAt)
+        XCTAssertNotNil(model.codexUsageFetchState?.errorMessage)
+        XCTAssertTrue(model.codexUsageFetchState?.isStale ?? false)
+
+        model.codexUsageDataSource = .oauthAPI
+        XCTAssertFalse(model.isCodexCookieControlEnabled)
+    }
+
+    @MainActor
+    func testCodexUnauthorizedRefreshClearsCachedQuotaInsteadOfShowingStaleData() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        try Data("""
+        {
+          "tokens": {
+            "access_token": "expired-oauth-token",
+            "refresh_token": "",
+            "account_id": "acct_expired"
+          }
+        }
+        """.utf8).write(to: fixture.directory.appendingPathComponent("auth.json"))
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            if request.url?.path.contains("rate-limit-reset-credits") == true {
+                return (response, Data("{\"credits\":[],\"available_count\":0}".utf8))
+            }
+            let usage = Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 27,
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8)
+            return (response, usage)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": fixture.directory.path],
+            fileManager: .default,
+            storeURL: fixture.directory.appendingPathComponent("accounts.json"),
+            credentialStore: RecordingSecretStore()
+        )
+        _ = try manager.saveCurrentAccount()
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexRateLimitFetcher: CodexRateLimitFetcher(
+                environment: ["CODEX_HOME": fixture.directory.path],
+                session: session
+            )
+        )
+        model.codexUsageDataSource = .oauthAPI
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.pollCodexRateLimitsIfNeeded(force: true)
+        for _ in 0..<100 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.latestAgentQuota?.usedPercent == 27 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(model.latestAgentQuota?.usedPercent ?? -1, 27, accuracy: 0.01)
+
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 401,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data())
+        }
+        model.pollCodexRateLimitsIfNeeded(force: true)
+        for _ in 0..<100 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.codexUsageFetchState?.errorMessage != nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertNil(model.latestAgentQuota)
+        XCTAssertNil(model.latestCodexCredits)
+        XCTAssertNil(model.latestCodexResetCredits)
+        XCTAssertNil(model.codexUsageFetchState?.source)
+        XCTAssertNil(model.codexUsageFetchState?.lastSuccessfulAt)
+        XCTAssertNotNil(model.codexUsageFetchState?.errorMessage)
+        XCTAssertFalse(model.codexUsageFetchState?.isStale ?? true)
+    }
+
+    @MainActor
+    func testCodexAccountSwitchRejectsLateUsageFromPreviousAccount() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let accountStoreURL = fixture.directory.appendingPathComponent("accounts.json")
+        let usageStoreURL = fixture.directory.appendingPathComponent("usage-snapshots.json")
+        let authURL = fixture.directory.appendingPathComponent("auth.json")
+        let credentialStore = RecordingSecretStore()
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": fixture.directory.path],
+            fileManager: .default,
+            storeURL: accountStoreURL,
+            credentialStore: credentialStore
+        )
+
+        let alphaAuth = try XCTUnwrap(String(data: codexOAuthAuthJSON(
+            email: "alpha@example.com",
+            accountID: "acct_alpha",
+            accessToken: "alpha-access-token"
+        ), encoding: .utf8))
+            .replacingOccurrences(of: "2026-06-01T00:00:00Z", with: "2026-07-11T00:00:00Z")
+        try Data(alphaAuth.utf8).write(to: authURL)
+        let alpha = try manager.saveCurrentAccount()
+
+        let betaAuth = try XCTUnwrap(String(data: codexOAuthAuthJSON(
+            email: "beta@example.com",
+            accountID: "acct_beta",
+            accessToken: "beta-access-token"
+        ), encoding: .utf8))
+            .replacingOccurrences(of: "2026-06-01T00:00:00Z", with: "2026-07-11T00:00:00Z")
+        try Data(betaAuth.utf8).write(to: authURL)
+        let beta = try manager.saveCurrentAccount()
+        _ = try manager.switchToAccount(id: alpha.id)
+
+        let alphaRequestStarted = TestSemaphoreGate()
+        let releaseAlphaResponse = TestSemaphoreGate()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            if request.url?.path.contains("rate-limit-reset-credits") == true {
+                return (response, Data("{\"credits\":[],\"available_count\":0}".utf8))
+            }
+
+            let authorization = request.value(forHTTPHeaderField: "Authorization")
+            let usedPercent: Int
+            if authorization == "Bearer alpha-access-token" {
+                alphaRequestStarted.signal()
+                _ = releaseAlphaResponse.wait(seconds: 3)
+                usedPercent = 11
+            } else {
+                XCTAssertEqual(authorization, "Bearer beta-access-token")
+                usedPercent = 72
+            }
+            let data = Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": \(usedPercent),
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8)
+            return (response, data)
+        }
+        defer {
+            releaseAlphaResponse.signal()
+            CodexRateLimitFetcherURLProtocol.handler = nil
+        }
+
+        let defaults = UserDefaults.standard
+        let originalMonitoring = defaults.object(forKey: "isCodexDesktopMonitoringEnabled")
+        defaults.set(false, forKey: "isCodexDesktopMonitoringEnabled")
+        defer {
+            if let originalMonitoring {
+                defaults.set(originalMonitoring, forKey: "isCodexDesktopMonitoringEnabled")
+            } else {
+                defaults.removeObject(forKey: "isCodexDesktopMonitoringEnabled")
+            }
+        }
+
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: CodexAccountUsageSnapshotStore(fileURL: usageStoreURL),
+            codexRateLimitFetcher: CodexRateLimitFetcher(
+                environment: ["CODEX_HOME": fixture.directory.path],
+                session: session
+            )
+        )
+        model.codexUsageDataSource = .oauthAPI
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.pollCodexRateLimitsIfNeeded(force: true)
+        var didStartAlphaRequest = false
+        for _ in 0..<100 {
+            if alphaRequestStarted.tryConsumeSignal() {
+                didStartAlphaRequest = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(didStartAlphaRequest)
+
+        model.switchCodexAccount(beta)
+        releaseAlphaResponse.signal()
+
+        for _ in 0..<200 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.codexActiveSavedAccountID == beta.id,
+               model.latestAgentQuota?.usedPercent == 72 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertEqual(model.codexActiveSavedAccountID, beta.id)
+        XCTAssertEqual(model.latestAgentQuota?.usedPercent ?? -1, 72, accuracy: 0.01)
+        XCTAssertEqual(model.codexUsageFetchState?.source, .oauth)
+        XCTAssertNotEqual(model.latestAgentQuota?.usedPercent, 11)
+    }
+
+    @MainActor
+    func testCodexResetCreditsFailureKeepsCachedInventoryAndNextSuccessClearsError() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        try Data("""
+        {
+          "tokens": {
+            "access_token": "oauth-reset-token",
+            "refresh_token": ""
+          }
+        }
+        """.utf8).write(to: fixture.directory.appendingPathComponent("auth.json"))
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let usageResponse = Data("""
+        {
+          "rate_limit": {
+            "primary_window": {
+              "used_percent": 22,
+              "reset_at": 1781788782,
+              "limit_window_seconds": 18000
+            }
+          }
+        }
+        """.utf8)
+        let twoCreditsResponse = Data("""
+        {
+          "credits": [
+            {
+              "id": "one",
+              "reset_type": "codex_rate_limits",
+              "status": "available",
+              "granted_at": "2026-07-01T00:00:00Z",
+              "expires_at": "2026-07-30T00:00:00Z"
+            },
+            {
+              "id": "two",
+              "reset_type": "codex_rate_limits",
+              "status": "available",
+              "granted_at": "2026-07-02T00:00:00Z",
+              "expires_at": "2026-07-31T00:00:00Z"
+            }
+          ],
+          "available_count": 2
+        }
+        """.utf8)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            let isResetCredits = request.url?.path.contains("rate-limit-reset-credits") == true
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, isResetCredits ? twoCreditsResponse : usageResponse)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": fixture.directory.path],
+            fileManager: .default,
+            storeURL: fixture.directory.appendingPathComponent("accounts.json"),
+            credentialStore: RecordingSecretStore()
+        )
+        _ = try manager.saveCurrentAccount()
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexRateLimitFetcher: CodexRateLimitFetcher(
+                environment: ["CODEX_HOME": fixture.directory.path],
+                session: session
+            )
+        )
+        model.appLanguage = .english
+        model.codexUsageDataSource = .oauthAPI
+        model.codexOpenAICookieMode = .automatic
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.pollCodexRateLimitsIfNeeded(force: true)
+        for _ in 0..<100 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.latestCodexResetCredits?.availableCount == 2 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertEqual(model.codexUsageFetchState?.source, .oauth)
+        XCTAssertEqual(model.latestCodexResetCredits?.availableCount, 2)
+        XCTAssertNil(model.codexResetCreditsFetchState?.errorMessage)
+        XCTAssertFalse(model.codexResetCreditsFetchState?.isStale ?? true)
+
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            let isResetCredits = request.url?.path.contains("rate-limit-reset-credits") == true
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: isResetCredits ? 500 : 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, isResetCredits ? Data() : usageResponse)
+        }
+        model.pollCodexRateLimitsIfNeeded(force: true)
+        for _ in 0..<100 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.codexResetCreditsFetchState?.errorMessage != nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertEqual(model.latestCodexResetCredits?.availableCount, 2)
+        XCTAssertNotNil(model.codexResetCreditsFetchState?.errorMessage)
+        XCTAssertTrue(model.codexResetCreditsFetchState?.isStale ?? false)
+        XCTAssertNil(model.codexUsageFetchState?.errorMessage)
+
+        let zeroCreditsResponse = Data("""
+        {
+          "credits": [],
+          "available_count": 0
+        }
+        """.utf8)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            let isResetCredits = request.url?.path.contains("rate-limit-reset-credits") == true
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, isResetCredits ? zeroCreditsResponse : usageResponse)
+        }
+        model.pollCodexRateLimitsIfNeeded(force: true)
+        for _ in 0..<100 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.latestCodexResetCredits?.availableCount == 0,
+               model.codexResetCreditsFetchState?.errorMessage == nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertEqual(model.latestCodexResetCredits?.availableCount, 0)
+        XCTAssertNil(model.codexResetCreditsFetchState?.errorMessage)
+        XCTAssertFalse(model.codexResetCreditsFetchState?.isStale ?? true)
+        XCTAssertEqual(model.codexResetCreditsPresentation()?.availableText, "0 available")
     }
 
     func testFloatingSignalSoundResolverFindsWAVWhenM4AIsMissing() throws {
@@ -6280,10 +8536,43 @@ private final class CodexRateLimitFetcherURLProtocol: URLProtocol, @unchecked Se
     override func stopLoading() {}
 }
 
+private final class URLRequestRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedRequests: [URLRequest] = []
+
+    var requests: [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedRequests
+    }
+
+    func append(_ request: URLRequest) {
+        lock.lock()
+        recordedRequests.append(request)
+        lock.unlock()
+    }
+}
+
+private final class TestSemaphoreGate: @unchecked Sendable {
+    private let semaphore = DispatchSemaphore(value: 0)
+
+    func signal() {
+        semaphore.signal()
+    }
+
+    func tryConsumeSignal() -> Bool {
+        semaphore.wait(timeout: .now()) == .success
+    }
+
+    func wait(seconds: TimeInterval) -> Bool {
+        semaphore.wait(timeout: .now() + seconds) == .success
+    }
+}
+
 private struct FakeOpenAIBrowserCookieImporter: OpenAIBrowserCookieImporting {
     let cookieHeader: String?
 
-    func importCookieHeader() async -> OpenAIBrowserCookieImportResult? {
+    func importCookieHeader(targetEmail _: String?) async -> OpenAIBrowserCookieImportResult? {
         guard let cookieHeader else { return nil }
         return OpenAIBrowserCookieImportResult(
             cookieHeader: cookieHeader,
@@ -6291,6 +8580,98 @@ private struct FakeOpenAIBrowserCookieImporter: OpenAIBrowserCookieImporting {
             debugLog: "test"
         )
     }
+}
+
+private final class RecordingOpenAIBrowserCookieImporter: OpenAIBrowserCookieImporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let cookieHeader: String?
+    private var calls = 0
+
+    init(cookieHeader: String?) {
+        self.cookieHeader = cookieHeader
+    }
+
+    var callCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
+    }
+
+    func importCookieHeader(targetEmail _: String?) async -> OpenAIBrowserCookieImportResult? {
+        recordCall()
+        guard let cookieHeader else { return nil }
+        return OpenAIBrowserCookieImportResult(
+            cookieHeader: cookieHeader,
+            sourceLabel: "Test",
+            debugLog: "test"
+        )
+    }
+
+    private func recordCall() {
+        lock.lock()
+        calls += 1
+        lock.unlock()
+    }
+}
+
+private final class RecordingSecretStore: SecretStoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Data] = [:]
+    private var failsSetOperations = false
+    private(set) var dataReadKeys: [String] = []
+    private(set) var setKeys: [String] = []
+    private(set) var deletedKeys: [String] = []
+
+    func data(for key: String) throws -> Data? {
+        lock.withLock {
+            dataReadKeys.append(key)
+            return values[key]
+        }
+    }
+
+    func string(for key: String) throws -> String? {
+        guard let data = try data(for: key) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    func set(_ data: Data, for key: String) throws {
+        try lock.withLock {
+            if failsSetOperations {
+                throw RecordingSecretStoreError.forcedSetFailure
+            }
+            setKeys.append(key)
+            values[key] = data
+        }
+    }
+
+    func set(_ string: String, for key: String) throws {
+        try set(Data(string.utf8), for: key)
+    }
+
+    func delete(key: String) throws {
+        lock.withLock {
+            deletedKeys.append(key)
+            values.removeValue(forKey: key)
+        }
+    }
+
+    func resetRecordedCalls() {
+        lock.withLock {
+            dataReadKeys.removeAll()
+            setKeys.removeAll()
+            deletedKeys.removeAll()
+        }
+    }
+
+    func setFailsSetOperations(_ enabled: Bool) {
+        lock.withLock {
+            failsSetOperations = enabled
+        }
+    }
+}
+
+private enum RecordingSecretStoreError: Error {
+    case forcedSetFailure
 }
 
 private final class FakeCodexAccountLoginRunner: CodexAccountLoginRunning, @unchecked Sendable {

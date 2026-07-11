@@ -432,6 +432,8 @@ final class MenuBarStatusModel: ObservableObject {
     @Published private(set) var latestAgentQuota: AgentQuotaStatus?
     @Published private(set) var latestCodexCredits: CodexCreditStatus?
     @Published private(set) var latestCodexResetCredits: CodexRateLimitResetCreditsSnapshot?
+    @Published private(set) var codexUsageFetchState: CodexUsageFetchState?
+    @Published private(set) var codexResetCreditsFetchState: CodexResetCreditsFetchState?
     @Published private(set) var latestAgentTokenUsage: AgentTokenUsage?
     @Published private(set) var statusLightOverride: StatusLightOverrideFrame?
     @Published private(set) var isLightDebugModeEnabled = false
@@ -515,6 +517,9 @@ final class MenuBarStatusModel: ObservableObject {
     private var isCodexDesktopPollInFlight = false
     private var isTokenActivityScanInFlight = false
     private var codexUsageRefreshGeneration = 0
+    private var activeCodexUsageRefreshGeneration: Int?
+    private var codexUsageRefreshPending = false
+    private var codexUsageRefreshTask: Task<Void, Never>?
     private var tokenActivityScanGeneration = 0
     private var isPlatformPresencePollInFlight = false
     private var isAutomaticUpdateCheckInFlight = false
@@ -565,7 +570,7 @@ final class MenuBarStatusModel: ObservableObject {
         codexCLIStatusProbe: CodexCLIStatusProbe = CodexCLIStatusProbe(),
         codexRPCStatusProbe: CodexRPCStatusProbe = CodexRPCStatusProbe(),
         codexServiceStatusFetcher: CodexServiceStatusFetcher = CodexServiceStatusFetcher(),
-        codexRateLimitFetcher: CodexRateLimitFetcher = CodexRateLimitFetcher(),
+        codexRateLimitFetcher: CodexRateLimitFetcher? = nil,
         codexTokenActivityScanner: CodexTokenActivityScanner = CodexTokenActivityScanner(),
         codexPlatformPresenceMonitor: CodexPlatformPresenceMonitor = CodexPlatformPresenceMonitor(),
         updateChecker: GitHubReleaseUpdateChecker = GitHubReleaseUpdateChecker()
@@ -580,7 +585,9 @@ final class MenuBarStatusModel: ObservableObject {
         self.codexCLIStatusProbe = codexCLIStatusProbe
         self.codexRPCStatusProbe = codexRPCStatusProbe
         self.codexServiceStatusFetcher = codexServiceStatusFetcher
-        self.codexRateLimitFetcher = codexRateLimitFetcher
+        self.codexRateLimitFetcher = codexRateLimitFetcher ?? CodexRateLimitFetcher(
+            credentialPersistence: codexAccountManager as? any CodexRefreshedCredentialPersisting
+        )
         self.codexTokenActivityScanner = codexTokenActivityScanner
         self.codexPlatformPresenceMonitor = codexPlatformPresenceMonitor
         let openAICookieStore = KeychainSecretStore(service: "com.agentsignallight.openai-cookie")
@@ -1084,12 +1091,20 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private func codexAccountActionFailureMessage(_ error: Error) -> String {
-        if let managerError = error as? CodexAccountManagerError,
-           managerError == .missingCodexBinary {
-            return text(
-                "没有找到 codex 命令。请先安装 Codex CLI；如果终端里可以运行 codex login，先在终端完成登录，再回到这里点“保存当前”。",
-                "Could not find the codex command. Install Codex CLI. If codex login works in Terminal, finish it there, then return here and use Save Current."
-            )
+        if let managerError = error as? CodexAccountManagerError {
+            if managerError == .missingCodexBinary {
+                return text(
+                    "没有找到 codex 命令。请先安装 Codex CLI；如果终端里可以运行 codex login，先在终端完成登录，再回到这里点“保存当前”。",
+                    "Could not find the codex command. Install Codex CLI. If codex login works in Terminal, finish it there, then return here and use Save Current."
+                )
+            }
+            if case let .keychainFailure(message) = managerError,
+               message.contains("-25293") {
+                return text(
+                    "无法解锁“登录”钥匙串。请打开“钥匙串访问”并解锁“登录”钥匙串，然后重试；这里需要的是 Mac 钥匙串密码，不是 Codex 密码。",
+                    "Could not unlock the login keychain. Open Keychain Access and unlock the login keychain, then try again. This needs your Mac keychain password, not your Codex password."
+                )
+            }
         }
         return error.localizedDescription
     }
@@ -1119,6 +1134,8 @@ final class MenuBarStatusModel: ObservableObject {
         isMonitoringPaused = paused
 
         if paused {
+            invalidateCodexUsageRefresh()
+            codexUsageRefreshPending = false
             startMonitoringPauseLightSequence()
             pollDesktopAppPresence()
         } else {
@@ -1545,7 +1562,7 @@ final class MenuBarStatusModel: ObservableObject {
         guard codexUsageDataSource != resolvedSource else { return }
         codexUsageDataSource = resolvedSource
         UserDefaults.standard.set(resolvedSource.rawValue, forKey: "codexUsageDataSource")
-        lastCodexRateLimitFetchAt = nil
+        invalidateCodexUsageRefresh()
         lastError = nil
         pollCodexRateLimitsIfNeeded(force: true)
     }
@@ -1555,7 +1572,7 @@ final class MenuBarStatusModel: ObservableObject {
         guard codexOpenAICookieMode != resolvedMode else { return }
         codexOpenAICookieMode = resolvedMode
         UserDefaults.standard.set(resolvedMode.rawValue, forKey: "codexOpenAICookieMode")
-        lastCodexRateLimitFetchAt = nil
+        invalidateCodexUsageRefresh()
         pollCodexRateLimitsIfNeeded(force: true)
     }
 
@@ -1574,7 +1591,7 @@ final class MenuBarStatusModel: ObservableObject {
                 "Could not save OpenAI Cookie: \(error.localizedDescription)"
             )
         }
-        lastCodexRateLimitFetchAt = nil
+        invalidateCodexUsageRefresh()
     }
 
     func setCodexDesktopMonitoringEnabled(_ enabled: Bool) {
@@ -1583,6 +1600,9 @@ final class MenuBarStatusModel: ObservableObject {
         if enabled {
             codexDesktopActivityMonitor.reset()
             pollCodexDesktopActivity()
+        } else {
+            invalidateCodexUsageRefresh()
+            codexUsageRefreshPending = false
         }
         pollDesktopAppPresence()
     }
@@ -3020,6 +3040,144 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
+    var isCodexCookieControlEnabled: Bool {
+        codexUsageDataSource.resolvedSelectableValue == .automatic
+    }
+
+    private func codexFetchErrorMessage(_ error: Error) -> String {
+        guard let fetchError = error as? CodexRateLimitFetchError else {
+            return error.localizedDescription
+        }
+        switch fetchError {
+        case .missingCredentials:
+            return text(
+                "没有可用的 Codex 凭据，请先登录 Codex。",
+                "Codex credentials are unavailable. Sign in to Codex and try again."
+            )
+        case .invalidCredentials:
+            return text(
+                "保存的 Codex 凭据无效，请重新登录。",
+                "The saved Codex credentials are invalid. Sign in again and retry."
+            )
+        case .invalidCookieHeader:
+            return text(
+                "OpenAI Cookie 标头为空或格式无效。",
+                "The OpenAI Cookie header is empty or invalid."
+            )
+        case .cookieUnavailable:
+            return text(
+                "没有找到与当前 Codex 账号匹配的浏览器 Cookie。",
+                "No usable browser Cookie was found for the selected Codex account."
+            )
+        case .cookieAccountMismatch:
+            return text(
+                "OpenAI Cookie 与当前选择的 Codex 账号不匹配。",
+                "The OpenAI Cookie does not match the selected Codex account."
+            )
+        case .invalidResponse:
+            return text(
+                "Codex 返回了无效的用量数据。",
+                "Codex returned an invalid usage response."
+            )
+        case .unauthorized:
+            return text(
+                "Codex 拒绝了当前凭据，请重新登录。",
+                "Codex rejected the saved credentials. Sign in again and retry."
+            )
+        case .oauthCredentialsRequired:
+            return text(
+                "限额重置额度需要 Codex OAuth 登录。",
+                "Limit reset credits require Codex OAuth credentials."
+            )
+        case .refreshFailed:
+            return text(
+                "暂时无法刷新 Codex OAuth 凭据，将保留缓存数据。",
+                "Codex OAuth credentials could not be refreshed right now. Cached data is retained."
+            )
+        case .refreshRejected:
+            return text(
+                "Codex 已拒绝 OAuth 刷新令牌，请重新登录。",
+                "Codex rejected the OAuth refresh token. Sign in again and retry."
+            )
+        case .credentialsChanged:
+            return text(
+                "刷新期间 Codex 账号已切换，将使用当前账号重新获取。",
+                "The Codex account changed during refresh. Usage will be fetched again for the current account."
+            )
+        case let .serverError(statusCode):
+            return text(
+                "Codex 用量请求失败（HTTP \(statusCode)）。",
+                "Codex usage request failed with HTTP status \(statusCode)."
+            )
+        case .noRateLimits:
+            return text(
+                "此账号没有返回限额数据。",
+                "Codex did not return rate-limit data for this account."
+            )
+        }
+    }
+
+    private func shouldRetainCodexUsageCache(after error: Error) -> Bool {
+        guard let fetchError = error as? CodexRateLimitFetchError else {
+            return true
+        }
+        switch fetchError {
+        case .missingCredentials, .invalidCredentials, .unauthorized,
+             .cookieAccountMismatch, .refreshRejected:
+            return false
+        case .invalidCookieHeader, .cookieUnavailable, .invalidResponse,
+             .oauthCredentialsRequired, .refreshFailed, .credentialsChanged,
+             .serverError, .noRateLimits:
+            return true
+        }
+    }
+
+    private func shouldRetainCodexResetCreditsCache(after error: Error) -> Bool {
+        guard let fetchError = error as? CodexRateLimitFetchError else {
+            return true
+        }
+        switch fetchError {
+        case .missingCredentials, .invalidCredentials, .unauthorized,
+             .cookieAccountMismatch, .oauthCredentialsRequired, .refreshRejected:
+            return false
+        case .invalidCookieHeader, .cookieUnavailable, .invalidResponse,
+             .refreshFailed, .credentialsChanged, .serverError, .noRateLimits:
+            return true
+        }
+    }
+
+    private func isCurrentCodexUsageRefresh(
+        generation: Int,
+        accountKey: String?,
+        authFingerprint: String?
+    ) -> Bool {
+        codexUsageRefreshGeneration == generation
+            && activeCodexUsageRefreshGeneration == generation
+            && codexCurrentAccount?.usageSnapshotKey == accountKey
+            && codexCurrentAccount?.authFingerprint == authFingerprint
+    }
+
+    private func invalidateCodexUsageRefresh() {
+        codexUsageRefreshGeneration += 1
+        lastCodexRateLimitFetchAt = nil
+        codexUsageRefreshTask?.cancel()
+    }
+
+    private func finishCodexUsageRefresh(generation: Int) {
+        guard activeCodexUsageRefreshGeneration == generation else { return }
+        activeCodexUsageRefreshGeneration = nil
+        codexUsageRefreshTask = nil
+        isCodexRateLimitFetchInFlight = false
+
+        let shouldRunPendingRefresh = codexUsageRefreshPending
+        codexUsageRefreshPending = false
+        if shouldRunPendingRefresh,
+           isCodexDesktopMonitoringEnabled,
+           !isMonitoringPaused {
+            pollCodexRateLimitsIfNeeded(force: true)
+        }
+    }
+
     func pollCodexRateLimitsIfNeeded(force: Bool = false) {
         guard isCodexDesktopMonitoringEnabled,
               !isMonitoringPaused
@@ -3033,52 +3191,201 @@ final class MenuBarStatusModel: ObservableObject {
            now.timeIntervalSince(lastCodexRateLimitFetchAt) < Self.codexRateLimitRefreshInterval {
             return
         }
-        guard !isCodexRateLimitFetchInFlight else { return }
+        if activeCodexUsageRefreshGeneration != nil {
+            if force {
+                codexUsageRefreshPending = true
+            }
+            return
+        }
 
         isCodexRateLimitFetchInFlight = true
         lastCodexRateLimitFetchAt = now
         codexUsageRefreshGeneration += 1
         let refreshGeneration = codexUsageRefreshGeneration
+        activeCodexUsageRefreshGeneration = refreshGeneration
+        codexUsageRefreshPending = false
+        let expectedAccountKey = codexCurrentAccount?.usageSnapshotKey
         let expectedAccountFingerprint = codexCurrentAccount?.authFingerprint
         let fetchRoute = codexRateLimitFetchRoute()
         let fetcher = codexRateLimitFetcher
         let store = store
 
-        Task(priority: .utility) { [fetcher, store, fetchRoute, weak self] in
+        codexUsageRefreshTask = Task(priority: .utility) { [fetcher, store, fetchRoute, weak self] in
+            guard let self else { return }
+            defer {
+                self.finishCodexUsageRefresh(generation: refreshGeneration)
+            }
+            let usageAttemptedAt = Date()
+            let usageStatus: CodexUsageStatus
             do {
-                let usageStatus = try await fetcher.fetchUsageStatus(route: fetchRoute)
-                let resetCredits = try? await fetcher.fetchRateLimitResetCredits()
-                let quota = usageStatus.quota
-                guard let self else { return }
-                guard self.codexUsageRefreshGeneration == refreshGeneration,
-                      self.codexCurrentAccount?.authFingerprint == expectedAccountFingerprint
+                let fetchedUsageStatus = try await fetcher.fetchUsageStatus(
+                    route: fetchRoute,
+                    expectedAuthFingerprint: expectedAccountFingerprint
+                )
+                try fetcher.validateActiveAuthFingerprint(
+                    fetchedUsageStatus.authFingerprint
+                )
+                usageStatus = fetchedUsageStatus
+            } catch {
+                guard self.isCurrentCodexUsageRefresh(
+                    generation: refreshGeneration,
+                    accountKey: expectedAccountKey,
+                    authFingerprint: expectedAccountFingerprint)
                 else {
                     return
                 }
+                guard self.isCodexDesktopMonitoringEnabled,
+                      !self.isMonitoringPaused
+                else {
+                    return
+                }
+                if let fetchError = error as? CodexRateLimitFetchError,
+                   case .credentialsChanged = fetchError {
+                    do {
+                        self.applyCodexAccountState(try self.codexAccountManager.loadMetadataState())
+                        self.prepareCodexUsageAfterAccountChange()
+                        self.codexUsageRefreshPending = true
+                        return
+                    } catch {
+                        // Fall through and surface the original refresh error.
+                    }
+                }
+                let previousState = self.codexUsageFetchState
+                let retainsCachedUsage = self.shouldRetainCodexUsageCache(after: error)
+                if !retainsCachedUsage {
+                    self.clearLatestAgentQuotaCache()
+                }
+                self.codexUsageFetchState = CodexUsageFetchState(
+                    source: retainsCachedUsage ? previousState?.source : nil,
+                    lastSuccessfulAt: retainsCachedUsage ? previousState?.lastSuccessfulAt : nil,
+                    lastAttemptedAt: usageAttemptedAt,
+                    errorMessage: self.codexFetchErrorMessage(error),
+                    isStale: retainsCachedUsage && self.latestAgentQuota != nil
+                )
+                self.persistCodexUsageSnapshotForCurrentAccount()
+                return
+            }
+
+            guard self.isCurrentCodexUsageRefresh(
+                generation: refreshGeneration,
+                accountKey: expectedAccountKey,
+                authFingerprint: expectedAccountFingerprint)
+            else {
+                return
+            }
+            guard self.isCodexDesktopMonitoringEnabled,
+                  !self.isMonitoringPaused
+            else {
+                return
+            }
+
+            let quota = usageStatus.quota
+            self.codexUsageFetchState = CodexUsageFetchState(
+                source: usageStatus.source,
+                lastSuccessfulAt: quota.updatedAt,
+                lastAttemptedAt: usageAttemptedAt,
+                errorMessage: nil,
+                isStale: false
+            )
+            self.updateLatestAgentQuota(quota)
+            self.latestCodexCredits = usageStatus.credits
+            self.persistCodexUsageSnapshotForCurrentAccount()
+
+            do {
                 let snapshot = try store.applySessionQuota(
                     quota,
                     sessionID: "codex-rate-limits",
                     agent: "Codex",
                     updatedAt: quota.updatedAt
                 )
-                self.isCodexRateLimitFetchInFlight = false
+                self.snapshot = snapshot
+            } catch {
+                self.lastError = self.text(
+                    "用量已获取，但无法更新本地状态：\(error.localizedDescription)",
+                    "Usage was fetched, but local state could not be updated: \(error.localizedDescription)"
+                )
+            }
+
+            let resetCreditsAttemptedAt = Date()
+            do {
+                let resetCredits = try await fetcher.fetchRateLimitResetCredits(
+                    expectedAuthFingerprint: usageStatus.authFingerprint
+                )
+                try fetcher.validateActiveAuthFingerprint(
+                    usageStatus.authFingerprint
+                )
+                guard self.isCurrentCodexUsageRefresh(
+                    generation: refreshGeneration,
+                    accountKey: expectedAccountKey,
+                    authFingerprint: expectedAccountFingerprint)
+                else {
+                    return
+                }
                 guard self.isCodexDesktopMonitoringEnabled,
                       !self.isMonitoringPaused
                 else {
                     return
                 }
-
-                self.updateLatestAgentQuota(quota)
-                self.latestCodexCredits = usageStatus.credits
                 self.latestCodexResetCredits = resetCredits
+                self.codexResetCreditsFetchState = CodexResetCreditsFetchState(
+                    lastSuccessfulAt: resetCredits.updatedAt,
+                    lastAttemptedAt: resetCreditsAttemptedAt,
+                    errorMessage: nil,
+                    isStale: false
+                )
                 self.persistCodexUsageSnapshotForCurrentAccount()
-                self.refreshCodexAccounts()
-                self.persistCodexUsageSnapshotForCurrentAccount()
-                self.snapshot = snapshot
             } catch {
-                guard let self else { return }
-                guard self.codexUsageRefreshGeneration == refreshGeneration else { return }
-                self.isCodexRateLimitFetchInFlight = false
+                guard self.isCurrentCodexUsageRefresh(
+                    generation: refreshGeneration,
+                    accountKey: expectedAccountKey,
+                    authFingerprint: expectedAccountFingerprint)
+                else {
+                    return
+                }
+                guard self.isCodexDesktopMonitoringEnabled,
+                      !self.isMonitoringPaused
+                else {
+                    return
+                }
+                if let fetchError = error as? CodexRateLimitFetchError,
+                   case .credentialsChanged = fetchError {
+                    do {
+                        self.applyCodexAccountState(try self.codexAccountManager.loadMetadataState())
+                        self.prepareCodexUsageAfterAccountChange()
+                        self.codexUsageRefreshPending = true
+                        return
+                    } catch {
+                        // Fall through and surface the original refresh error.
+                    }
+                }
+                let previousState = self.codexResetCreditsFetchState
+                let retainsCachedCredits = self.shouldRetainCodexResetCreditsCache(after: error)
+                if !retainsCachedCredits {
+                    self.latestCodexResetCredits = nil
+                }
+                self.codexResetCreditsFetchState = CodexResetCreditsFetchState(
+                    lastSuccessfulAt: retainsCachedCredits ? previousState?.lastSuccessfulAt : nil,
+                    lastAttemptedAt: resetCreditsAttemptedAt,
+                    errorMessage: self.codexFetchErrorMessage(error),
+                    isStale: retainsCachedCredits && self.latestCodexResetCredits != nil
+                )
+                self.persistCodexUsageSnapshotForCurrentAccount()
+            }
+            do {
+                let accountState = try self.codexAccountManager.loadMetadataState()
+                let authChangedDuringRefresh = accountState.currentAccount?.authFingerprint
+                    != usageStatus.authFingerprint
+                self.applyCodexAccountState(accountState)
+                if authChangedDuringRefresh {
+                    self.prepareCodexUsageAfterAccountChange()
+                    self.codexUsageRefreshPending = true
+                    return
+                }
+                self.codexAccountMessage = nil
+                self.isCodexAccountMessageError = false
+            } catch {
+                self.codexAccountMessage = error.localizedDescription
+                self.isCodexAccountMessageError = true
             }
         }
     }
@@ -3873,6 +4180,8 @@ final class MenuBarStatusModel: ObservableObject {
         latestAgentQuota = nil
         latestCodexCredits = nil
         latestCodexResetCredits = nil
+        codexUsageFetchState = nil
+        codexResetCreditsFetchState = nil
         UserDefaults.standard.removeObject(forKey: Self.cachedLatestAgentQuotaKey)
     }
 
@@ -3916,14 +4225,13 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private func prepareCodexUsageAfterAccountChange() {
-        codexUsageRefreshGeneration += 1
+        invalidateCodexUsageRefresh()
+        codexUsageRefreshPending = false
         tokenActivityScanGeneration += 1
-        isCodexRateLimitFetchInFlight = false
         isTokenActivityScanInFlight = false
         clearLatestAgentQuotaCache()
         clearLatestAgentTokenUsageCache()
         clearTokenActivityCache()
-        lastCodexRateLimitFetchAt = nil
         hydrateCodexUsageSnapshotForCurrentAccount()
     }
 
@@ -3941,6 +4249,19 @@ final class MenuBarStatusModel: ObservableObject {
         latestAgentQuota = snapshot.quota
         latestCodexCredits = snapshot.credits
         latestCodexResetCredits = snapshot.resetCredits
+        codexUsageFetchState = snapshot.usageFetchState
+        codexResetCreditsFetchState = snapshot.resetCreditsFetchState
+        let now = Date()
+        if latestAgentQuota != nil,
+           let lastSuccessfulAt = codexUsageFetchState?.lastSuccessfulAt,
+           now.timeIntervalSince(lastSuccessfulAt) >= Self.codexRateLimitRefreshInterval {
+            codexUsageFetchState?.isStale = true
+        }
+        if latestCodexResetCredits != nil,
+           let lastSuccessfulAt = codexResetCreditsFetchState?.lastSuccessfulAt,
+           now.timeIntervalSince(lastSuccessfulAt) >= Self.codexRateLimitRefreshInterval {
+            codexResetCreditsFetchState?.isStale = true
+        }
         if snapshot.tokenActivityCacheVersion == CodexTokenActivityScanner.currentCacheVersion {
             latestAgentTokenUsage = snapshot.tokenUsage ?? snapshot.quota?.tokenUsage
             tokenActivityDays = snapshot.tokenActivityDays
@@ -3965,6 +4286,8 @@ final class MenuBarStatusModel: ObservableObject {
             quota: latestAgentQuota,
             credits: latestCodexCredits,
             resetCredits: latestCodexResetCredits,
+            usageFetchState: codexUsageFetchState,
+            resetCreditsFetchState: codexResetCreditsFetchState,
             tokenUsage: latestAgentTokenUsage,
             tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
             tokenActivityDays: tokenActivityDays

@@ -17,6 +17,10 @@ final class KeychainSecretStore: SecretStoring, @unchecked Sendable {
         var errorDescription: String? {
             switch self {
             case let .unexpectedStatus(status):
+                let detail = SecCopyErrorMessageString(status, nil) as String?
+                if let detail, !detail.isEmpty {
+                    return "Keychain operation failed with status \(status): \(detail)"
+                }
                 return "Keychain operation failed with status \(status)."
             }
         }

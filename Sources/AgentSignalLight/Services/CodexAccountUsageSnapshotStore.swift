@@ -1,6 +1,21 @@
 import AgentSignalLightCore
 import Foundation
 
+struct CodexUsageFetchState: Codable, Equatable, Sendable {
+    var source: CodexUsageFetchSource?
+    var lastSuccessfulAt: Date?
+    var lastAttemptedAt: Date?
+    var errorMessage: String?
+    var isStale: Bool
+}
+
+struct CodexResetCreditsFetchState: Codable, Equatable, Sendable {
+    var lastSuccessfulAt: Date?
+    var lastAttemptedAt: Date?
+    var errorMessage: String?
+    var isStale: Bool
+}
+
 struct CodexAccountUsageSnapshot: Codable, Equatable, Sendable {
     let accountKey: String
     let email: String?
@@ -9,6 +24,8 @@ struct CodexAccountUsageSnapshot: Codable, Equatable, Sendable {
     var quota: AgentQuotaStatus?
     var credits: CodexCreditStatus?
     var resetCredits: CodexRateLimitResetCreditsSnapshot?
+    var usageFetchState: CodexUsageFetchState?
+    var resetCreditsFetchState: CodexResetCreditsFetchState?
     var tokenUsage: AgentTokenUsage?
     var tokenActivityCacheVersion: Int?
     var tokenActivityDays: [CodexTokenActivityDay]
@@ -40,6 +57,8 @@ final class CodexAccountUsageSnapshotStore: @unchecked Sendable {
         quota: AgentQuotaStatus?,
         credits: CodexCreditStatus?,
         resetCredits: CodexRateLimitResetCreditsSnapshot? = nil,
+        usageFetchState: CodexUsageFetchState? = nil,
+        resetCreditsFetchState: CodexResetCreditsFetchState? = nil,
         tokenUsage: AgentTokenUsage?,
         tokenActivityCacheVersion: Int?,
         tokenActivityDays: [CodexTokenActivityDay],
@@ -54,6 +73,8 @@ final class CodexAccountUsageSnapshotStore: @unchecked Sendable {
             quota: quota,
             credits: credits,
             resetCredits: resetCredits,
+            usageFetchState: usageFetchState,
+            resetCreditsFetchState: resetCreditsFetchState,
             tokenUsage: tokenUsage,
             tokenActivityCacheVersion: tokenActivityCacheVersion,
             tokenActivityDays: tokenActivityDays,

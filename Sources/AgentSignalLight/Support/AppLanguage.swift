@@ -150,7 +150,6 @@ extension MenuBarStatusModel {
         now: Date = Date()
     ) -> CodexResetCreditsPresentation? {
         let credits = snapshot.availableCredits(at: now)
-        guard !credits.isEmpty else { return nil }
 
         let expiryItems = credits.map { credit -> String in
             guard let expiresAt = credit.expiresAt else {
@@ -160,14 +159,17 @@ extension MenuBarStatusModel {
         }
         let visibleItems = Array(expiryItems.prefix(4))
         let hiddenCount = expiryItems.count - visibleItems.count
-        let expirySummary = (visibleItems + (hiddenCount > 0 ? ["+\(hiddenCount)"] : []))
-            .joined(separator: " · ")
-        let helpText = credits.enumerated().map { index, credit in
+        let expirySummary = credits.isEmpty
+            ? text("暂无可用额度", "No credits available")
+            : (visibleItems + (hiddenCount > 0 ? ["+\(hiddenCount)"] : []))
+                .joined(separator: " · ")
+        let creditHelpText = credits.enumerated().map { index, credit in
             let detail = credit.expiresAt.map {
                 text("到期 \(localizedDateTimeString(for: $0))", "Expires \(localizedDateTimeString(for: $0))")
             } ?? text("无到期时间", "No expiry")
             return "\(index + 1). \(detail)"
         }.joined(separator: "\n")
+        let helpText = creditHelpText.isEmpty ? expirySummary : creditHelpText
 
         return CodexResetCreditsPresentation(
             title: text("限额重置额度", "Limit Reset Credits"),
