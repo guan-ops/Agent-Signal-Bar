@@ -431,6 +431,7 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var floatingSignalTokenBadgeWindow: FloatingSignalTokenBadgeWindow
     @Published private(set) var latestAgentQuota: AgentQuotaStatus?
     @Published private(set) var latestCodexCredits: CodexCreditStatus?
+    @Published private(set) var latestCodexResetCredits: CodexRateLimitResetCreditsSnapshot?
     @Published private(set) var latestAgentTokenUsage: AgentTokenUsage?
     @Published private(set) var statusLightOverride: StatusLightOverrideFrame?
     @Published private(set) var isLightDebugModeEnabled = false
@@ -3046,6 +3047,7 @@ final class MenuBarStatusModel: ObservableObject {
         Task(priority: .utility) { [fetcher, store, fetchRoute, weak self] in
             do {
                 let usageStatus = try await fetcher.fetchUsageStatus(route: fetchRoute)
+                let resetCredits = try? await fetcher.fetchRateLimitResetCredits()
                 let quota = usageStatus.quota
                 guard let self else { return }
                 guard self.codexUsageRefreshGeneration == refreshGeneration,
@@ -3068,6 +3070,7 @@ final class MenuBarStatusModel: ObservableObject {
 
                 self.updateLatestAgentQuota(quota)
                 self.latestCodexCredits = usageStatus.credits
+                self.latestCodexResetCredits = resetCredits
                 self.persistCodexUsageSnapshotForCurrentAccount()
                 self.refreshCodexAccounts()
                 self.persistCodexUsageSnapshotForCurrentAccount()
@@ -3869,6 +3872,7 @@ final class MenuBarStatusModel: ObservableObject {
     private func clearLatestAgentQuotaCache() {
         latestAgentQuota = nil
         latestCodexCredits = nil
+        latestCodexResetCredits = nil
         UserDefaults.standard.removeObject(forKey: Self.cachedLatestAgentQuotaKey)
     }
 
@@ -3936,6 +3940,7 @@ final class MenuBarStatusModel: ObservableObject {
 
         latestAgentQuota = snapshot.quota
         latestCodexCredits = snapshot.credits
+        latestCodexResetCredits = snapshot.resetCredits
         if snapshot.tokenActivityCacheVersion == CodexTokenActivityScanner.currentCacheVersion {
             latestAgentTokenUsage = snapshot.tokenUsage ?? snapshot.quota?.tokenUsage
             tokenActivityDays = snapshot.tokenActivityDays
@@ -3959,6 +3964,7 @@ final class MenuBarStatusModel: ObservableObject {
             account: account,
             quota: latestAgentQuota,
             credits: latestCodexCredits,
+            resetCredits: latestCodexResetCredits,
             tokenUsage: latestAgentTokenUsage,
             tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
             tokenActivityDays: tokenActivityDays

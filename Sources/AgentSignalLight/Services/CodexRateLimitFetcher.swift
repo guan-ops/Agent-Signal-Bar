@@ -63,6 +63,56 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
         }
     }
 
+    func fetchRateLimitResetCredits(
+        now: Date = Date(),
+        timeout: TimeInterval = 4
+    ) async throws -> CodexRateLimitResetCreditsSnapshot {
+        let credentials = try loadCredentials()
+        guard credentials.source == .oauth, !credentials.needsRefresh else {
+            throw CodexRateLimitFetchError.missingCredentials
+        }
+
+        var request = URLRequest(
+            url: rateLimitResetCreditsURL(),
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: timeout
+        )
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("AgentSignalLight", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("codex-1", forHTTPHeaderField: "OpenAI-Beta")
+        request.setValue("Codex Desktop", forHTTPHeaderField: "originator")
+        if let accountID = credentials.accountID, !accountID.isEmpty {
+            request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-ID")
+        }
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CodexRateLimitFetchError.invalidResponse
+        }
+
+        switch httpResponse.statusCode {
+        case 200...299:
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .custom(Self.decodeISO8601Date)
+            guard let payload = try? decoder.decode(CodexRateLimitResetCreditsResponse.self, from: data),
+                  payload.availableCount >= 0
+            else {
+                throw CodexRateLimitFetchError.invalidResponse
+            }
+            return CodexRateLimitResetCreditsSnapshot(
+                credits: payload.credits.map(\.model),
+                availableCount: payload.availableCount,
+                updatedAt: now
+            )
+        case 401, 403:
+            throw CodexRateLimitFetchError.unauthorized
+        default:
+            throw CodexRateLimitFetchError.serverError(httpResponse.statusCode)
+        }
+    }
+
     private func fetchOAuthUsageStatus(now: Date) async throws -> CodexUsageStatus {
         var credentials = try loadCredentials()
         if credentials.needsRefresh {
@@ -262,6 +312,11 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
             ?? URL(string: "https://chatgpt.com/backend-api/wham/usage")!
     }
 
+    private func rateLimitResetCreditsURL() -> URL {
+        URL(string: normalizedChatGPTBaseURL() + "/wham/rate-limit-reset-credits")
+            ?? URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
+    }
+
     private func normalizedChatGPTBaseURL() -> String {
         var value = configuredChatGPTBaseURL() ?? "https://chatgpt.com/backend-api"
         value = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -444,6 +499,24 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
         }
         return raw
     }
+
+    private static func decodeISO8601Date(from decoder: Decoder) throws -> Date {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: raw) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        if let date = formatter.date(from: raw) {
+            return date
+        }
+        throw DecodingError.dataCorruptedError(
+            in: container,
+            debugDescription: "Invalid ISO-8601 date: \(raw)"
+        )
+    }
 }
 
 enum CodexRateLimitFetchRoute: Equatable, Sendable {
@@ -469,6 +542,95 @@ struct CodexCreditStatus: Codable, Equatable, Sendable {
 
     var usedPercent: Double? {
         remainingPercent.map { min(100, max(0, 100 - $0)) }
+    }
+}
+
+struct CodexRateLimitResetCreditsSnapshot: Codable, Equatable, Sendable {
+    let credits: [CodexRateLimitResetCredit]
+    let availableCount: Int
+    let updatedAt: Date
+
+    func availableCredits(at date: Date) -> [CodexRateLimitResetCredit] {
+        credits
+            .filter { credit in
+                credit.status == .available && (credit.expiresAt.map { $0 > date } ?? true)
+            }
+            .sorted { lhs, rhs in
+                switch (lhs.expiresAt, rhs.expiresAt) {
+                case let (lhsDate?, rhsDate?):
+                    if lhsDate != rhsDate { return lhsDate < rhsDate }
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                case (nil, nil):
+                    break
+                }
+                return lhs.grantedAt < rhs.grantedAt
+            }
+    }
+}
+
+struct CodexRateLimitResetCredit: Codable, Equatable, Sendable {
+    let status: CodexRateLimitResetCreditStatus
+    let grantedAt: Date
+    let expiresAt: Date?
+}
+
+enum CodexRateLimitResetCreditStatus: Codable, Equatable, Sendable {
+    case available
+    case redeeming
+    case redeemed
+    case expired
+    case unknown(String)
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        switch value {
+        case "available": self = .available
+        case "redeeming": self = .redeeming
+        case "redeemed": self = .redeemed
+        case "expired": self = .expired
+        default: self = .unknown(value)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        let value: String = switch self {
+        case .available: "available"
+        case .redeeming: "redeeming"
+        case .redeemed: "redeemed"
+        case .expired: "expired"
+        case let .unknown(value): value
+        }
+        try container.encode(value)
+    }
+}
+
+private struct CodexRateLimitResetCreditsResponse: Decodable {
+    let credits: [CodexRateLimitResetCreditResponse]
+    let availableCount: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case credits
+        case availableCount = "available_count"
+    }
+}
+
+private struct CodexRateLimitResetCreditResponse: Decodable {
+    let status: CodexRateLimitResetCreditStatus
+    let grantedAt: Date
+    let expiresAt: Date?
+
+    private enum CodingKeys: String, CodingKey {
+        case status
+        case grantedAt = "granted_at"
+        case expiresAt = "expires_at"
+    }
+
+    var model: CodexRateLimitResetCredit {
+        CodexRateLimitResetCredit(status: status, grantedAt: grantedAt, expiresAt: expiresAt)
     }
 }
 

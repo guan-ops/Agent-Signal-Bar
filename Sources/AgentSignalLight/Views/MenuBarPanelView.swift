@@ -32,6 +32,7 @@ struct MenuBarPanelView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         header
                         statusSummary
+                        codexResetCreditsSummary
 
                         if let lastError = viewState.lastError {
                             Text(lastError)
@@ -139,6 +140,37 @@ struct MenuBarPanelView: View {
                         EventRowView(model: model, event: event)
                     }
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var codexResetCreditsSummary: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            if let presentation = model.codexResetCreditsPresentation(now: context.date) {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(presentation.title)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text(presentation.availableText)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Label(presentation.expirySummaryText, systemImage: "clock")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(9)
+                .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .help(presentation.helpText)
+                .accessibilityElement(children: .combine)
             }
         }
     }
@@ -281,6 +313,7 @@ private final class MenuBarPanelViewState: ObservableObject {
     @Published var isMonitoringPaused: Bool
     @Published var lastError: String?
     @Published var appLanguage: AppLanguage
+    @Published var latestCodexResetCredits: CodexRateLimitResetCreditsSnapshot?
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -292,6 +325,7 @@ private final class MenuBarPanelViewState: ObservableObject {
         isMonitoringPaused = model.isMonitoringPaused
         lastError = model.lastError
         appLanguage = model.appLanguage
+        latestCodexResetCredits = model.latestCodexResetCredits
 
         model.$snapshot
             .sink { [weak self, weak model] _ in
@@ -356,6 +390,13 @@ private final class MenuBarPanelViewState: ObservableObject {
             .removeDuplicates()
             .sink { [weak self] lastError in
                 self?.lastError = lastError
+            }
+            .store(in: &cancellables)
+
+        model.$latestCodexResetCredits
+            .removeDuplicates()
+            .sink { [weak self] resetCredits in
+                self?.latestCodexResetCredits = resetCredits
             }
             .store(in: &cancellables)
 

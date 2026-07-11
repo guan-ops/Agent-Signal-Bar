@@ -140,6 +140,61 @@ extension MenuBarStatusModel {
         AppLocalization.text(english, language: appLanguage, zhHans: zhHans)
     }
 
+    func codexResetCreditsPresentation(now: Date = Date()) -> CodexResetCreditsPresentation? {
+        guard let snapshot = latestCodexResetCredits else { return nil }
+        return codexResetCreditsPresentation(for: snapshot, now: now)
+    }
+
+    func codexResetCreditsPresentation(
+        for snapshot: CodexRateLimitResetCreditsSnapshot,
+        now: Date = Date()
+    ) -> CodexResetCreditsPresentation? {
+        let credits = snapshot.availableCredits(at: now)
+        guard !credits.isEmpty else { return nil }
+
+        let expiryItems = credits.map { credit -> String in
+            guard let expiresAt = credit.expiresAt else {
+                return text("无到期时间", "No expiry")
+            }
+            return compactResetCreditCountdown(from: now, to: expiresAt)
+        }
+        let visibleItems = Array(expiryItems.prefix(4))
+        let hiddenCount = expiryItems.count - visibleItems.count
+        let expirySummary = (visibleItems + (hiddenCount > 0 ? ["+\(hiddenCount)"] : []))
+            .joined(separator: " · ")
+        let helpText = credits.enumerated().map { index, credit in
+            let detail = credit.expiresAt.map {
+                text("到期 \(localizedDateTimeString(for: $0))", "Expires \(localizedDateTimeString(for: $0))")
+            } ?? text("无到期时间", "No expiry")
+            return "\(index + 1). \(detail)"
+        }.joined(separator: "\n")
+
+        return CodexResetCreditsPresentation(
+            title: text("限额重置额度", "Limit Reset Credits"),
+            availableText: text(
+                "\(credits.count) 次可用",
+                credits.count == 1 ? "1 available" : "\(credits.count) available"
+            ),
+            expirySummaryText: expirySummary,
+            helpText: helpText
+        )
+    }
+
+    private func compactResetCreditCountdown(from now: Date, to expiry: Date) -> String {
+        let totalMinutes = max(0, Int(expiry.timeIntervalSince(now) / 60))
+        if totalMinutes < 1 { return text("现在", "now") }
+        let days = totalMinutes / (24 * 60)
+        let hours = (totalMinutes % (24 * 60)) / 60
+        let minutes = totalMinutes % 60
+        if days > 0 {
+            return hours > 0 ? "\(days)d \(hours)h" : "\(days)d"
+        }
+        if hours > 0 {
+            return minutes > 0 ? "\(hours)h \(minutes)m" : "\(hours)h"
+        }
+        return "\(minutes)m"
+    }
+
     func displayName(for signal: AgentSignal) -> String {
         AppLocalization.signalName(signal, language: appLanguage)
     }
@@ -790,6 +845,13 @@ extension MenuBarStatusModel {
                 .replacingOccurrences(of: "-", with: " ")
         }
     }
+}
+
+struct CodexResetCreditsPresentation: Equatable, Sendable {
+    let title: String
+    let availableText: String
+    let expirySummaryText: String
+    let helpText: String
 }
 
 private enum AppLocalization {

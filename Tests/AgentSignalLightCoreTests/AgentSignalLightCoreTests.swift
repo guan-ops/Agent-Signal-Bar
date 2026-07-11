@@ -8,6 +8,107 @@ import SQLite3
 @testable import AgentSignalLightUI
 
 final class AgentSignalLightCoreTests: XCTestCase {
+    func testCodex56BuiltInPricingCoversAllVariantsAndDatedAliases() throws {
+        let emptyCatalog = ModelsDevCatalog(providers: [:])
+
+        let sol = try XCTUnwrap(CostUsagePricing.codexCostUSD(
+            model: "gpt-5.6-sol",
+            inputTokens: 1_000_000,
+            cachedInputTokens: 200_000,
+            outputTokens: 100_000,
+            modelsDevCatalog: emptyCatalog
+        ))
+        let terra = try XCTUnwrap(CostUsagePricing.codexCostUSD(
+            model: "gpt-5.6-terra",
+            inputTokens: 1_000_000,
+            cachedInputTokens: 200_000,
+            outputTokens: 100_000,
+            modelsDevCatalog: emptyCatalog
+        ))
+        let luna = try XCTUnwrap(CostUsagePricing.codexCostUSD(
+            model: "openai/gpt-5.6-luna-2026-07-11",
+            inputTokens: 1_000_000,
+            cachedInputTokens: 200_000,
+            outputTokens: 100_000,
+            modelsDevCatalog: emptyCatalog
+        ))
+
+        XCTAssertEqual(sol, 7.1, accuracy: 0.000_001)
+        XCTAssertEqual(terra, 3.55, accuracy: 0.000_001)
+        XCTAssertEqual(luna, 1.42, accuracy: 0.000_001)
+    }
+
+    func testCodex56PriorityPricingCoversAllVariants() throws {
+        let sol = try XCTUnwrap(CostUsagePricing.codexPriorityCostUSD(
+            model: "gpt-5.6-sol",
+            inputTokens: 100_000,
+            cachedInputTokens: 20_000,
+            outputTokens: 10_000
+        ))
+        let terra = try XCTUnwrap(CostUsagePricing.codexPriorityCostUSD(
+            model: "gpt-5.6-terra",
+            inputTokens: 100_000,
+            cachedInputTokens: 20_000,
+            outputTokens: 10_000
+        ))
+        let luna = try XCTUnwrap(CostUsagePricing.codexPriorityCostUSD(
+            model: "gpt-5.6-luna",
+            inputTokens: 100_000,
+            cachedInputTokens: 20_000,
+            outputTokens: 10_000
+        ))
+
+        XCTAssertEqual(sol, 1.42, accuracy: 0.000_001)
+        XCTAssertEqual(terra, 0.71, accuracy: 0.000_001)
+        XCTAssertEqual(luna, 0.284, accuracy: 0.000_001)
+    }
+
+    func testCodex56SessionScanProducesDollarCost() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-56-cost-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines = [
+            #"{"timestamp":"2026-07-11T02:00:00.000Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            #"{"timestamp":"2026-07-11T02:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":200000,"output_tokens":100000,"total_tokens":1100000},"last_token_usage":{"input_tokens":1000000,"cached_input_tokens":200000,"output_tokens":100000,"total_tokens":1100000}}}}"#,
+        ].joined(separator: "\n")
+        try lines.write(
+            to: sessionsRoot.appendingPathComponent("rollout-gpt-5.6-sol.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let calendar = Calendar(identifier: .gregorian)
+        let since = try XCTUnwrap(calendar.date(from: DateComponents(
+            timeZone: TimeZone(secondsFromGMT: 0),
+            year: 2026,
+            month: 7,
+            day: 11
+        )))
+        let until = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: since))
+        let now = try XCTUnwrap(calendar.date(byAdding: .hour, value: 12, to: since))
+        let report = CostUsageScanner.loadDailyReport(
+            provider: .codex,
+            since: since,
+            until: until,
+            now: now,
+            options: CostUsageScanner.Options(
+                codexSessionsRoot: sessionsRoot,
+                cacheRoot: cacheRoot,
+                forceRescan: true
+            )
+        )
+
+        let totalCost = try XCTUnwrap(report.summary?.totalCostUSD)
+        let modelCost = try XCTUnwrap(report.data.first?.modelBreakdowns?.first?.costUSD)
+        XCTAssertEqual(totalCost, 7.1, accuracy: 0.000_001)
+        XCTAssertEqual(report.data.first?.modelBreakdowns?.first?.modelName, "gpt-5.6-sol")
+        XCTAssertEqual(modelCost, 7.1, accuracy: 0.000_001)
+    }
+
     func testReleaseInfoPrefersCurrentManifestOverBundledReleaseInfo() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("release-info-\(UUID().uuidString)", isDirectory: true)
@@ -999,6 +1100,107 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertNil(usageStatus.credits)
     }
 
+    func testCodexRateLimitResetCreditsFetcherScopesRequestAndFiltersInventory() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try Data("""
+        {
+          "tokens": {
+            "access_token": "oauth-token",
+            "refresh_token": "",
+            "account_id": "account-123"
+          }
+        }
+        """.utf8).write(to: root.appendingPathComponent("auth.json"))
+        try "chatgpt_base_url = \"https://chatgpt.com/backend-api/\"\n"
+            .write(to: root.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            XCTAssertEqual(
+                request.url?.absoluteString,
+                "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+            )
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.timeoutInterval, 4)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer oauth-token")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "ChatGPT-Account-ID"), "account-123")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "OpenAI-Beta"), "codex-1")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "originator"), "Codex Desktop")
+            let data = Data("""
+            {
+              "credits": [
+                {
+                  "id": "expired",
+                  "reset_type": "codex_rate_limits",
+                  "status": "available",
+                  "granted_at": "2026-06-01T00:00:00Z",
+                  "expires_at": "2026-06-30T00:00:00Z"
+                },
+                {
+                  "id": "later",
+                  "reset_type": "codex_rate_limits",
+                  "status": "available",
+                  "granted_at": "2026-06-18T00:39:53.731630Z",
+                  "expires_at": "2026-07-18T00:39:53.731630Z"
+                },
+                {
+                  "id": "earlier",
+                  "reset_type": "codex_rate_limits",
+                  "status": "available",
+                  "granted_at": "2026-06-12T04:03:43Z",
+                  "expires_at": "2026-07-12T04:03:43Z"
+                },
+                {
+                  "id": "redeemed",
+                  "reset_type": "codex_rate_limits",
+                  "status": "redeemed",
+                  "granted_at": "2026-06-10T00:00:00Z",
+                  "expires_at": null
+                },
+                {
+                  "id": "no-expiry",
+                  "reset_type": "codex_rate_limits",
+                  "status": "available",
+                  "granted_at": "2026-06-20T00:00:00Z",
+                  "expires_at": null
+                }
+              ],
+              "available_count": 3
+            }
+            """.utf8)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, data)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-07-01T00:00:00Z"))
+        let fetcher = CodexRateLimitFetcher(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            session: session
+        )
+        let snapshot = try await fetcher.fetchRateLimitResetCredits(now: now)
+        let inventory = snapshot.availableCredits(at: now)
+
+        XCTAssertEqual(snapshot.availableCount, 3)
+        XCTAssertEqual(snapshot.credits.count, 5)
+        XCTAssertEqual(inventory.count, 3)
+        XCTAssertEqual(inventory[0].expiresAt, ISO8601DateFormatter().date(from: "2026-07-12T04:03:43Z"))
+        XCTAssertLessThan(try XCTUnwrap(inventory[0].expiresAt), try XCTUnwrap(inventory[1].expiresAt))
+        XCTAssertNil(inventory[2].expiresAt)
+    }
+
     func testCodexPlanFormattingMatchesProviderDisplayNames() {
         XCTAssertEqual(CodexPlanFormatting.displayName("pro"), "Pro 20x")
         XCTAssertEqual(CodexPlanFormatting.displayName("prolite"), "Pro 5x")
@@ -1518,6 +1720,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
     }
 
+    @MainActor
     func testCodexAccountUsageSnapshotsStayScopedToAccountIDWhenEmailsMatch() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -1551,13 +1754,32 @@ final class AgentSignalLightCoreTests: XCTestCase {
         let beta = try manager.saveCurrentAccount()
         let betaCurrent = try XCTUnwrap(try manager.loadState().currentAccount)
 
+        let gammaAuth = codexOAuthAuthJSON(
+            email: "shared@example.com",
+            accountID: "acct_gamma",
+            accessToken: "gamma-access-token"
+        )
+        try gammaAuth.write(to: authURL)
+        let gamma = try manager.saveCurrentAccount()
+
         let usageStore = CodexAccountUsageSnapshotStore(fileURL: usageStoreURL)
         let alphaQuota = codexQuotaFixture(remainingPercent: 84, updatedAt: 1_782_500_100)
         let betaQuota = codexQuotaFixture(remainingPercent: 42, updatedAt: 1_782_500_200)
+        let alphaResetCredits = codexResetCreditsFixture(
+            count: 1,
+            updatedAt: 1_782_500_100,
+            lifetimeDays: 365
+        )
+        let betaResetCredits = codexResetCreditsFixture(
+            count: 2,
+            updatedAt: 1_782_500_200,
+            lifetimeDays: 365
+        )
         usageStore.store(
             account: alphaCurrent,
             quota: alphaQuota,
             credits: nil,
+            resetCredits: alphaResetCredits,
             tokenUsage: AgentTokenUsage(totalTokens: 1_000),
             tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
             tokenActivityDays: [CodexTokenActivityDay(day: Date(timeIntervalSince1970: 1_782_432_000), totalTokens: 1_000)]
@@ -1566,6 +1788,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             account: betaCurrent,
             quota: betaQuota,
             credits: nil,
+            resetCredits: betaResetCredits,
             tokenUsage: AgentTokenUsage(totalTokens: 2_000),
             tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
             tokenActivityDays: [CodexTokenActivityDay(day: Date(timeIntervalSince1970: 1_782_432_000), totalTokens: 2_000)]
@@ -1574,14 +1797,58 @@ final class AgentSignalLightCoreTests: XCTestCase {
         _ = try manager.switchToAccount(id: alpha.id)
         let loadedAlpha = try XCTUnwrap(try manager.loadState().currentAccount)
         XCTAssertEqual(usageStore.snapshot(for: loadedAlpha)?.quota?.remainingPercent, 84)
+        XCTAssertEqual(usageStore.snapshot(for: loadedAlpha)?.resetCredits?.availableCount, 1)
         XCTAssertEqual(usageStore.snapshot(for: loadedAlpha)?.tokenUsage?.totalTokens, 1_000)
         XCTAssertEqual(usageStore.snapshot(for: loadedAlpha)?.tokenActivityDays.first?.totalTokens, 1_000)
 
         _ = try manager.switchToAccount(id: beta.id)
         let loadedBeta = try XCTUnwrap(try manager.loadState().currentAccount)
         XCTAssertEqual(usageStore.snapshot(for: loadedBeta)?.quota?.remainingPercent, 42)
+        XCTAssertEqual(usageStore.snapshot(for: loadedBeta)?.resetCredits?.availableCount, 2)
         XCTAssertEqual(usageStore.snapshot(for: loadedBeta)?.tokenUsage?.totalTokens, 2_000)
         XCTAssertEqual(usageStore.snapshot(for: loadedBeta)?.tokenActivityDays.first?.totalTokens, 2_000)
+
+        let defaults = UserDefaults.standard
+        let originalMonitoring = defaults.object(forKey: "isCodexDesktopMonitoringEnabled")
+        defaults.set(false, forKey: "isCodexDesktopMonitoringEnabled")
+        defer {
+            if let originalMonitoring {
+                defaults.set(originalMonitoring, forKey: "isCodexDesktopMonitoringEnabled")
+            } else {
+                defaults.removeObject(forKey: "isCodexDesktopMonitoringEnabled")
+            }
+        }
+
+        let signalStore = SignalStateStore(stateFileURL: root.appendingPathComponent("status.json"))
+        let model = MenuBarStatusModel(
+            store: signalStore,
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore
+        )
+        model.appLanguage = .english
+
+        XCTAssertEqual(model.codexActiveSavedAccountID, beta.id)
+        XCTAssertEqual(model.latestAgentQuota?.remainingPercent, 42)
+        XCTAssertEqual(model.latestCodexResetCredits?.availableCount, 2)
+        XCTAssertEqual(model.codexResetCreditsPresentation()?.availableText, "2 available")
+
+        model.switchCodexAccount(alpha)
+        XCTAssertEqual(model.codexActiveSavedAccountID, alpha.id)
+        XCTAssertEqual(model.latestAgentQuota?.remainingPercent, 84)
+        XCTAssertEqual(model.latestCodexResetCredits?.availableCount, 1)
+        XCTAssertEqual(model.codexResetCreditsPresentation()?.availableText, "1 available")
+
+        model.switchCodexAccount(gamma)
+        XCTAssertEqual(model.codexActiveSavedAccountID, gamma.id)
+        XCTAssertNil(model.latestAgentQuota)
+        XCTAssertNil(model.latestCodexResetCredits)
+        XCTAssertNil(model.codexResetCreditsPresentation())
+
+        model.switchCodexAccount(beta)
+        XCTAssertEqual(model.codexActiveSavedAccountID, beta.id)
+        XCTAssertEqual(model.latestAgentQuota?.remainingPercent, 42)
+        XCTAssertEqual(model.latestCodexResetCredits?.availableCount, 2)
+        XCTAssertEqual(model.codexResetCreditsPresentation()?.availableText, "2 available")
     }
 
     @MainActor
@@ -1622,6 +1889,31 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssertEqual(model.displayName(for: monthlyWindow, fallback: .fiveHours), "30 天")
         XCTAssertEqual(model.quotaTitleLine(for: .fiveHours, quota: quota), "30 天 · 剩余 95%")
+    }
+
+    @MainActor
+    func testCodexResetCreditsPresentationUsesCompactLayout() throws {
+        let model = makeMenuBarStatusModel()
+        model.appLanguage = .zhHans
+        let now = Date(timeIntervalSince1970: 1_781_726_400)
+        let snapshot = CodexRateLimitResetCreditsSnapshot(
+            credits: (1...5).map { day in
+                CodexRateLimitResetCredit(
+                    status: .available,
+                    grantedAt: now.addingTimeInterval(-3_600),
+                    expiresAt: now.addingTimeInterval(Double(day * 86_400))
+                )
+            },
+            availableCount: 5,
+            updatedAt: now
+        )
+
+        let presentation = try XCTUnwrap(model.codexResetCreditsPresentation(for: snapshot, now: now))
+
+        XCTAssertEqual(presentation.title, "限额重置额度")
+        XCTAssertEqual(presentation.availableText, "5 次可用")
+        XCTAssertEqual(presentation.expirySummaryText, "1d · 2d · 3d · 4d · +1")
+        XCTAssertEqual(presentation.helpText.split(separator: "\n").count, 5)
     }
 
     @MainActor
@@ -5782,6 +6074,25 @@ final class AgentSignalLightCoreTests: XCTestCase {
                 windowMinutes: 10_080,
                 resetsAt: updatedAtDate.addingTimeInterval(86_400)
             )
+        )
+    }
+
+    private func codexResetCreditsFixture(
+        count: Int,
+        updatedAt: TimeInterval,
+        lifetimeDays: Int = 1
+    ) -> CodexRateLimitResetCreditsSnapshot {
+        let updatedAtDate = Date(timeIntervalSince1970: updatedAt)
+        return CodexRateLimitResetCreditsSnapshot(
+            credits: (0..<count).map { index in
+                CodexRateLimitResetCredit(
+                    status: .available,
+                    grantedAt: updatedAtDate,
+                    expiresAt: updatedAtDate.addingTimeInterval(Double(index + lifetimeDays) * 86_400)
+                )
+            },
+            availableCount: count,
+            updatedAt: updatedAtDate
         )
     }
 

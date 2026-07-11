@@ -589,12 +589,14 @@ enum CostUsageScanner {
     }
 
     private static func codexPricingKey(modelsDevArtifact: ModelsDevCacheArtifact?) -> String {
+        let builtInFingerprint = CostUsagePricing.codexBuiltInPricingFingerprint()
+        let builtInHash = Self.sha256Hex(Data(builtInFingerprint.utf8))
         guard let modelsDevArtifact else {
-            let fingerprint = CostUsagePricing.codexBuiltInPricingFingerprint()
-            return "builtin-\(Self.sha256Hex(Data(fingerprint.utf8)))"
+            return "builtin-\(builtInHash)"
         }
-        let fingerprint = self.modelsDevPricingFingerprint(modelsDevArtifact.catalog)
-        return "models-dev-v\(modelsDevArtifact.version)-\(Self.sha256Hex(Data(fingerprint.utf8)))"
+        let modelsDevFingerprint = self.modelsDevPricingFingerprint(modelsDevArtifact.catalog)
+        let modelsDevHash = Self.sha256Hex(Data(modelsDevFingerprint.utf8))
+        return "models-dev-v\(modelsDevArtifact.version)-\(modelsDevHash)-builtin-\(builtInHash)"
     }
 
     private static func modelsDevPricingFingerprint(_ catalog: ModelsDevCatalog) -> String {

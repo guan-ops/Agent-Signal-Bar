@@ -414,13 +414,20 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     private func addNativeQuotaMenuItems(to menu: NSMenu) {
         menu.addItem(infoMenuItem(title: model.text("Codex 会话", "Codex Session")))
 
-        guard let quota = model.latestAgentQuota else {
+        if let quota = model.latestAgentQuota {
+            menu.addItem(infoMenuItem(title: model.quotaTitleLine(for: .fiveHours, quota: quota)))
+            menu.addItem(infoMenuItem(title: model.quotaTitleLine(for: .weekly, quota: quota)))
+        } else {
             menu.addItem(infoMenuItem(title: model.text("暂无会话数据", "No session data yet")))
-            return
         }
 
-        menu.addItem(infoMenuItem(title: model.quotaTitleLine(for: .fiveHours, quota: quota)))
-        menu.addItem(infoMenuItem(title: model.quotaTitleLine(for: .weekly, quota: quota)))
+        if let resetCredits = model.codexResetCreditsPresentation() {
+            menu.addItem(infoMenuItem(title: "\(resetCredits.title) · \(resetCredits.availableText)"))
+            menu.addItem(infoMenuItem(
+                title: resetCredits.expirySummaryText,
+                image: NSImage(systemSymbolName: "clock", accessibilityDescription: resetCredits.title)
+            ))
+        }
     }
 
     private func infoMenuItem(
@@ -933,7 +940,12 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 840),
+            contentRect: NSRect(
+                x: 0,
+                y: 0,
+                width: SettingsWindowMetrics.width,
+                height: SettingsWindowMetrics.height
+            ),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false

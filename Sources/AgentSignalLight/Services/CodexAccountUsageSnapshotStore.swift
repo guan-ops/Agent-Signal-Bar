@@ -8,6 +8,7 @@ struct CodexAccountUsageSnapshot: Codable, Equatable, Sendable {
     let authFingerprint: String?
     var quota: AgentQuotaStatus?
     var credits: CodexCreditStatus?
+    var resetCredits: CodexRateLimitResetCreditsSnapshot?
     var tokenUsage: AgentTokenUsage?
     var tokenActivityCacheVersion: Int?
     var tokenActivityDays: [CodexTokenActivityDay]
@@ -38,6 +39,7 @@ final class CodexAccountUsageSnapshotStore: @unchecked Sendable {
         account: CodexCurrentAccount,
         quota: AgentQuotaStatus?,
         credits: CodexCreditStatus?,
+        resetCredits: CodexRateLimitResetCreditsSnapshot? = nil,
         tokenUsage: AgentTokenUsage?,
         tokenActivityCacheVersion: Int?,
         tokenActivityDays: [CodexTokenActivityDay],
@@ -51,6 +53,7 @@ final class CodexAccountUsageSnapshotStore: @unchecked Sendable {
             authFingerprint: account.authFingerprint,
             quota: quota,
             credits: credits,
+            resetCredits: resetCredits,
             tokenUsage: tokenUsage,
             tokenActivityCacheVersion: tokenActivityCacheVersion,
             tokenActivityDays: tokenActivityDays,

@@ -29,9 +29,9 @@ struct DebugWindowView: View {
 
             VStack(spacing: 0) {
                 header
-                    .padding(.horizontal, 22)
-                    .padding(.top, 20)
-                    .padding(.bottom, 16)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 12)
+                    .padding(.bottom, 10)
                     .fixedSize(horizontal: false, vertical: true)
                     .layoutPriority(2)
                     .overlay {
@@ -41,8 +41,8 @@ struct DebugWindowView: View {
                 Divider()
 
                 settingsMenu
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 6)
                     .fixedSize(horizontal: false, vertical: true)
                     .layoutPriority(2)
 
@@ -51,7 +51,7 @@ struct DebugWindowView: View {
                 settingsContentArea
             }
         }
-        .frame(width: 600, height: 840)
+        .frame(width: SettingsWindowMetrics.width, height: SettingsWindowMetrics.height)
         .preferredColorScheme(model.appTheme.colorScheme)
         .confirmationDialog(
             model.text("导出诊断包？", "Export diagnostics package?"),
@@ -84,24 +84,24 @@ struct DebugWindowView: View {
                         selectedSettingsTab = tab
                     }
                 } label: {
-                    VStack(spacing: 4) {
+                    VStack(spacing: 2) {
                         Image(systemName: tab.systemImage)
                             .font(settingsTabIconFont)
-                            .frame(width: 18, height: 18)
+                            .frame(width: 16, height: 16)
                         Text(menuTitle(for: tab))
                             .font(settingsTabTitleFont)
                             .lineLimit(1)
                             .allowsTightening(true)
                             .minimumScaleFactor(0.85)
-                            .frame(height: 14)
+                            .frame(height: 12)
                     }
                     .foregroundStyle(selectedSettingsTab == tab ? Color.accentColor : Color.secondary)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 48)
+                    .frame(height: 36)
                     .contentShape(Rectangle())
                     .background {
                         if selectedSettingsTab == tab {
-                            glassSelectedMenuItemBackground(cornerRadius: 7)
+                            glassSelectedMenuItemBackground(cornerRadius: 6)
                         }
                     }
                 }
@@ -109,16 +109,16 @@ struct DebugWindowView: View {
                 .help(menuTitle(for: tab))
             }
         }
-        .padding(4)
-        .frame(height: 56)
+        .padding(3)
+        .frame(height: 43)
         .background {
-            glassMenuBarBackground(cornerRadius: 12)
+            glassMenuBarBackground(cornerRadius: 10)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(glassMenuBarStroke, lineWidth: 0.6)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private var visibleSettingsTabs: [SettingsTab] {
@@ -140,7 +140,7 @@ struct DebugWindowView: View {
         ZStack(alignment: .topLeading) {
             dropdownDismissLayer
 
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 12) {
                 selectedSettingsContent
 
                 if let lastError = model.lastError {
@@ -154,7 +154,8 @@ struct DebugWindowView: View {
             }
             .zIndex(1)
         }
-        .padding(22)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
         .frame(maxWidth: .infinity, maxHeight: proxy.size.height, alignment: .topLeading)
     }
 
@@ -163,7 +164,7 @@ struct DebugWindowView: View {
             ZStack(alignment: .topLeading) {
                 dropdownDismissLayer
 
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 12) {
                     selectedSettingsContent
 
                     if let lastError = model.lastError {
@@ -177,7 +178,8 @@ struct DebugWindowView: View {
                 }
                 .zIndex(1)
             }
-            .padding(22)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
             .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .topLeading)
         }
         .scrollIndicators(.hidden)
@@ -373,67 +375,67 @@ struct DebugWindowView: View {
     }
 
     private var settingsHeaderTitleFont: Font {
-        .system(size: usesCompactLatinLayout ? 16 : 17, weight: .semibold)
+        .system(size: usesCompactLatinLayout ? 14.5 : 15, weight: .semibold)
     }
 
     private var settingsTabIconFont: Font {
-        .system(size: 14, weight: .medium)
+        .system(size: 12, weight: .medium)
     }
 
     private var settingsTabTitleFont: Font {
-        .system(size: usesCompactLatinLayout ? 11 : 11.5, weight: .medium)
+        .system(size: usesCompactLatinLayout ? 9.5 : 10, weight: .medium)
     }
 
     private var settingsSectionTitleFont: Font {
-        .system(size: usesCompactLatinLayout ? 15 : 16, weight: .semibold)
-    }
-
-    private var settingsSubsectionTitleFont: Font {
         .system(size: usesCompactLatinLayout ? 13 : 14, weight: .semibold)
     }
 
-    private var settingsRowTitleFont: Font {
-        .system(size: usesCompactLatinLayout ? 13 : 13.5, weight: .semibold)
-    }
-
-    private var settingsControlFont: Font {
-        .system(size: usesCompactLatinLayout ? 12 : 13, weight: .semibold)
-    }
-
-    private var settingsBodyFont: Font {
-        .system(size: usesCompactLatinLayout ? 12 : 13, weight: .regular)
-    }
-
-    private var settingsBodyStrongFont: Font {
-        .system(size: usesCompactLatinLayout ? 12 : 13, weight: .semibold)
-    }
-
-    private var usageAccountStatusTitleFont: Font {
-        .system(size: 13, weight: .semibold)
-    }
-
-    private var settingsDetailFont: Font {
-        .system(size: usesCompactLatinLayout ? 11.5 : 12, weight: .regular)
-    }
-
-    private var settingsDetailStrongFont: Font {
+    private var settingsSubsectionTitleFont: Font {
         .system(size: usesCompactLatinLayout ? 11.5 : 12, weight: .semibold)
     }
 
-    private var agentScopeSectionFont: Font {
-        .system(size: usesCompactLatinLayout ? 10 : 10.5, weight: .semibold)
+    private var settingsRowTitleFont: Font {
+        .system(size: usesCompactLatinLayout ? 11.5 : 12, weight: .semibold)
     }
 
-    private var agentScopeOptionFont: Font {
+    private var settingsControlFont: Font {
         .system(size: usesCompactLatinLayout ? 10.5 : 11, weight: .semibold)
     }
 
+    private var settingsBodyFont: Font {
+        .system(size: usesCompactLatinLayout ? 10.5 : 11, weight: .regular)
+    }
+
+    private var settingsBodyStrongFont: Font {
+        .system(size: usesCompactLatinLayout ? 10.5 : 11, weight: .semibold)
+    }
+
+    private var usageAccountStatusTitleFont: Font {
+        .system(size: 11, weight: .semibold)
+    }
+
+    private var settingsDetailFont: Font {
+        .system(size: usesCompactLatinLayout ? 9.5 : 10, weight: .regular)
+    }
+
+    private var settingsDetailStrongFont: Font {
+        .system(size: usesCompactLatinLayout ? 9.5 : 10, weight: .semibold)
+    }
+
+    private var agentScopeSectionFont: Font {
+        .system(size: usesCompactLatinLayout ? 9 : 9.5, weight: .semibold)
+    }
+
+    private var agentScopeOptionFont: Font {
+        .system(size: usesCompactLatinLayout ? 9.5 : 10, weight: .semibold)
+    }
+
     private var settingsTinyIconFont: Font {
-        .system(size: 11, weight: .bold)
+        .system(size: 9.5, weight: .bold)
     }
 
     private var settingsIconFont: Font {
-        .system(size: usesCompactLatinLayout ? 12 : 13, weight: .semibold)
+        .system(size: usesCompactLatinLayout ? 10.5 : 11, weight: .semibold)
     }
 
     private var usesCompactLatinLayout: Bool {
@@ -442,7 +444,7 @@ struct DebugWindowView: View {
 
     private var header: some View {
         ZStack {
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 TrafficSignalView(
                     snapshot: model.displaySnapshot,
                     tick: 0,
@@ -455,8 +457,8 @@ struct DebugWindowView: View {
                     allLightsOn: true,
                     effectCustomization: model.signalEffectCustomization
                 )
-                .scaleEffect(1.14)
-                .frame(width: 90, height: 34)
+                .scaleEffect(1.0)
+                .frame(width: 78, height: 30)
 
                 Text("Agent Signal Bar")
                     .font(settingsHeaderTitleFont)
@@ -868,7 +870,7 @@ struct DebugWindowView: View {
     }
 
     private var usageSettings: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 12) {
                 Text(model.text("用量", "Usage"))
                     .font(settingsSectionTitleFont)
@@ -879,10 +881,12 @@ struct DebugWindowView: View {
             }
             .zIndex(expandedSettingsDropdown == .usagePlatform ? 1000 : 0)
 
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
                 usageAccountCard
 
                 agentQuotaSummaryCard
+
+                codexResetCreditsCard
 
                 usageTokenSummaryCard
             }
@@ -900,16 +904,16 @@ struct DebugWindowView: View {
             id: .usagePlatform,
             title: usagePlatformName(selectedUsagePlatform),
             systemImage: selectedUsagePlatform.systemImage,
-            width: 138,
+            width: 124,
             optionsHeight: dropdownOptionsHeight(optionCount: UsagePlatform.allCases.count)
         ) {
-            dropdownOptions(width: 138) {
+            dropdownOptions(width: 124) {
                 ForEach(UsagePlatform.allCases) { platform in
                     dropdownOption(
                         usagePlatformName(platform),
                         systemImage: platform.systemImage,
                         isSelected: selectedUsagePlatform == platform,
-                        width: 138
+                        width: 124
                     ) {
                         selectedUsagePlatform = platform
                     }
@@ -1128,7 +1132,7 @@ struct DebugWindowView: View {
             settingsActionSurface(
                 codexUsageDataSourceName(model.codexUsageDataSource),
                 systemImage: nil,
-                width: 138
+                width: 124
             )
         }
         .menuStyle(.borderlessButton)
@@ -1185,7 +1189,7 @@ struct DebugWindowView: View {
             text: codexManualOpenAICookieBinding
         )
         .textFieldStyle(.plain)
-        .font(.system(size: 12, weight: .regular, design: .monospaced))
+        .font(.system(size: 10.5, weight: .regular, design: .monospaced))
         .foregroundStyle(.primary)
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
@@ -1315,7 +1319,7 @@ struct DebugWindowView: View {
     private var agentQuotaSummaryCard: some View {
         let quota = selectedUsageQuota
 
-        return VStack(alignment: .leading, spacing: 9) {
+        return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
                 Text(model.text("会话", "Session"))
                     .font(settingsSubsectionTitleFont)
@@ -1361,7 +1365,7 @@ struct DebugWindowView: View {
                 }
             }
         }
-        .padding(10)
+        .padding(8)
         .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onAppear {
             if selectedUsagePlatform.supportsQuotaRefresh {
@@ -1379,6 +1383,40 @@ struct DebugWindowView: View {
         }
     }
 
+    @ViewBuilder
+    private var codexResetCreditsCard: some View {
+        if selectedUsagePlatform == .codex {
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                if let presentation = model.codexResetCreditsPresentation(now: context.date) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(presentation.title)
+                            .font(settingsSubsectionTitleFont)
+                            .lineLimit(1)
+
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(presentation.availableText)
+                                .font(settingsBodyStrongFont)
+                                .lineLimit(1)
+
+                            Spacer(minLength: 8)
+
+                            Label(presentation.expirySummaryText, systemImage: "clock")
+                                .font(settingsDetailFont)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.72)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .help(presentation.helpText)
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        }
+    }
+
     private func latestUsageQuota(for platform: UsagePlatform) -> AgentQuotaStatus? {
         model.activitySnapshot.sessions
             .filter { platform.matches(session: $0) }
@@ -1391,7 +1429,7 @@ struct DebugWindowView: View {
         let currentAccount = model.codexCurrentAccount
         let shouldShowSaveCurrent = currentAccount != nil && activeSavedAccount == nil
 
-        return VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text(model.text("账户", "Account"))
                     .font(settingsSubsectionTitleFont)
@@ -1414,7 +1452,7 @@ struct DebugWindowView: View {
                 .help(model.text("刷新 Codex 账户、会话和 Token 使用", "Refresh Codex account, session, and token usage"))
             }
 
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 usageAccountIdentityRow(
                     title: model.codexCurrentAccount?.displayName ?? model.text("未找到 Codex 登录", "No Codex login found"),
                     detail: codexAccountPlanDetail,
@@ -1426,7 +1464,7 @@ struct DebugWindowView: View {
                     connectionActionButton(
                         model.text("添加账号", "Add"),
                         systemImage: "person.crop.circle.badge.plus",
-                        width: 92,
+                        width: 83,
                         disabled: model.isCodexAccountActionRunning,
                         action: { model.addCodexAccount() }
                     )
@@ -1435,7 +1473,7 @@ struct DebugWindowView: View {
                         connectionActionButton(
                             model.text("保存当前", "Save Current"),
                             systemImage: "tray.and.arrow.down",
-                            width: 96,
+                            width: 86,
                             disabled: model.isCodexAccountActionRunning,
                             action: { model.saveCurrentCodexAccount() }
                         )
@@ -1456,7 +1494,7 @@ struct DebugWindowView: View {
                 codexProviderDetailsDisclosure
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10)
+            .padding(8)
             .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             if let message = model.codexAccountMessage {
@@ -1467,7 +1505,7 @@ struct DebugWindowView: View {
                     .textSelection(.enabled)
             }
         }
-        .padding(10)
+        .padding(8)
         .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onAppear {
             model.refreshCodexProviderDetails()
@@ -1492,7 +1530,7 @@ struct DebugWindowView: View {
                 }
             }
         } label: {
-            settingsTextMenuSurface(model.text("切换", "Switch"), width: 72)
+            settingsTextMenuSurface(model.text("切换", "Switch"), width: 65)
         }
         .menuStyle(.borderlessButton)
         .disabled(model.codexSavedAccounts.isEmpty || model.isCodexAccountActionRunning)
@@ -1666,7 +1704,7 @@ struct DebugWindowView: View {
             Text(title)
                 .font(settingsDetailStrongFont)
                 .foregroundStyle(.secondary)
-                .frame(width: 92, alignment: .leading)
+                .frame(width: 83, alignment: .leading)
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
 
@@ -1793,7 +1831,7 @@ struct DebugWindowView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 9)
-        .padding(.vertical, 7)
+        .padding(.vertical, 6)
         .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
@@ -1815,7 +1853,7 @@ struct DebugWindowView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 9)
-        .padding(.vertical, 7)
+        .padding(.vertical, 6)
         .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
@@ -1823,7 +1861,7 @@ struct DebugWindowView: View {
         let chartDays = selectedUsageTokenActivityChartDays
         let peakTokens = chartDays.map(\.totalTokens).max() ?? 0
 
-        return VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text(model.text("Token 使用", "Token Usage"))
                     .font(settingsSubsectionTitleFont)
@@ -1838,14 +1876,14 @@ struct DebugWindowView: View {
             }
 
             if selectedUsagePlatform.supportsTokenActivity {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     LazyVGrid(
                         columns: [
                             GridItem(.flexible(minimum: 120), alignment: .leading),
                             GridItem(.flexible(minimum: 120), alignment: .leading),
                         ],
                         alignment: .leading,
-                        spacing: 8
+                        spacing: 6
                     ) {
                         tokenUsageDashboardMetric(
                             title: model.text("今日", "Today"),
@@ -1871,7 +1909,7 @@ struct DebugWindowView: View {
                     tokenUsageBarChart(days: chartDays, peakTokens: peakTokens)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10)
+                .padding(8)
                 .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             } else {
                 usageUnavailableRow(
@@ -1884,7 +1922,7 @@ struct DebugWindowView: View {
                 )
             }
         }
-        .padding(10)
+        .padding(8)
         .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
@@ -1931,7 +1969,7 @@ struct DebugWindowView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
         }
-        .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
         .help("\(title): \(value)")
     }
 
@@ -1953,8 +1991,8 @@ struct DebugWindowView: View {
                     )
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 62, maxHeight: 62, alignment: .bottom)
-            .padding(.top, 4)
+            .frame(maxWidth: .infinity, minHeight: 48, maxHeight: 48, alignment: .bottom)
+            .padding(.top, 2)
 
             HStack(alignment: .firstTextBaseline) {
                 if let firstDay = days.first {
@@ -1978,7 +2016,7 @@ struct DebugWindowView: View {
                 tokenUsageHoverHint()
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 154, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 122, alignment: .topLeading)
     }
 
     private struct TokenUsageBarSegment: Identifiable {
@@ -2002,7 +2040,7 @@ struct DebugWindowView: View {
         isSelected: Bool = false
     ) -> some View {
         let normalized = peakTokens > 0 ? CGFloat(day.totalTokens) / CGFloat(peakTokens) : 0
-        let barHeight = day.totalTokens > 0 ? max(5, normalized * 58) : 4
+        let barHeight = day.totalTokens > 0 ? max(5, normalized * 44) : 4
         let opacity = day.totalTokens > 0 ? 0.35 + (normalized * 0.55) : 0.12
         let segments = tokenUsageBarSegments(for: day)
         let slices = tokenUsageBarSlices(segments: segments, barHeight: barHeight)
@@ -2041,7 +2079,7 @@ struct DebugWindowView: View {
                 .frame(height: barHeight)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 62, maxHeight: 62, alignment: .bottom)
+        .frame(maxWidth: .infinity, minHeight: 48, maxHeight: 48, alignment: .bottom)
         .contentShape(Rectangle())
             .onHover { isHovering in
                 if isHovering {
@@ -2234,14 +2272,14 @@ struct DebugWindowView: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
     }
 
     private func tokenUsageHoverHint() -> some View {
         Text(model.text("悬停在柱形图上查看详情", "Hover over a bar to view details"))
             .font(settingsDetailFont)
             .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
     }
 
     private func tokenUsageModelDetailRow(
@@ -2809,7 +2847,7 @@ struct DebugWindowView: View {
                 connectionActionButton(
                     model.text("安装 CLI", "Install CLI"),
                     systemImage: "terminal",
-                    width: 92,
+                    width: 83,
                     disabled: model.isCLIInstallRunning,
                     action: { model.installBundledCLI() }
                 )
@@ -3159,7 +3197,7 @@ struct DebugWindowView: View {
 
                 HStack(spacing: 8) {
                     Text(model.releaseInfo.releaseLine)
-                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .font(.system(size: 10, weight: .regular, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
 
@@ -3366,6 +3404,7 @@ struct DebugWindowView: View {
     private func settingsSwitch(_ isOn: Binding<Bool>, tint: Color? = nil) -> some View {
         Toggle("", isOn: isOn)
             .toggleStyle(.switch)
+            .controlSize(.small)
             .labelsHidden()
             .tint(tint)
             .fixedSize()
@@ -3405,13 +3444,13 @@ struct DebugWindowView: View {
         .buttonStyle(.plain)
         .frame(width: width, height: dropdownControlHeight, alignment: .leading)
         .background(
-            glassControlBackground(cornerRadius: 7)
+            glassControlBackground(cornerRadius: 6)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .stroke(solidControlStroke, lineWidth: 0.5)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .overlay(alignment: .topLeading) {
             if isExpanded {
                 options()
@@ -3425,7 +3464,7 @@ struct DebugWindowView: View {
     }
 
     private var dropdownControlHeight: CGFloat {
-        28
+        25
     }
 
     private func dropdownOptionsHeight(optionCount: Int) -> CGFloat {
@@ -3433,7 +3472,7 @@ struct DebugWindowView: View {
     }
 
     private var dropdownOptionHeight: CGFloat {
-        28
+        25
     }
 
     private func dropdownSurface(
@@ -3447,11 +3486,11 @@ struct DebugWindowView: View {
             ? (isExpanded ? "chevron.down" : "chevron.up")
             : (isExpanded ? "chevron.up" : "chevron.down")
 
-        return HStack(spacing: 7) {
+        return HStack(spacing: 6) {
             if let systemImage {
                 Image(systemName: systemImage)
                     .font(settingsIconFont)
-                    .frame(width: 16)
+                    .frame(width: 14)
             }
 
             Text(title)
@@ -3459,25 +3498,25 @@ struct DebugWindowView: View {
                 .allowsTightening(true)
                 .minimumScaleFactor(0.72)
 
-            Spacer(minLength: 6)
+            Spacer(minLength: 5)
 
             Image(systemName: chevronName)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 10)
         }
         .font(settingsControlFont)
         .foregroundStyle(.primary)
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 9)
         .frame(width: width, height: dropdownControlHeight)
         .background(
-            glassControlBackground(cornerRadius: 7)
+            glassControlBackground(cornerRadius: 6)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .stroke(solidControlStroke, lineWidth: 0.5)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
     private func dropdownOptions<Content: View>(
@@ -3510,16 +3549,16 @@ struct DebugWindowView: View {
             expandedSettingsDropdown = nil
             action()
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: 6) {
                 if let systemImage {
                     Image(systemName: systemImage)
                         .font(settingsIconFont)
-                        .frame(width: 16)
+                        .frame(width: 14)
                 } else {
                     Image(systemName: "checkmark")
                         .font(settingsTinyIconFont)
                         .foregroundStyle(Color.accentColor)
-                        .frame(width: 16)
+                        .frame(width: 14)
                         .opacity(isSelected ? 1 : 0)
                 }
 
@@ -3532,10 +3571,10 @@ struct DebugWindowView: View {
             }
             .font(settingsControlFont)
             .foregroundStyle(isSelected ? Color.white : Color.primary)
-            .padding(.horizontal, 9)
+            .padding(.horizontal, 8)
             .frame(width: width, height: dropdownOptionHeight)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .fill(isSelected ? Color.accentColor : Color.clear)
             )
             .contentShape(Rectangle())
@@ -3785,11 +3824,11 @@ struct DebugWindowView: View {
         systemImage: String?,
         width: CGFloat? = nil
     ) -> some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 6) {
             if let systemImage {
                 Image(systemName: systemImage)
                     .font(settingsIconFont)
-                    .frame(width: 16)
+                    .frame(width: 14)
             }
 
             Text(title)
@@ -3799,16 +3838,16 @@ struct DebugWindowView: View {
         }
         .font(settingsControlFont)
         .foregroundStyle(.primary)
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 9)
         .frame(width: width ?? settingsActionButtonWidth, height: dropdownControlHeight)
         .background(
-            glassControlBackground(cornerRadius: 7)
+            glassControlBackground(cornerRadius: 6)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .stroke(solidControlStroke, lineWidth: 0.5)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
     private func settingsIconActionSurface(systemImage: String) -> some View {
@@ -3817,13 +3856,13 @@ struct DebugWindowView: View {
             .foregroundStyle(.primary)
             .frame(width: dropdownControlHeight, height: dropdownControlHeight)
             .background(
-                glassControlBackground(cornerRadius: 7)
+                glassControlBackground(cornerRadius: 6)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(solidControlStroke, lineWidth: 0.5)
             )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
     private func settingsTextMenuSurface(_ title: String, width: CGFloat? = nil) -> some View {
@@ -3835,16 +3874,16 @@ struct DebugWindowView: View {
         }
         .font(settingsControlFont)
         .foregroundStyle(.primary)
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 9)
         .frame(width: width ?? settingsActionButtonWidth, height: dropdownControlHeight)
         .background(
-            glassControlBackground(cornerRadius: 7)
+            glassControlBackground(cornerRadius: 6)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .stroke(solidControlStroke, lineWidth: 0.5)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
     private func soundPreviewButton(disabled: Bool, action: @escaping () -> Void) -> some View {
@@ -4048,7 +4087,7 @@ struct DebugWindowView: View {
     }
 
     private var compactConnectionActionButtonWidth: CGFloat {
-        usesCompactLatinLayout ? 146 : 126
+        usesCompactLatinLayout ? 131 : 113
     }
 
     private var effectMenuWidth: CGFloat {
@@ -4064,7 +4103,7 @@ struct DebugWindowView: View {
     }
 
     private var settingsControlWidth: CGFloat {
-        usesCompactLatinLayout ? 162 : 150
+        usesCompactLatinLayout ? 146 : 135
     }
 
     private var statusBarStyleOptions: [TrafficSignalStyle] {
@@ -4135,7 +4174,7 @@ struct DebugWindowView: View {
                 .font(settingsDetailFont)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
-                .frame(width: 72, alignment: .trailing)
+                .frame(width: 65, alignment: .trailing)
                 .padding(.trailing, timeTrailingInset)
         }
         .frame(width: width, alignment: .leading)
@@ -4200,7 +4239,7 @@ struct DebugWindowView: View {
     private func debugTextBox(_ text: String, minHeight: CGFloat) -> some View {
         ScrollView {
             Text(text)
-                .font(.system(size: 11.5, weight: .regular, design: .monospaced))
+                .font(.system(size: 10, weight: .regular, design: .monospaced))
                 .foregroundStyle(.primary.opacity(0.9))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -4226,7 +4265,7 @@ struct DebugWindowView: View {
     ) -> some View {
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: systemImage)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 22, height: 22)
 
