@@ -160,7 +160,7 @@ struct DebugWindowView: View {
     }
 
     private func scrollingSettingsContentArea(proxy: GeometryProxy) -> some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: true) {
             ZStack(alignment: .topLeading) {
                 dropdownDismissLayer
 
@@ -178,11 +178,14 @@ struct DebugWindowView: View {
                 }
                 .zIndex(1)
             }
+            .background {
+                SettingsScrollConfigurator()
+                    .frame(width: 0, height: 0)
+            }
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .topLeading)
         }
-        .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -2103,11 +2106,7 @@ struct DebugWindowView: View {
                 }
             }
 
-            if let hoveredDay {
-                tokenUsageDayDetail(for: hoveredDay)
-            } else {
-                tokenUsageHoverHint()
-            }
+            tokenUsageDetailSlot(days: days, hoveredDay: hoveredDay)
         }
         .frame(maxWidth: .infinity, minHeight: 122, alignment: .topLeading)
     }
@@ -2366,6 +2365,29 @@ struct DebugWindowView: View {
             }
         }
         .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
+    }
+
+    private func tokenUsageDetailSlot(
+        days: [CodexTokenActivityDay],
+        hoveredDay: CodexTokenActivityDay?
+    ) -> some View {
+        ZStack(alignment: .topLeading) {
+            tokenUsageHoverHint()
+                .opacity(hoveredDay == nil ? 1 : 0)
+                .accessibilityHidden(hoveredDay != nil)
+
+            ForEach(days) { day in
+                let isVisible = hoveredDay?.id == day.id
+
+                tokenUsageDayDetail(for: day)
+                    .opacity(isVisible ? 1 : 0)
+                    .accessibilityHidden(!isVisible)
+            }
+        }
+        // Keep the ScrollView content size stable while the pointer moves between bars.
+        // Every day participates in layout, while only the hovered day is visible.
+        .allowsHitTesting(false)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private func tokenUsageHoverHint() -> some View {
@@ -4903,6 +4925,72 @@ private struct SettingsWindowDragRegionView: NSViewRepresentable {
     final class DragRegionView: NSView {
         override func mouseDown(with event: NSEvent) {
             window?.performDrag(with: event)
+        }
+    }
+}
+
+private struct SettingsScrollConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> ConfiguratorView {
+        ConfiguratorView()
+    }
+
+    func updateNSView(_ nsView: ConfiguratorView, context: Context) {
+        nsView.scheduleConfiguration()
+    }
+
+    final class ConfiguratorView: NSView {
+        private var hasConfiguredScrollView = false
+
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            scheduleConfiguration()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            scheduleConfiguration()
+        }
+
+        func scheduleConfiguration() {
+            guard !hasConfiguredScrollView else { return }
+            for delay in [0.0, 0.05, 0.15] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.configureScrollView()
+                }
+            }
+        }
+
+        private func configureScrollView() {
+            guard !hasConfiguredScrollView else { return }
+            guard let scrollView = nearestScrollView() else { return }
+
+            scrollView.scrollerStyle = .overlay
+            scrollView.autohidesScrollers = true
+            scrollView.hasHorizontalScroller = false
+            scrollView.horizontalScroller = nil
+            scrollView.hasVerticalScroller = true
+            scrollView.verticalScroller?.controlSize = .small
+            scrollView.scrollerInsets = NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 2)
+            scrollView.tile()
+            hasConfiguredScrollView = true
+        }
+
+        private func nearestScrollView() -> NSScrollView? {
+            var view: NSView? = self
+
+            while let current = view {
+                if let scrollView = current as? NSScrollView {
+                    return scrollView
+                }
+
+                if let scrollView = current.enclosingScrollView {
+                    return scrollView
+                }
+
+                view = current.superview
+            }
+
+            return nil
         }
     }
 }
