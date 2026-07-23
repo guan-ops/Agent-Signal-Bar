@@ -7,6 +7,7 @@ import argparse
 import copy
 import json
 import os
+import pwd
 import shutil
 import shlex
 import subprocess
@@ -60,6 +61,11 @@ CLAUDE_EVENTS = [
     "WorktreeRemove",
     "SessionEnd",
 ]
+
+
+def current_user_home() -> Path:
+    """Return the OS account home without trusting the inherited HOME value."""
+    return Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
 
 
 @dataclass(frozen=True)
@@ -119,8 +125,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--home",
         type=Path,
-        default=Path(os.environ.get("HOME", "~")).expanduser(),
-        help="Home directory to use for config paths. Defaults to $HOME.",
+        default=current_user_home(),
+        help="Home directory to use for config paths. Defaults to the current OS account home.",
     )
     parser.add_argument(
         "--codex-scope",
