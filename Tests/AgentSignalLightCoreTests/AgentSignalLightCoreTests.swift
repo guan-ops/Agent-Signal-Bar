@@ -1453,6 +1453,9 @@ final class AgentSignalLightCoreTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
+        let now = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-07-18T00:00:00Z")
+        )
 
         let auth = try XCTUnwrap(String(data: codexOAuthAuthJSON(
             email: "fallback@example.com",
@@ -1515,7 +1518,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
         let fetcher = CodexRateLimitFetcher(
             environment: ["CODEX_HOME": root.path],
             fileManager: .default,
-            session: session
+            session: session,
+            clock: { now }
         )
         let usage = try await fetcher.fetchUsageStatus(
             route: .automatic(cookieHeader: "session=expired", importsBrowserCookies: false)
@@ -1537,6 +1541,9 @@ final class AgentSignalLightCoreTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
+        let now = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-07-18T00:00:00Z")
+        )
 
         let auth = try XCTUnwrap(String(data: codexOAuthAuthJSON(
             email: "selected@example.com",
@@ -1591,7 +1598,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
         let fetcher = CodexRateLimitFetcher(
             environment: ["CODEX_HOME": root.path],
             fileManager: .default,
-            session: session
+            session: session,
+            clock: { now }
         )
         let usage = try await fetcher.fetchUsageStatus(
             route: .automatic(cookieHeader: "session=other-account", importsBrowserCookies: false)
@@ -7722,6 +7730,9 @@ final class AgentSignalLightCoreTests: XCTestCase {
     func testCodexAccountSwitchRejectsLateUsageFromPreviousAccount() async throws {
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-07-18T00:00:00Z")
+        )
 
         let accountStoreURL = fixture.directory.appendingPathComponent("accounts.json")
         let usageStoreURL = fixture.directory.appendingPathComponent("usage-snapshots.json")
@@ -7815,7 +7826,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
             codexUsageSnapshotStore: CodexAccountUsageSnapshotStore(fileURL: usageStoreURL),
             codexRateLimitFetcher: CodexRateLimitFetcher(
                 environment: ["CODEX_HOME": fixture.directory.path],
-                session: session
+                session: session,
+                clock: { now }
             )
         )
         model.codexUsageDataSource = .oauthAPI

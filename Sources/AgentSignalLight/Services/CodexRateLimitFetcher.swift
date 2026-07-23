@@ -12,34 +12,40 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
     private let session: URLSession
     private let browserCookieImporter: any OpenAIBrowserCookieImporting
     private let credentialPersistence: (any CodexRefreshedCredentialPersisting)?
+    private let clock: @Sendable () -> Date
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default,
         session: URLSession = .shared,
         browserCookieImporter: any OpenAIBrowserCookieImporting = OpenAIBrowserCookieImporter(),
-        credentialPersistence: (any CodexRefreshedCredentialPersisting)? = nil
+        credentialPersistence: (any CodexRefreshedCredentialPersisting)? = nil,
+        clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.environment = environment
         self.fileManager = fileManager
         self.session = session
         self.browserCookieImporter = browserCookieImporter
         self.credentialPersistence = credentialPersistence
+        self.clock = clock
     }
 
-    func fetchQuota(now: Date = Date()) async throws -> AgentQuotaStatus {
-        try await fetchUsageStatus(now: now).quota
+    func fetchQuota(now: Date? = nil) async throws -> AgentQuotaStatus {
+        let now = now ?? clock()
+        return try await fetchUsageStatus(now: now).quota
     }
 
-    func fetchUsageStatus(now: Date = Date()) async throws -> CodexUsageStatus {
-        try await fetchUsageStatus(now: now, route: .oauthAPI)
+    func fetchUsageStatus(now: Date? = nil) async throws -> CodexUsageStatus {
+        let now = now ?? clock()
+        return try await fetchUsageStatus(now: now, route: .oauthAPI)
     }
 
     func fetchUsageStatus(
-        now: Date = Date(),
+        now: Date? = nil,
         route: CodexRateLimitFetchRoute,
         expectedAuthFingerprint: String? = nil
     ) async throws -> CodexUsageStatus {
+        let now = now ?? clock()
         try Task.checkCancellation()
         switch route {
         case .automatic(let cookieHeader, let importsBrowserCookies):
@@ -143,16 +149,17 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
     }
 
     func fetchRateLimitResetCredits(
-        now: Date = Date(),
+        now: Date? = nil,
         timeout: TimeInterval = 4,
         expectedAuthFingerprint: String? = nil
     ) async throws -> CodexRateLimitResetCreditsSnapshot {
+        let now = now ?? clock()
         try Task.checkCancellation()
         var credentials = try loadCredentials(expectedAuthFingerprint: expectedAuthFingerprint)
         guard credentials.source == .oauth else {
             throw CodexRateLimitFetchError.oauthCredentialsRequired
         }
-        if credentials.needsRefresh {
+        if credentials.needsRefresh(at: now) {
             credentials = try await refresh(credentials)
             credentials = try saveIfNeeded(credentials)
             try Task.checkCancellation()
@@ -205,7 +212,7 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
         expectedAuthFingerprint: String?
     ) async throws -> CodexUsageStatus {
         var credentials = try loadCredentials(expectedAuthFingerprint: expectedAuthFingerprint)
-        if credentials.needsRefresh {
+        if credentials.needsRefresh(at: now) {
             credentials = try await refresh(credentials)
             credentials = try saveIfNeeded(credentials)
             try Task.checkCancellation()
@@ -1112,10 +1119,10 @@ private struct CodexCredentials {
     let authFileFingerprint: String
     let authFileData: Data
 
-    var needsRefresh: Bool {
+    func needsRefresh(at now: Date) -> Bool {
         guard source == .oauth, !refreshToken.isEmpty else { return false }
         guard let lastRefresh else { return true }
-        return Date().timeIntervalSince(lastRefresh) > 8 * 24 * 60 * 60
+        return now.timeIntervalSince(lastRefresh) > 8 * 24 * 60 * 60
     }
 
     var canPersist: Bool {
