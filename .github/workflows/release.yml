@@ -12,10 +12,11 @@ jobs:
   release:
     name: Build release artifacts
     runs-on: macos-26
+    environment: release
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
@@ -101,7 +102,7 @@ jobs:
         run: shasum -a 256 -c dist/AgentSignalBar-SHA256SUMS.txt
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           name: Agent Signal Bar ${{ github.ref_name }}
           body_path: dist/release-notes.md
