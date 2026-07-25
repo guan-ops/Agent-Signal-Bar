@@ -152,11 +152,6 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         }
         .store(in: &cancellables)
 
-        model.$trafficLightVerticalUsesMacOSSize.sink { [weak self] _ in
-            Task { @MainActor in self?.resizePanelForCurrentScale(keepingCenter: true) }
-        }
-        .store(in: &cancellables)
-
         model.$appTheme.sink { [weak self] _ in
             Task { @MainActor in self?.applyAppearance() }
         }
@@ -380,7 +375,6 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
     private func panelSize(forVisualScale visualScale: CGFloat) -> NSSize {
         let contentSize = model.floatingSignalScale.panelSize(
             layout: model.floatingSignalLayout,
-            trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
             visualScale: visualScale
         )
         return FloatingSignalPanelLayout.outerSize(
@@ -613,17 +607,14 @@ private struct FloatingSignalPanelView: View {
         let scale = effectiveVisualScale
         let contentSize = model.floatingSignalScale.panelSize(
             layout: model.floatingSignalLayout,
-            trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
             visualScale: scale
         )
         let signalSize = model.floatingSignalScale.signalFrameSize(
             layout: model.floatingSignalLayout,
-            trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
             visualScale: scale
         )
         let backingSize = model.floatingSignalScale.housingBackingSize(
             layout: model.floatingSignalLayout,
-            trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
             visualScale: scale
         )
         let contentOrigin = FloatingSignalPanelLayout.contentOrigin(scale: scale)
@@ -1316,7 +1307,6 @@ private struct FloatingSignalPanelView: View {
             scale: scale,
             layout: model.floatingSignalLayout,
             macOSBreathingStrength: model.macOSBreathingStrength,
-            trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
             allLightsOn: model.floatingSignalLightAllLightsOn,
             usesSystemGrayLights: model.floatingSignalLightUsesSystemGrayLights,
             effectCustomization: model.floatingSignalLightEffectCustomization
@@ -1405,7 +1395,6 @@ private struct FloatingSignalLightsView: View {
     let scale: CGFloat
     let layout: TrafficSignalLayout
     let macOSBreathingStrength: MacOSBreathingStrength
-    let trafficLightVerticalUsesMacOSSize: Bool
     let allLightsOn: Bool
     let usesSystemGrayLights: Bool
     let effectCustomization: SignalEffectCustomization
@@ -1429,7 +1418,7 @@ private struct FloatingSignalLightsView: View {
                 style: .trafficLight,
                 macOSBreathingStrength: macOSBreathingStrength,
                 macOSHorizontalUsesTrafficLightSize: false,
-                trafficLightVerticalUsesMacOSSize: trafficLightVerticalUsesMacOSSize,
+                trafficLightVerticalUsesMacOSSize: false,
                 allLightsOn: allLightsOn,
                 usesSystemGrayLights: usesSystemGrayLights,
                 effectCustomization: effectCustomization
@@ -2593,24 +2582,25 @@ private struct FloatingSignalQuotaPopoverView: View {
     let quota: AgentQuotaStatus
 
     var body: some View {
+        let badgeWindows = model.quotaBadgeWindows(for: quota)
+
         VStack(alignment: .leading, spacing: 7) {
             Text("Codex")
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
 
-            quotaRow(
-                quota: quota,
-                badgeWindow: .fiveHours
-            )
+            ForEach(Array(badgeWindows.enumerated()), id: \.element) { index, badgeWindow in
+                if index > 0 {
+                    Divider()
+                        .overlay(Color.white.opacity(0.12))
+                }
 
-            Divider()
-                .overlay(Color.white.opacity(0.12))
-
-            quotaRow(
-                quota: quota,
-                badgeWindow: .weekly
-            )
+                quotaRow(
+                    quota: quota,
+                    badgeWindow: badgeWindow
+                )
+            }
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
@@ -2627,6 +2617,10 @@ private struct FloatingSignalQuotaPopoverView: View {
         badgeWindow: FloatingSignalQuotaBadgeWindow
     ) -> some View {
         let window = model.quotaWindow(for: badgeWindow, quota: quota)
+        let selectedWindow = model.quotaWindow(
+            for: model.floatingSignalQuotaBadgeWindow,
+            quota: quota
+        )
 
         return Button {
             model.setFloatingSignalQuotaBadgeWindow(badgeWindow)
@@ -2648,7 +2642,7 @@ private struct FloatingSignalQuotaPopoverView: View {
 
                 Spacer(minLength: 8)
 
-                selectionCircle(isSelected: model.floatingSignalQuotaBadgeWindow == badgeWindow)
+                selectionCircle(isSelected: selectedWindow == window)
             }
             .frame(maxWidth: .infinity, minHeight: 31, alignment: .leading)
             .contentShape(Rectangle())

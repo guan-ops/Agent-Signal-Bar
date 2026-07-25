@@ -9,6 +9,7 @@ INSTALLED_APP="$INSTALL_DIR/$APP_NAME.app"
 LAUNCH_AGENT_PLIST="$HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
 STATE_DIR="${AGENT_SIGNAL_LIGHT_STATE_DIR:-/tmp/agent-signal}"
 HOOK_PROJECT_ROOT="${AGENT_SIGNAL_CODEX_PROJECT_ROOT:-$ROOT_DIR}"
+HOOK_HOME=""
 PURGE_STATE=0
 REMOVE_HOOKS=0
 KILL_RUNNING_APP=1
@@ -16,12 +17,13 @@ RUN_LAUNCHCTL=1
 
 usage() {
   cat <<EOF
-usage: $0 [--remove-hooks] [--purge-state] [--no-kill] [--no-launchctl]
+usage: $0 [--remove-hooks] [--hook-home DIR] [--purge-state] [--no-kill] [--no-launchctl]
 
 Uninstall Agent Signal Bar from the current user's Applications directory.
 
 Options:
   --remove-hooks  Remove Agent Signal Bar hooks from Codex and Claude config.
+  --hook-home DIR Use DIR for hook config paths. Intended for explicit alternate-home installs.
   --purge-state   Remove the state directory. Defaults to $STATE_DIR.
   --no-kill       Do not terminate running AgentSignalLight processes.
   --no-launchctl  Remove the launch-agent plist without calling launchctl.
@@ -66,6 +68,14 @@ while [[ $# -gt 0 ]]; do
       REMOVE_HOOKS=1
       shift
       ;;
+    --hook-home)
+      [[ $# -ge 2 && -n "$2" ]] || {
+        echo "--hook-home requires a directory" >&2
+        exit 2
+      }
+      HOOK_HOME="$2"
+      shift 2
+      ;;
     --purge-state)
       PURGE_STATE=1
       shift
@@ -98,12 +108,17 @@ if [[ "$REMOVE_HOOKS" -eq 1 ]]; then
   fi
 
   if [[ -n "$HOOK_INSTALLER" ]]; then
-    /usr/bin/python3 "$HOOK_INSTALLER" \
-      --target all \
-      --codex-scope both \
-      --project-root "$HOOK_PROJECT_ROOT" \
-      --remove \
+    HOOK_ARGS=(
+      --target all
+      --codex-scope both
+      --project-root "$HOOK_PROJECT_ROOT"
+      --remove
       --install
+    )
+    if [[ -n "$HOOK_HOME" ]]; then
+      HOOK_ARGS+=(--home "$HOOK_HOME")
+    fi
+    /usr/bin/python3 "$HOOK_INSTALLER" "${HOOK_ARGS[@]}"
 
     if [[ "$PWD" != "$HOOK_PROJECT_ROOT" && -f "$PWD/.codex/hooks.json" ]]; then
       /usr/bin/python3 "$HOOK_INSTALLER" \

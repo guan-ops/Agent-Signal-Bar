@@ -85,7 +85,7 @@ enum SignalIconGeometry {
 
     private static func compactTrafficLightVerticalMetrics() -> SignalIconMetrics {
         SignalIconMetrics(
-            iconSize: CGSize(width: 12, height: 24),
+            iconSize: CGSize(width: 16, height: 24),
             lampDiameter: 6,
             lampSpacing: 1
         )

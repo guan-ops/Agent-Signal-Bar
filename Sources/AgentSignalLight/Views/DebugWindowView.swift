@@ -356,6 +356,13 @@ struct DebugWindowView: View {
         case large
     }
 
+    private enum FloatingSignalSizeOption: Hashable {
+        case compact
+        case standard
+        case large
+        case custom
+    }
+
     private enum SettingsDropdownID: Hashable {
         case language
         case theme
@@ -499,12 +506,22 @@ struct DebugWindowView: View {
                     }
                 }
 
-                settingRow(model.text("新西兰原版模式", "New Zealand original mode")) {
-                    settingsSwitch(newZealandTrafficLightModeBinding)
-                        .help(model.text(
-                            "按新西兰行人红绿灯节奏慢闪，并将完成音和闪烁音切换为新西兰。",
-                            "Use the original New Zealand pedestrian crossing cadence and switch completion and blink sounds to New Zealand."
-                        ))
+                VStack(alignment: .leading, spacing: 3) {
+                    settingRow(model.text("新西兰原版模式", "New Zealand original mode")) {
+                        settingsSwitch(newZealandTrafficLightModeBinding)
+                            .help(model.text(
+                                "按新西兰行人红绿灯节奏慢闪，并将完成音和闪烁音切换为新西兰。",
+                                "Use the original New Zealand pedestrian crossing cadence and switch completion and blink sounds to New Zealand."
+                            ))
+                    }
+
+                    Text(model.text(
+                        "按新西兰行人红绿灯节奏慢闪，并将完成音和闪烁音切换为新西兰。",
+                        "Use the original New Zealand pedestrian crossing cadence and switch completion and blink sounds to New Zealand."
+                    ))
+                    .font(settingsDetailFont)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
 
                 soundAlertSettings
@@ -1879,31 +1896,10 @@ struct DebugWindowView: View {
 
     private func quotaWindowTiles(for quota: AgentQuotaStatus) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            ForEach(uniqueQuotaBadgeWindows(for: quota), id: \.self) { badgeWindow in
+            ForEach(model.quotaBadgeWindows(for: quota), id: \.self) { badgeWindow in
                 quotaWindowTile(badgeWindow, quota: quota)
             }
         }
-    }
-
-    private func uniqueQuotaBadgeWindows(for quota: AgentQuotaStatus) -> [FloatingSignalQuotaBadgeWindow] {
-        var result: [FloatingSignalQuotaBadgeWindow] = []
-        var seen: [AgentQuotaWindowStatus] = []
-
-        for badgeWindow in FloatingSignalQuotaBadgeWindow.allCases {
-            guard let window = model.quotaWindow(for: badgeWindow, quota: quota) else { continue }
-            guard !seen.contains(where: { quotaWindow($0, matches: window) }) else { continue }
-            result.append(badgeWindow)
-            seen.append(window)
-        }
-
-        return result.isEmpty ? [.fiveHours] : result
-    }
-
-    private func quotaWindow(_ lhs: AgentQuotaWindowStatus, matches rhs: AgentQuotaWindowStatus) -> Bool {
-        lhs.windowMinutes == rhs.windowMinutes
-            && abs(lhs.remainingPercent - rhs.remainingPercent) < 0.001
-            && abs(lhs.usedPercent - rhs.usedPercent) < 0.001
-            && lhs.resetsAt == rhs.resetsAt
     }
 
     private var claudeUsageSessions: [SessionStatus] {
@@ -2804,30 +2800,34 @@ struct DebugWindowView: View {
                 }
             }
 
-            settingRow(model.text("圆点横向尺寸", "Horizontal dot size")) {
-                compactSegmentedControl(
-                    options: [DotHorizontalSizeOption.standard, .small],
-                    selection: macOSHorizontalSizeBinding
-                ) { option in
-                    switch option {
-                    case .standard:
-                        model.text("默认", "Default")
-                    case .small:
-                        model.text("小", "Small")
+            if model.statusBarStyle == .macOS && model.displayLayout == .horizontal {
+                settingRow(model.text("圆点横向尺寸", "Horizontal dot size")) {
+                    compactSegmentedControl(
+                        options: [DotHorizontalSizeOption.standard, .small],
+                        selection: macOSHorizontalSizeBinding
+                    ) { option in
+                        switch option {
+                        case .standard:
+                            model.text("默认", "Default")
+                        case .small:
+                            model.text("小", "Small")
+                        }
                     }
                 }
             }
 
-            settingRow(model.text("灯牌竖向尺寸", "Vertical lamp size")) {
-                compactSegmentedControl(
-                    options: [LampVerticalSizeOption.standard, .large],
-                    selection: lampVerticalSizeBinding
-                ) { option in
-                    switch option {
-                    case .standard:
-                        model.text("默认", "Default")
-                    case .large:
-                        model.text("大", "Large")
+            if model.statusBarStyle == .trafficLight && model.displayLayout == .vertical {
+                settingRow(model.text("灯牌竖向尺寸", "Vertical lamp size")) {
+                    compactSegmentedControl(
+                        options: [LampVerticalSizeOption.standard, .large],
+                        selection: lampVerticalSizeBinding
+                    ) { option in
+                        switch option {
+                        case .standard:
+                            model.text("默认", "Default")
+                        case .large:
+                            model.text("大", "Large")
+                        }
                     }
                 }
             }
@@ -2845,21 +2845,36 @@ struct DebugWindowView: View {
                 }
             }
 
-            settingRow(model.text("悬浮灯大小", "Floating signal size")) {
-                Button {
-                    model.setFloatingSignalScale(.standard)
-                } label: {
-                    settingsActionSurface(
-                        model.text("恢复默认大小", "Restore Default Size"),
-                        systemImage: "arrow.counterclockwise"
-                    )
+            VStack(alignment: .leading, spacing: 3) {
+                settingRow(model.text("悬浮灯大小", "Floating signal size")) {
+                    compactSegmentedControl(
+                        options: floatingSignalSizeOptions,
+                        selection: floatingSignalSizeBinding
+                    ) { option in
+                        switch option {
+                        case .compact:
+                            model.text("小", "Small")
+                        case .standard:
+                            model.text("默认", "Default")
+                        case .large:
+                            model.text("大", "Large")
+                        case .custom:
+                            model.text("自定义", "Custom")
+                        }
+                    }
+                    .help(model.text(
+                        "选择横向和竖向共用的尺寸预设。",
+                        "Choose a size preset shared by horizontal and vertical layouts."
+                    ))
                 }
-                .buttonStyle(.plain)
-                .disabled(abs(model.floatingSignalVisualScale - FloatingSignalScale.defaultVisualScale) < 0.01)
-                .help(model.text(
-                    "恢复为中号（默认）的悬浮灯大小。",
-                    "Restore the medium (default) floating signal size."
+
+                Text(model.text(
+                    "尺寸预设同时适用于横向和竖向；拖动灯牌右下角箭头可自由微调。",
+                    "Size presets apply to both horizontal and vertical layouts; drag the bottom-right handle for custom sizing."
                 ))
+                .font(settingsDetailFont)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             settingsSubsection(model.text("角标", "Badges")) {
@@ -2874,8 +2889,8 @@ struct DebugWindowView: View {
                 settingRow(model.text("额度角标", "Quota badge")) {
                     settingsSwitch(floatingSignalQuotaBadgeEnabledBinding)
                         .help(model.text(
-                            "显示 Agent 剩余额度百分比，点击可查看 5 小时和一周额度。",
-                            "Show remaining agent quota percentage; click to view 5-hour and weekly quotas."
+                            "显示 Agent 剩余额度百分比，点击可查看当前可用的额度周期。",
+                            "Show remaining agent quota percentage; click to view the available quota windows."
                         ))
                 }
 
@@ -4872,6 +4887,43 @@ struct DebugWindowView: View {
         Binding(
             get: { model.macOSHorizontalUsesTrafficLightSize ? .standard : .small },
             set: { model.setMacOSHorizontalUsesTrafficLightSize($0 == .standard) }
+        )
+    }
+
+    private var floatingSignalSizeOptions: [FloatingSignalSizeOption] {
+        let presets: [FloatingSignalSizeOption] = [.compact, .standard, .large]
+        return currentFloatingSignalSizeOption == .custom ? presets + [.custom] : presets
+    }
+
+    private var currentFloatingSignalSizeOption: FloatingSignalSizeOption {
+        let scale = model.floatingSignalVisualScale
+        if abs(scale - FloatingSignalScale.compact.visualScale) < 0.01 {
+            return .compact
+        }
+        if abs(scale - FloatingSignalScale.standard.visualScale) < 0.01 {
+            return .standard
+        }
+        if abs(scale - FloatingSignalScale.large.visualScale) < 0.01 {
+            return .large
+        }
+        return .custom
+    }
+
+    private var floatingSignalSizeBinding: Binding<FloatingSignalSizeOption> {
+        Binding(
+            get: { currentFloatingSignalSizeOption },
+            set: { option in
+                switch option {
+                case .compact:
+                    model.setFloatingSignalScale(.compact)
+                case .standard:
+                    model.setFloatingSignalScale(.standard)
+                case .large:
+                    model.setFloatingSignalScale(.large)
+                case .custom:
+                    break
+                }
+            }
         )
     }
 

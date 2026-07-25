@@ -300,6 +300,25 @@ extension MenuBarStatusModel {
         }
     }
 
+    func quotaBadgeWindows(for quota: AgentQuotaStatus) -> [FloatingSignalQuotaBadgeWindow] {
+        if quota.secondaryWindow == nil,
+           quota.primaryWindow?.windowMinutes == 7 * 24 * 60 {
+            return [.weekly]
+        }
+
+        var result: [FloatingSignalQuotaBadgeWindow] = []
+        var seen: [AgentQuotaWindowStatus] = []
+
+        for badgeWindow in FloatingSignalQuotaBadgeWindow.allCases {
+            guard let window = quotaWindow(for: badgeWindow, quota: quota) else { continue }
+            guard !seen.contains(window) else { continue }
+            result.append(badgeWindow)
+            seen.append(window)
+        }
+
+        return result.isEmpty ? [.fiveHours] : result
+    }
+
     func quotaPercentText(for window: AgentQuotaWindowStatus?) -> String {
         guard let window else {
             return "--"
@@ -1024,9 +1043,15 @@ private enum AppLocalization {
         "Light Agent": localized(zhHant: "燈效 Agent", ja: "信号対象", ko: "신호 Agent", es: "Agent de luz", fr: "Agent du signal", de: "Signal Agent", pt: "Agent do sinal"),
         "Horizontal dot size": localized(zhHant: "圓點橫向尺寸", ja: "横ドットサイズ", ko: "가로 점 크기", es: "Tamano horizontal del punto", fr: "Taille horizontale du point", de: "Horizontale Punktgroesse", pt: "Tamanho horizontal do ponto"),
         "Vertical lamp size": localized(zhHant: "燈牌直向尺寸", ja: "縦ランプサイズ", ko: "세로 램프 크기", es: "Tamano vertical de la lampara", fr: "Taille verticale du feu", de: "Vertikale Lampengroesse", pt: "Tamanho vertical da lampada"),
+        "Floating Signal": localized(zhHant: "懸浮信號燈", ja: "フローティング信号", ko: "플로팅 신호등", es: "Senal flotante", fr: "Signal flottant", de: "Schwebendes Signal", pt: "Sinal flutuante"),
+        "Floating signal direction": localized(zhHant: "懸浮信號燈方向", ja: "フローティング信号の向き", ko: "플로팅 신호등 방향", es: "Direccion de la senal flotante", fr: "Direction du signal flottant", de: "Ausrichtung des schwebenden Signals", pt: "Direcao do sinal flutuante"),
+        "Floating signal size": localized(zhHant: "懸浮信號燈尺寸", ja: "フローティング信号のサイズ", ko: "플로팅 신호등 크기", es: "Tamano de la senal flotante", fr: "Taille du signal flottant", de: "Groesse des schwebenden Signals", pt: "Tamanho do sinal flutuante"),
         "Default": localized(zhHant: "預設", ja: "標準", ko: "기본", es: "Predeterminado", fr: "Par defaut", de: "Standard", pt: "Padrao"),
         "Small": localized(zhHant: "小", ja: "小", ko: "작게", es: "Pequeno", fr: "Petit", de: "Klein", pt: "Pequeno"),
         "Large": localized(zhHant: "大", ja: "大", ko: "크게", es: "Grande", fr: "Grand", de: "Gross", pt: "Grande"),
+        "Custom": localized(zhHant: "自訂", ja: "カスタム", ko: "사용자 지정", es: "Personalizado", fr: "Personnalise", de: "Benutzerdefiniert", pt: "Personalizado"),
+        "Choose a size preset shared by horizontal and vertical layouts.": localized(zhHant: "選擇橫向與直向共用的尺寸預設。", ja: "横向きと縦向きで共通のサイズプリセットを選択します。", ko: "가로 및 세로 레이아웃에 공통으로 적용할 크기 프리셋을 선택합니다.", es: "Elige un tamano preestablecido para los disenos horizontal y vertical.", fr: "Choisissez une taille commune aux dispositions horizontale et verticale.", de: "Waehle eine gemeinsame Groessenvoreinstellung fuer horizontale und vertikale Layouts.", pt: "Escolha um tamanho predefinido para os layouts horizontal e vertical."),
+        "Size presets apply to both horizontal and vertical layouts; drag the bottom-right handle for custom sizing.": localized(zhHant: "尺寸預設同時適用於橫向與直向；拖動右下角控制點可自由微調。", ja: "サイズプリセットは横向きと縦向きの両方に適用されます。右下のハンドルをドラッグして自由に調整できます。", ko: "크기 프리셋은 가로 및 세로 레이아웃에 모두 적용됩니다. 오른쪽 아래 핸들을 드래그해 자유롭게 조정할 수 있습니다.", es: "Los preajustes se aplican a los disenos horizontal y vertical; arrastra el control inferior derecho para ajustar el tamano.", fr: "Les prereglages s'appliquent aux dispositions horizontale et verticale ; faites glisser la poignee en bas a droite pour ajuster la taille.", de: "Voreinstellungen gelten fuer horizontale und vertikale Layouts; ziehe den Griff unten rechts fuer eine freie Groessenanpassung.", pt: "As predefinicoes valem para os layouts horizontal e vertical; arraste a alca inferior direita para ajustar o tamanho."),
         "Enable signal test": localized(zhHant: "啟用燈效測試", ja: "テスト有効", ko: "신호 테스트 켜기", es: "Activar prueba de senal", fr: "Activer le test du signal", de: "Signaltest aktivieren", pt: "Ativar teste de sinal"),
         "Turn this off to leave manual testing and return to live agent status.": localized(zhHant: "關閉後會退出手動測試，並恢復真實 Agent 狀態。", ja: "オフにすると手動テストを終了し、実際の Agent 状態に戻ります。", ko: "끄면 수동 테스트를 종료하고 실제 Agent 상태로 돌아갑니다.", es: "Desactivalo para salir de la prueba manual y volver al estado real del Agent.", fr: "Desactivez pour quitter le test manuel et revenir a l'etat reel de l'agent.", de: "Ausschalten beendet den manuellen Test und kehrt zum echten Agent Status zurueck.", pt: "Desative para sair do teste manual e voltar ao status real do Agent."),
         "Idle": localized(zhHant: "空閒", ja: "待機中", ko: "유휴", es: "Inactivo", fr: "Inactif", de: "Leerlauf", pt: "Ocioso"),

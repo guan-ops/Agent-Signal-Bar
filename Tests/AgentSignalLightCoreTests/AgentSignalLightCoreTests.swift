@@ -143,24 +143,28 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
     func testFloatingSignalGeometryTracksLayout() {
         let scale = FloatingSignalScale.standard
-        let verticalLamp = scale.panelSize(
-            layout: .vertical,
-            trafficLightVerticalUsesMacOSSize: false
-        )
-        let horizontalLamp = scale.panelSize(
-            layout: .horizontal,
-            trafficLightVerticalUsesMacOSSize: false
-        )
-        let horizontalBacking = scale.housingBackingSize(
-            layout: .horizontal,
-            trafficLightVerticalUsesMacOSSize: false
-        )
+        let verticalLamp = scale.panelSize(layout: .vertical)
+        let horizontalLamp = scale.panelSize(layout: .horizontal)
+        let horizontalBacking = scale.housingBackingSize(layout: .horizontal)
 
         XCTAssertEqual(verticalLamp.width, 34 * scale.visualScale, accuracy: 0.01)
         XCTAssertEqual(verticalLamp.height, 74 * scale.visualScale, accuracy: 0.01)
         XCTAssertGreaterThan(horizontalLamp.width, verticalLamp.width)
         XCTAssertLessThan(horizontalLamp.height, verticalLamp.height)
         XCTAssertEqual(horizontalBacking.height, (16 + 12) * scale.visualScale, accuracy: 0.01)
+    }
+
+    func testFloatingSignalPresetSizesGrowInBothLayouts() {
+        for layout in TrafficSignalLayout.allCases {
+            let compact = FloatingSignalScale.compact.panelSize(layout: layout)
+            let standard = FloatingSignalScale.standard.panelSize(layout: layout)
+            let large = FloatingSignalScale.large.panelSize(layout: layout)
+
+            XCTAssertLessThan(compact.width, standard.width)
+            XCTAssertLessThan(compact.height, standard.height)
+            XCTAssertLessThan(standard.width, large.width)
+            XCTAssertLessThan(standard.height, large.height)
+        }
     }
 
     func testSignalNormalizationAcceptsHumanInputVariants() {
@@ -3116,6 +3120,58 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssertEqual(model.displayName(for: monthlyWindow, fallback: .fiveHours), "30 天")
         XCTAssertEqual(model.quotaTitleLine(for: .fiveHours, quota: quota), "30 天 · 剩余 95%")
+    }
+
+    @MainActor
+    func testWeeklyOnlyQuotaUsesOneWeeklyBadgeWindow() {
+        let model = makeMenuBarStatusModel()
+        model.appLanguage = .zhHans
+        let weeklyWindow = AgentQuotaWindowStatus(
+            remainingPercent: 84,
+            usedPercent: 16,
+            windowMinutes: 10_080,
+            resetsAt: Date(timeIntervalSince1970: 1_782_375_582)
+        )
+        let quota = AgentQuotaStatus(
+            remainingPercent: weeklyWindow.remainingPercent,
+            usedPercent: weeklyWindow.usedPercent,
+            windowMinutes: weeklyWindow.windowMinutes,
+            resetsAt: weeklyWindow.resetsAt,
+            updatedAt: Date(timeIntervalSince1970: 1_782_000_000),
+            primary: weeklyWindow,
+            secondary: nil
+        )
+
+        XCTAssertEqual(model.quotaBadgeWindows(for: quota), [.weekly])
+        XCTAssertEqual(model.quotaTitleLine(for: .weekly, quota: quota), "一周 · 剩余 84%")
+    }
+
+    @MainActor
+    func testFiveHourAndWeeklyQuotaUseTwoBadgeWindows() {
+        let model = makeMenuBarStatusModel()
+        let fiveHourWindow = AgentQuotaWindowStatus(
+            remainingPercent: 70,
+            usedPercent: 30,
+            windowMinutes: 300,
+            resetsAt: Date(timeIntervalSince1970: 1_782_000_000)
+        )
+        let weeklyWindow = AgentQuotaWindowStatus(
+            remainingPercent: 80,
+            usedPercent: 20,
+            windowMinutes: 10_080,
+            resetsAt: Date(timeIntervalSince1970: 1_782_500_000)
+        )
+        let quota = AgentQuotaStatus(
+            remainingPercent: fiveHourWindow.remainingPercent,
+            usedPercent: fiveHourWindow.usedPercent,
+            windowMinutes: fiveHourWindow.windowMinutes,
+            resetsAt: fiveHourWindow.resetsAt,
+            updatedAt: Date(timeIntervalSince1970: 1_781_900_000),
+            primary: fiveHourWindow,
+            secondary: weeklyWindow
+        )
+
+        XCTAssertEqual(model.quotaBadgeWindows(for: quota), [.fiveHours, .weekly])
     }
 
     @MainActor

@@ -10,12 +10,10 @@ enum FloatingSignalScale: String, CaseIterable, Hashable {
 
     func panelSize(
         layout: TrafficSignalLayout,
-        trafficLightVerticalUsesMacOSSize: Bool,
         visualScale: CGFloat? = nil
     ) -> NSSize {
         let frameSize = signalFrameSize(
             layout: layout,
-            trafficLightVerticalUsesMacOSSize: trafficLightVerticalUsesMacOSSize,
             visualScale: visualScale
         )
         return NSSize(width: frameSize.width, height: frameSize.height)
@@ -42,13 +40,9 @@ enum FloatingSignalScale: String, CaseIterable, Hashable {
 
     func signalFrameSize(
         layout: TrafficSignalLayout,
-        trafficLightVerticalUsesMacOSSize: Bool,
         visualScale: CGFloat? = nil
     ) -> CGSize {
-        let contentSize = signalContentSize(
-            layout: layout,
-            trafficLightVerticalUsesMacOSSize: trafficLightVerticalUsesMacOSSize
-        )
+        let contentSize = signalContentSize(layout: layout)
         let baseSize: CGSize
         switch layout {
         case .horizontal:
@@ -65,13 +59,9 @@ enum FloatingSignalScale: String, CaseIterable, Hashable {
 
     func housingBackingSize(
         layout: TrafficSignalLayout,
-        trafficLightVerticalUsesMacOSSize: Bool,
         visualScale: CGFloat? = nil
     ) -> CGSize {
-        let contentSize = signalContentSize(
-            layout: layout,
-            trafficLightVerticalUsesMacOSSize: trafficLightVerticalUsesMacOSSize
-        )
+        let contentSize = signalContentSize(layout: layout)
         let resolvedScale = Self.clampedVisualScale(visualScale ?? self.visualScale)
         return CGSize(width: contentSize.width * resolvedScale, height: contentSize.height * resolvedScale)
     }
@@ -98,19 +88,10 @@ enum FloatingSignalScale: String, CaseIterable, Hashable {
         }
     }
 
-    private func signalContentSize(
-        layout: TrafficSignalLayout,
-        trafficLightVerticalUsesMacOSSize: Bool
-    ) -> CGSize {
+    private func signalContentSize(layout: TrafficSignalLayout) -> CGSize {
         let diameter: CGFloat = 16
-        let spacing = lampSpacing(
-            layout: layout,
-            trafficLightVerticalUsesMacOSSize: trafficLightVerticalUsesMacOSSize
-        )
-        let padding = signalPadding(
-            layout: layout,
-            trafficLightVerticalUsesMacOSSize: trafficLightVerticalUsesMacOSSize
-        )
+        let spacing = lampSpacing(layout: layout)
+        let padding = signalPadding(layout: layout)
         let lampSpan = diameter * 3 + spacing * 2
         switch layout {
         case .horizontal:
@@ -126,23 +107,12 @@ enum FloatingSignalScale: String, CaseIterable, Hashable {
         }
     }
 
-    private func lampSpacing(
-        layout: TrafficSignalLayout,
-        trafficLightVerticalUsesMacOSSize: Bool
-    ) -> CGFloat {
-        if layout == .vertical && trafficLightVerticalUsesMacOSSize {
-            return 3
-        }
+    private func lampSpacing(layout: TrafficSignalLayout) -> CGFloat {
         return layout == .vertical ? 5 : 8
     }
 
-    private func signalPadding(
-        layout: TrafficSignalLayout,
-        trafficLightVerticalUsesMacOSSize: Bool
-    ) -> EdgeInsets {
+    private func signalPadding(layout: TrafficSignalLayout) -> EdgeInsets {
         switch layout {
-        case .vertical where trafficLightVerticalUsesMacOSSize:
-            return EdgeInsets(top: 5, leading: 5, bottom: 5, trailing: 5)
         case .horizontal:
             return EdgeInsets(top: 6, leading: 7, bottom: 6, trailing: 7)
         case .vertical:

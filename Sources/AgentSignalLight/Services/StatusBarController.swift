@@ -415,8 +415,9 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         menu.addItem(infoMenuItem(title: model.text("Codex 会话", "Codex Session")))
 
         if let quota = model.latestAgentQuota {
-            menu.addItem(infoMenuItem(title: model.quotaTitleLine(for: .fiveHours, quota: quota)))
-            menu.addItem(infoMenuItem(title: model.quotaTitleLine(for: .weekly, quota: quota)))
+            for badgeWindow in model.quotaBadgeWindows(for: quota) {
+                menu.addItem(infoMenuItem(title: model.quotaTitleLine(for: badgeWindow, quota: quota)))
+            }
         } else {
             menu.addItem(infoMenuItem(title: model.text("暂无会话数据", "No session data yet")))
         }

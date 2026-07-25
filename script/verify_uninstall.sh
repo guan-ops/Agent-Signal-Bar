@@ -143,7 +143,12 @@ printf '{"aggregate":"working"}\n' >"$STATE_DIR/status.json"
 HOME="$TMP_HOME" \
 AGENT_SIGNAL_APP_INSTALL_DIR="$INSTALL_DIR" \
 AGENT_SIGNAL_LIGHT_STATE_DIR="$STATE_DIR" \
-"$ROOT_DIR/script/uninstall_app.sh" --remove-hooks --purge-state --no-kill --no-launchctl >"$TMP_ROOT/uninstall.out"
+"$ROOT_DIR/script/uninstall_app.sh" \
+  --remove-hooks \
+  --hook-home "$TMP_HOME" \
+  --purge-state \
+  --no-kill \
+  --no-launchctl >"$TMP_ROOT/uninstall.out"
 
 [[ ! -e "$INSTALLED_APP" ]] || die "uninstall did not remove app"
 [[ ! -e "$LAUNCH_AGENT_PLIST" ]] || die "uninstall did not remove launch-agent plist"

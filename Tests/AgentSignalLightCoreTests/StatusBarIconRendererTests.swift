@@ -99,7 +99,7 @@ final class StatusBarIconRendererTests: XCTestCase {
             trafficLightVerticalUsesMacOSSize: true
         )
 
-        XCTAssert(trafficLight.imageSize == CGSize(width: 12, height: 24))
+        XCTAssert(trafficLight.imageSize == CGSize(width: 16, height: 24))
         XCTAssert(macOS.imageSize == CGSize(width: 10, height: 18))
         XCTAssert(defaultTrafficLight.imageSize == CGSize(width: 14, height: 22))
         XCTAssert(horizontalTrafficLight.imageSize == CGSize(width: 40, height: 20))
@@ -108,7 +108,7 @@ final class StatusBarIconRendererTests: XCTestCase {
                 layout: .vertical,
                 style: .trafficLight,
                 trafficLightVerticalUsesMacOSSize: true
-            ) == 12
+            ) == 16
         )
         XCTAssert(trafficLight.count(where: \.isDarkHousingPixel) > macOS.count(where: \.isDarkHousingPixel))
         XCTAssert(trafficLight.count(where: \.isGreenLampPixel) > macOS.count(where: \.isGreenLampPixel))
