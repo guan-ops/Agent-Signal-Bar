@@ -64,7 +64,7 @@
     </g>
 
     <text x="78" y="230" fill="#ffffff" font-size="72" font-weight="900" letter-spacing="0">
-      Know what every AI agent
+      Know what your AI agent
     </text>
     <text x="78" y="318" fill="#ffffff" font-size="72" font-weight="900" letter-spacing="0">
       is doing, <tspan fill="#fb7185">from your</tspan>
@@ -74,7 +74,7 @@
     </text>
 
     <text x="80" y="462" class="muted" font-size="25" font-weight="650">
-      Codex and Claude activity, visible from your menu bar through red, yellow, and green status lights
+      Codex activity, Claude Code hooks, and custom agents—visible through red, yellow, and green signals
     </text>
 
     <g transform="translate(80 520)">

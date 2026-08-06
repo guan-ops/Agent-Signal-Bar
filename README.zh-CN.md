@@ -1,367 +1,214 @@
-<h1 align="center">Agent Signal Bar</h1>
+<h1 align="center">Agent Signal Bar 🚦</h1>
 
 <p align="center">
-  <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a>
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
 <p align="center">
-  <strong>本地 AI Agent 的 macOS 状态栏 + 桌面悬浮信号灯。</strong>
+  <strong>无需切回终端，也能一眼看出 AI Agent 正在工作、已经完成、遇到阻塞，还是正在等你。</strong>
 </p>
 
 <p align="center">
-  桌面悬浮信号灯 · 新西兰红绿灯声音 · 本地优先 · Codex Desktop 自动监控 · Claude Code Hook
+  Codex 自动监控 · Claude Code Hook · 自定义 Agent · 本地优先
 </p>
 
 <p align="center">
-  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/release-v1.5.7-111827.svg" alt="最新版本：v1.5.7"></a>
-  <img src="https://img.shields.io/badge/macOS-14%2B-111827.svg" alt="macOS 14+">
-  <img src="https://img.shields.io/badge/Swift-6.0-F05138.svg" alt="Swift 6.0">
-  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/download-DMG-0ea5e9.svg" alt="下载 DMG"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-635bff.svg" alt="Apache License 2.0"></a>
-  <a href="https://agentsignalbar.app"><img src="https://img.shields.io/badge/site-agentsignalbar.app-14b8a6.svg" alt="官网：agentsignalbar.app"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/github/v/release/guan-ops/Agent-Signal-Bar?style=flat-square&amp;color=111827" alt="最新版本"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/macOS-14%2B-111827?style=flat-square" alt="macOS 14+"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-0ea5e9?style=flat-square" alt="同时支持 Apple Silicon 和 Intel Mac"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-635bff?style=flat-square" alt="Apache License 2.0"></a>
+  <a href="https://agentsignalbar.app"><img src="https://img.shields.io/badge/site-agentsignalbar.app-14b8a6?style=flat-square" alt="官网：agentsignalbar.app"></a>
 </p>
 
 <p align="center">
   <a href="https://agentsignalbar.app">
-    <img src="docs/assets/readme-hero-zh-CN.svg?v=20260603-2320" alt="Agent Signal Bar 官网横幅预览图" width="100%">
+    <img src="docs/assets/readme-hero-zh-CN.svg?v=20260805-1" alt="Agent Signal Bar 用状态栏红黄绿信号灯显示本地 AI Agent 活动" width="100%">
   </a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/AgentSignalBar.dmg"><strong>下载最新版 DMG</strong></a>
+  · <a href="https://agentsignalbar.app">官网</a>
+  · <a href="CHANGELOG.md">更新日志</a>
+</p>
+
+Agent Signal Bar 把本地 AI Agent 活动转换成一套简单的红黄绿灯语，显示在 macOS 状态栏和可选的桌面悬浮信号灯中。它能从已知的本地 session 日志自动识别 Codex Desktop、CLI/TUI、VS Code、Xcode 和 IDEA 中的活动；可选 Hook 可补充授权请求和低延迟事件。Claude Code、本地脚本和自定义 Agent 则可以通过本地 Hook、内置 CLI 或 JSON 事件接入。
+
+## 为什么需要 Agent Signal Bar
+
+- **保持工作节奏。** 不用反复打开终端或编辑器，也能知道 Agent 正在思考、执行还是已经完成。
+- **及时处理重要状态。** 授权与失败状态拥有更高优先级，不会被普通工作事件盖掉红灯提醒。
+- **让状态始终可见。** 可以使用紧凑的状态栏信号灯、可拖动的桌面悬浮灯，也可以同时开启两者。
+- **把控制留在本机。** 核心活动监控读取已知的本地日志与状态文件，不要求注册 Agent Signal Bar 账号，也不依赖项目后端。
+
+## 安装
+
+### 系统要求
+
+- macOS 14 Sonoma 或更高版本
+- Apple Silicon 或 Intel Mac
+
+### 下载与首次打开
+
+1. 从最新 GitHub Release 下载 [`AgentSignalBar.dmg`](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/AgentSignalBar.dmg)。
+2. 打开 DMG，把 `AgentSignalLight.app` 拖入 `Applications`。
+3. 从 `Applications` 打开 Agent Signal Bar。
+
+> [!NOTE]
+> 当前 GitHub 构建使用 ad-hoc 签名，尚未进行 notarization 公证。如果 Gatekeeper 阻止首次启动，请右键 App 并选择 **打开**，或前往 **系统设置 → 隐私与安全性 → 仍要打开**。
+
+绿色的 **Code → Download ZIP** 按钮下载的是源码，不是 App 安装包。安装后可以通过 **Agent Signal Bar → 检查更新…** 或 **设置 → 关于 → 更新** 使用 Sparkle 更新。
+
+## 实际界面
+
 <table width="100%">
   <tr>
-    <td align="center" width="18%"><strong>布局</strong></td>
-    <td align="center" width="41%"><strong>极简圆点</strong></td>
-    <td align="center" width="41%"><strong>经典灯牌</strong></td>
+    <td align="center" width="26%"><strong>桌面悬浮灯</strong></td>
+    <td align="center" width="37%"><strong>复杂小菜单</strong></td>
+    <td align="center" width="37%"><strong>简约小菜单</strong></td>
   </tr>
   <tr>
-    <td align="center"><strong>横向</strong></td>
-    <td align="center"><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar 极简圆点横向动态状态栏预览" width="100%"></td>
-    <td align="center"><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar 经典灯牌横向动态状态栏预览" width="100%"></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>竖向</strong></td>
-    <td align="center"><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar 极简圆点竖向动态状态栏预览" width="100%"></td>
-    <td align="center"><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar 经典灯牌竖向动态状态栏预览" width="100%"></td>
+    <td align="center"><a href="docs/assets/floating-signal-light.png"><img src="docs/assets/floating-signal-light.png" alt="带额度、运行 Agent 数量和 Token 角标的 Agent Signal Bar 悬浮灯" width="250"></a></td>
+    <td align="center"><a href="docs/assets/menu-bar-panel-detailed-zh-CN.png"><img src="docs/assets/menu-bar-panel-detailed-zh-CN.png" alt="显示 Codex 当前会话和最近事件的 Agent Signal Bar 复杂小菜单" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/menu-bar-simple-zh-CN.png"><img src="docs/assets/menu-bar-simple-zh-CN.png" alt="显示 Codex 当前会话、额度和快捷操作的 Agent Signal Bar 简约小菜单" width="100%"></a></td>
   </tr>
 </table>
 
-<p align="center">
-  <em>所有风格都使用红、黄、绿依次亮灯效。</em>
-</p>
+以上全部是保留桌面环境的屏幕区域截图。悬浮信号灯可以常驻桌面并跟随状态栏同步变化，支持拖动、自由缩放、尺寸预设、横向或竖向布局，以及紧凑的 session 与用量浮层。
 
-Agent Signal Bar 是一个本地优先的 macOS 应用，用红、黄、绿三颗信号灯在状态栏和桌面悬浮层里显示本机 AI Agent 的运行状态。它适合常驻使用，让你不用切回终端或编辑器，也能快速判断 Codex、Claude Code 或本地脚本现在是否空闲、思考中、执行中、完成、需要授权或已经阻塞。
+### 运行与用量
 
-## 悬浮信号灯
-
-<p align="center">
-  <img src="docs/assets/floating-signal-light-v1.4.1.png" alt="Agent Signal Bar 带额度、运行数量和 Token 角标的桌面悬浮信号灯" width="286">
-</p>
-
-悬浮信号灯可以常驻桌面，并和状态栏信号灯同步闪烁。它支持拖动、缩放、横向/竖向布局、正在运行的 Agent 数字角标、额度角标、Token 用量角标，以及紧凑的当前会话和用量浮层。完成和绿灯闪烁可以分别设置提示音。
-
-试听内置的新西兰红绿灯声音：[绿灯闪烁音](Sources/AgentSignalLight/Resources/waiting-signal-nz.m4a) · [完成提示音](Sources/AgentSignalLight/Resources/completion-signal-nz.m4a)。
-
-## 下载和打开
-
-普通用户请从 [GitHub Releases](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest) 下载 App，不要点绿色的 `Code` 按钮。`Code > Download ZIP` 下载的是源码包，里面不会直接出现可双击打开的 App 安装包。
-
-1. 打开 [最新 Release](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest)。
-2. 下载 `AgentSignalBar.dmg`。
-3. 打开 DMG，把 `AgentSignalLight.app` 拖到 `Applications`。
-4. 从 `Applications` 打开 Agent Signal Bar。
-
-首次安装后，后续可以通过 `Agent Signal Bar > 检查更新...` 或 `设置 > 关于 > 更新` 让 Sparkle 直接下载并安装新版本。
-
-如果 macOS 首次打开时提示无法验证开发者，这是因为当前包还没有公证。可以右键 App 选择 `打开`，或到 `系统设置 > 隐私与安全性 > 仍要打开`。
-
-开发者也可以下载源码后运行 `./script/build_and_run.sh`。
-
-## 状态栏小菜单
-
-<table>
+<table width="100%">
   <tr>
-    <td align="center"><strong>复杂小菜单</strong></td>
-    <td align="center"><strong>简约小菜单</strong></td>
+    <td align="center" width="50%"><strong>运行</strong></td>
+    <td align="center" width="50%"><strong>用量</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/assets/menu-bar-panel-detailed-v1.2.2-zh-CN.png" alt="Agent Signal Bar 复杂状态栏小菜单" width="360"></td>
-    <td><img src="docs/assets/menu-bar-panel-simple-v1.2.2-zh-CN.png" alt="Agent Signal Bar 简约原生风格状态栏小菜单" width="360"></td>
+    <td align="center"><a href="docs/assets/settings-activity-zh-CN.png"><img src="docs/assets/settings-activity-zh-CN.png" alt="显示正在运行的 Codex 桌面版当前会话和最近事件的 Agent Signal Bar 运行页" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/settings-usage-zh-CN.png"><img src="docs/assets/settings-usage-zh-CN.png" alt="显示 Codex 额度、限额重置额度和 GPT-5.6 Token 估算明细的 Agent Signal Bar 用量页" width="100%"></a></td>
   </tr>
 </table>
 
-点击状态栏信号灯后，可以打开复杂小菜单或简约原生风格小菜单。两种模式都会显示当前状态和实时 Agent 活动。复杂小菜单保留暂停监控、设置和退出；简约小菜单会在需要时显示打开 Agent 的快捷项。
+运行页截图来自真实的本地 Codex 桌面版会话。用量页汇总 Codex 额度周期、限额重置额度、本地 Token 与估算费用历史和已保存账号切换；其中数值是纯本地演示数据，Token 图使用 GPT-5.6 数据，不包含任何个人账号或凭据数据。
 
-## 用量页面
+### 选择喜欢的外观
 
-<p align="center">
-  <img src="docs/assets/settings-usage-v1.4.1-zh-CN.png" alt="Agent Signal Bar 用量页，显示 Codex 额度、Token 用量图表和工具调用统计" width="720">
-</p>
-
-用量页会汇总 Codex 额度、本地 Token 使用量和从本地 Codex 日志统计出的工具调用。每日柱状图支持悬停查看详情，包括模型维度的 Token 和估算费用拆分。
-
-## 设置窗口液态玻璃对比
-
-<table>
+<table width="100%">
   <tr>
-    <td align="center"><strong>无液态玻璃</strong></td>
-    <td align="center"><strong>默认液态玻璃</strong></td>
+    <td align="center" width="50%"><strong>极简圆点</strong></td>
+    <td align="center" width="50%"><strong>经典灯牌</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/assets/settings-solid-zh-CN.png" alt="Agent Signal Bar 无液态玻璃设置窗口运行页" width="420"></td>
-    <td><img src="docs/assets/settings-liquid-glass-default-zh-CN.png" alt="Agent Signal Bar 默认标准液态玻璃效果下的设置窗口运行页" width="420"></td>
+    <td align="center"><img src="docs/assets/status-bar-minimal-dots.gif" alt="极简圆点信号灯动画" width="100%"></td>
+    <td align="center"><img src="docs/assets/status-bar-classic-lamp.gif" alt="经典灯牌信号灯动画" width="100%"></td>
   </tr>
 </table>
 
-两张图都是当前运行页的真实截图。左图是普通纯色设置窗口，右图是默认 `标准` 液态玻璃效果，可以看到桌面背景参与到窗口材质里。液态玻璃效果默认开启，可在 `通用 > 液态玻璃效果` 中切换 `标准 / 增强` 两档强度。
+两种风格都支持横向与竖向布局。你还可以调整闪烁速度、呼吸强度、各状态灯效、颜色主题、Liquid Glass 外观，以及完成或警告提示音——其中包括项目内置的新西兰行人过街声音。
 
-## 主要功能
+## 主要能力
 
-- macOS 状态栏红黄绿信号灯，支持横向和竖向显示。
-- 桌面悬浮信号灯，支持拖动、缩放、角标、当前会话浮层，并和状态栏同步闪烁。
-- 完成和绿灯闪烁可分别选择提示音，内置新西兰红绿灯声音。
-- 两种外观：经典灯牌和极简圆点。
-- 状态栏小菜单显示当前状态、正在运行的 Agent、最近活动、暂停/设置操作和退出入口。
-- 设置窗口包含运行、通用、连接、高级、关于五个页面。
-- 支持无需手动 Hook 的 Codex Desktop 本地活动监控，也支持可选 Codex Hook、Claude Code Hook 和通用 JSON 事件接入。
-- 支持多 session 聚合，不会让普通工作状态覆盖权限、失败或阻塞提醒。
-- 支持本地 CLI：脚本、自动化和其他 Agent 都可以写入同一个状态文件。
-- 支持多语言界面，可跟随系统语言，也可以手动切换。
-- 支持灯效自定义，可调整闪烁速度、呼吸强度和不同状态的灯效。
-- 支持主题切换和开机自启动。
-- 不需要云服务，状态文件、Hook 和诊断都保存在本机。
+- **状态栏与桌面信号灯**同步显示红、黄、绿三色动画。
+- **重要状态优先的多 session 聚合**，不会让普通工作事件覆盖授权、阻塞、失败和需要检查的状态。
+- **无需安装 Hook 的 Codex 监控**，覆盖 Desktop、CLI/TUI、VS Code、Xcode 和 IDEA，并提供 session、额度、Token 和费用视图。
+- **多个已保存 Codex 账号**，确保凭据、额度快照与限额重置数据和所选账号对应。
+- **详细与原生风格状态栏面板**，显示实时 session、最近活动、暂停、设置和相关 App 快捷入口。
+- **本地扩展接口**，包括 Codex Hook、Claude Code Hook、通用 JSON 适配器和 `agent-signal` CLI。
+- **适合桌面常驻的自定义选项**，包括两种视觉风格、尺寸预设、自由缩放、声音方案、主题、开机启动和多语言界面。
 
 ## 灯语
 
 | Agent 状态 | 默认灯效 | 含义 |
 | --- | --- | --- |
-| 空闲 `idle` | 绿灯常亮 | 没事，不用处理 |
-| 思考中 `thinking` | 绿灯快闪 | Agent 正在理解任务 |
-| 工作中 `working` | 绿灯慢闪 | 正在读写文件、运行工具或测试 |
-| 步骤完成 `tool_done` | 绿灯慢闪 | 一个步骤完成，工作流仍可能继续 |
-| 已完成 `done` | 绿灯常亮 | 任务完成，稍后自动回到空闲 |
-| 需要查看 `attention` / `notification` | 黄灯闪烁 | 有空看一下 |
-| 等待授权 `permission` / `permission_request` | 红灯闪烁 | 需要立即批准 |
+| 空闲 `idle` | 绿灯常亮 | 当前无需关注 |
+| 思考中 `thinking` | 绿灯快闪 | Agent 正在理解和推理任务 |
+| 工作中 `working` | 绿灯慢闪 | 正在编辑、运行工具或测试 |
+| 步骤完成 `tool_done` | 绿灯慢闪 | 一个步骤已经结束，工作流可能继续 |
+| 已完成 `done` | 绿灯常亮 | 任务完成，稍后回到空闲状态 |
+| 需要查看 `attention` / `notification` | 黄灯闪烁 | 有空时检查一下 |
+| 等待授权 `permission` / `permission_request` | 红灯闪烁 | 现在需要你的批准 |
 | 阻塞或失败 `blocked` / `failure` / `error` | 红灯快速闪烁 | 需要立即处理 |
-| 状态不可信 `stale` | 灰黄提示 | 状态文件过期、损坏或无法确认 |
-| 关闭 `off` / `pause` | 灯全灭或灰色静止 | 暂停显示 |
+| 状态不可信 `stale` | 灰黄提示 | 本地状态过期、损坏或不可信 |
+| 关闭 `off` / `pause` | 全灭或静止灰色 | 监控已暂停 |
 
-灯效可以在设置窗口的「高级」页面里自定义。默认设置为：
+红灯和黄灯状态不会被之后到达的普通工作事件覆盖。完整规则请查看[灯语与聚合优先级](docs/LAMP_LANGUAGE.md)。
 
-- 思考灯效：绿灯快闪
-- 工作灯效：绿灯慢闪
-- 完成灯效：绿灯常亮
+## 接入方式
 
-## 灯效预览图
+| 来源 | 连接方式 | 当前支持状态 |
+| --- | --- | --- |
+| Codex Desktop、CLI/TUI、VS Code、Xcode 和 IDEA | 已知的本地 Codex session 日志；可选 Hook | 无 Hook 活动监控已经实际验证；Hook 可补充授权和低延迟事件 |
+| Claude Code | Claude Code Hook | 未经过实机测试 |
+| 本地脚本与自定义 Agent | 内置 CLI 或通用 JSON 事件 | 通过共享本地状态模型支持 |
 
-<p align="center">
-  <img src="docs/assets/light-effects-landscape-zh-CN.gif" alt="Agent Signal Bar 灯效预览图" width="900">
-</p>
+可以从 [Codex 接入](docs/CODEX_SETUP.md)、[Claude Code 接入](docs/CLAUDE_CODE_SETUP.md)或[本地脚本接入](docs/LOCAL_SCRIPT_SETUP.md)开始。
 
-## 聚合优先级
+## 隐私与联网范围
 
-当多个 Agent 或多个 session 同时存在时，状态栏只显示当前最高优先级状态：
+Agent Signal Bar 是本地优先应用，但不应被理解为完全离线：
 
-```text
-paused > blocked > permission > needs_review > stale > active > completed > ready
-```
+- Agent 活动来自已知的本地 Codex 日志，或本地 Hook、CLI 与 JSON 状态。
+- 状态快照、Hook 事件、用量扫描缓存和导出的诊断包都留在 Mac 上，除非你主动选择分享。
+- 可选的 Codex 账号与额度功能会直接连接 OpenAI，并可使用本地 Codex 凭据或可选的 `chatgpt.com` 浏览器 session 数据。已保存账号凭据和手动输入的 Cookie 使用 macOS Keychain 存储。
+- 服务状态与更新检查会分别访问 OpenAI Status 和 GitHub/Sparkle。
+- 不要求 Agent Signal Bar 后端账号，也不依赖项目托管的云服务。
 
-这意味着红灯状态永远不会被普通工作状态覆盖；黄色提醒也不会被新的执行状态冲掉。`done` 默认停留 30 秒后自动回到空闲，避免完成态长期占用状态栏。
+## CLI 与自定义 Agent
 
-## 快速开始
-
-构建并运行：
-
-```bash
-./script/build_and_run.sh
-```
-
-验证 App 是否启动：
-
-```bash
-./script/build_and_run.sh --verify
-```
-
-打开设置窗口做 UI 验证：
-
-```bash
-./script/build_and_run.sh --ui-verify
-```
-
-运行本机诊断：
-
-```bash
-./script/doctor.sh
-./script/doctor.sh --full
-```
-
-打包本地 App：
-
-```bash
-./script/package_app.sh --release
-```
-
-生成 zip 和 DMG：
-
-```bash
-./script/package_release.sh
-```
-
-发布打包默认生成 universal macOS 可执行文件（`arm64 x86_64`），因此 DMG 和随附 CLI 可同时运行在 Apple Silicon 与 Intel Mac。发布产物会同时保留旧 Sparkle 入口（`appcast.xml`、`AgentSignalBar.dmg`）和迁移后的新入口（`AgentSignalBar-macos-universal-appcast.xml`、`AgentSignalBar-v<version>-macos-universal.dmg`）。只想生成本机单架构包时，可运行 `AGENT_SIGNAL_LIGHT_ARCHS=native ./script/package_release.sh`。
-
-Sparkle 更新 feed 会同时生成 `dist/appcast.xml`（给现有安装使用）和 `dist/AgentSignalBar-macos-universal-appcast.xml`（给迁移后的安装使用）。本地打包使用 Keychain 里的 Sparkle 签名密钥；GitHub Actions 需要在仓库 secret 中配置 `SPARKLE_PRIVATE_KEY`。
-
-## CLI 用法
-
-安装 CLI：
+安装内置 CLI wrapper：
 
 ```bash
 ./script/install_cli.sh
 ```
 
-写入状态：
+写入并查看状态：
 
 ```bash
-./scripts/agent-signal idle
-./scripts/agent-signal thinking --session codex-main --agent codex
-./scripts/agent-signal working --session codex-main --agent codex --event PreToolUse
-./scripts/agent-signal permission --session claude-main --agent claude-code --event PermissionRequest
-./scripts/agent-signal blocked --session job-1 --agent script --event Failed
-./scripts/agent-signal done --session codex-main --agent codex --event Stop
-```
-
-查看当前状态：
-
-```bash
-./scripts/agent-signal status
+./scripts/agent-signal working --session build-1 --agent script --event BuildStarted
+./scripts/agent-signal done --session build-1 --agent script --event BuildFinished
 ./scripts/agent-signal status --json
 ```
 
-重置为空闲：
+把任意命令包装成一次 Agent 运行：
 
 ```bash
-./scripts/agent-signal reset
+./scripts/agent-signal-run --session nightly-build --agent script -- ./run-build.sh
 ```
 
-把任意命令包装成 Agent 状态：
+完整事件协议与环境变量见[状态文件 schema](docs/STATE_SCHEMA.md)。
+
+## 从源码构建
+
+需要 macOS 14+、Swift 6 和完整的 Xcode 工具链。
 
 ```bash
-./scripts/agent-signal-run \
-  --session nightly-build \
-  --agent script \
-  -- ./run-build.sh
+./script/build_and_run.sh --verify
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+./script/doctor.sh
 ```
 
-## 接入 Agent
+发布打包与 Sparkle feed 细节见 [GitHub 发布管理](docs/GITHUB_RELEASES.md)和[发布检查清单](docs/RELEASE_CHECKLIST.md)。
 
-Codex Desktop 不需要手动安装 Hook 也可以使用。只要在 App 中保持「监控 Codex Desktop」开启，Agent Signal Bar 就会读取本机 Codex session 日志，自动识别思考中、工作中、步骤完成和完成状态。Hook 对 Codex Desktop 是可选项，但仍然适合 Codex CLI/TUI、Codex IDE 兼容、项目级自动化、Claude Code，以及其他会直接上报事件的本地 Agent。
+## 参与贡献
 
-Codex Desktop 活动来自本机 Codex session 日志。普通浏览器使用不会触发 Agent Signal Bar，除非它本身是某个正在执行工具的 Codex 任务的一部分。
+欢迎提交 Issue 和范围清晰的 Pull Request。
 
-接入验证状态：
+1. 如果发现 Bug，或计划修改需要讨论的产品行为，请先创建 [Issue](https://github.com/guan-ops/Agent-Signal-Bar/issues)。
+2. 保持改动范围聚焦，并维护本地优先的数据边界。
+3. 创建 Pull Request 前，请运行上面的构建验证和 Swift 测试。
 
-- Codex 已经过实际测试验证，完整支持。
-- Claude Code Hook 接入逻辑已实现，但尚未进行真实 Claude Code 工作流验证。
-
-当你需要 CLI/IDE 或 Claude Code 接入时，可以安装 Hook：
-
-```bash
-./script/install_hooks.py --target all --codex-scope project --dry-run
-./script/install_hooks.py --target all --codex-scope project --install
-```
-
-开发当前项目时建议使用 `--codex-scope project`，避免项目级和用户级 Codex Hook 同时触发。
-
-通用 JSON 接入：
-
-```bash
-echo '{"event":"AgentStarted","agent":"local-script","session_id":"local-main"}' \
-  | ./scripts/generic-agent-signal-hook
-
-echo '{"event":"ApprovalRequired","agent":"local-script","session_id":"local-main"}' \
-  | ./scripts/generic-agent-signal-hook
-```
-
-## 状态文件
-
-默认状态文件：
-
-```text
-/tmp/agent-signal/status.json
-```
-
-示例：
-
-```json
-{
-  "schema_version": 1,
-  "aggregate": "working",
-  "updated_at": "2026-05-28T03:45:00Z",
-  "sessions": {
-    "codex-main": {
-      "agent": "codex",
-      "signal": "working",
-      "last_event": "PreToolUse",
-      "updated_at": "2026-05-28T03:45:00Z"
-    }
-  },
-  "events": [
-    {
-      "id": "D4204E0A-5B5D-4DFB-A3BC-643E6C7C6F8F",
-      "session_id": "codex-main",
-      "agent": "codex",
-      "signal": "working",
-      "event": "PreToolUse",
-      "updated_at": "2026-05-28T03:45:00Z"
-    }
-  ]
-}
-```
-
-可用环境变量：
-
-```bash
-export AGENT_SIGNAL_LIGHT_STATE_FILE=/path/to/status.json
-export AGENT_SIGNAL_LIGHT_STATE_DIR=/tmp/agent-signal
-export AGENT_SIGNAL_LIGHT_EVENT_LIMIT=50
-export AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS=90
-export SIGNAL_LIGHT_SESSION_TTL_SECONDS=1800
-```
-
-## 项目结构
-
-```text
-Sources/
-  AgentSignalLight/        macOS App、状态栏、设置窗口
-  AgentSignalLightCore/    状态模型、聚合逻辑、Hook 映射
-  AgentSignalLightUI/      红绿灯渲染和图标几何
-  AgentSignalCLI/          agent-signal CLI
-scripts/                   CLI wrapper 和 Hook wrapper
-script/                    构建、安装、诊断、打包脚本
-docs/                      接入文档、状态文件 schema、发布检查清单
-Tests/                     Swift 测试
-```
+产品想法与一般问题可以放到 [GitHub Discussions](https://github.com/guan-ops/Agent-Signal-Bar/discussions)。
 
 ## 文档
 
-- [灯语说明](docs/LAMP_LANGUAGE.md)
-- [状态文件 schema](docs/STATE_SCHEMA.md)
-- [Codex 接入](docs/CODEX_SETUP.md)
-- [Claude Code 接入](docs/CLAUDE_CODE_SETUP.md)
-- [本地脚本接入](docs/LOCAL_SCRIPT_SETUP.md)
-- [GitHub 发布管理](docs/GITHUB_RELEASES.md)
-- [发布检查清单](docs/RELEASE_CHECKLIST.md)
-- [更新日志](CHANGELOG.md)
+- [灯语说明](docs/LAMP_LANGUAGE.md) · [状态文件 schema](docs/STATE_SCHEMA.md)
+- [Codex 接入](docs/CODEX_SETUP.md) · [Claude Code 接入](docs/CLAUDE_CODE_SETUP.md) · [本地脚本接入](docs/LOCAL_SCRIPT_SETUP.md)
+- [更新日志](CHANGELOG.md) · [GitHub 发布管理](docs/GITHUB_RELEASES.md) · [发布检查清单](docs/RELEASE_CHECKLIST.md)
 
-## 许可证
+## 致谢与许可证
 
-源码基于 [Apache License 2.0](LICENSE) 开源。
+Agent Signal Bar 由 XiongYang Guan（[guan-ops](https://github.com/guan-ops)）开发。项目内置的新西兰行人过街声音为本项目录制。
 
-非代码资产使用单独条款：
+Token 用量 JSONL 扫描改编自 Peter Steinberger 创建、使用 MIT License 的 [CodexBar](https://github.com/steipete/CodexBar)。完整作者归属记录在 [NOTICE](NOTICE) 中。
 
-- 内置音频文件，包括新西兰红绿灯声音，以及 App 图标、Logo、截图、GIF 和营销图片，适用
-  [ASSET_LICENSES.md](ASSET_LICENSES.md)。
-- `Agent Signal Bar` 名称和品牌资产适用 [TRADEMARKS.md](TRADEMARKS.md)。
-
-作者归属记录在 [NOTICE](NOTICE) 中。
-
-© 2026 XiongYang Guan ([guan-ops](https://github.com/guan-ops))
+源码基于 [Apache License 2.0](LICENSE) 开源。非代码资产使用 [ASSET_LICENSES.md](ASSET_LICENSES.md) 中的条款，项目名称与品牌资产适用 [TRADEMARKS.md](TRADEMARKS.md)。

@@ -1,376 +1,214 @@
-<h1 align="center">Agent Signal Bar</h1>
+<h1 align="center">Agent Signal Bar 🚦</h1>
 
 <p align="center">
-  <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a>
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
 <p align="center">
-  <strong>Menu bar and floating desktop status lights for AI agents on macOS.</strong>
+  <strong>Know when your AI agent is working, finished, blocked, or waiting for you—without switching back to the terminal.</strong>
 </p>
 
 <p align="center">
-  Floating signal light · New Zealand crossing sounds · Local-first · Codex Desktop monitoring · Claude Code hooks
+  Codex auto-monitoring · Claude Code hooks · Custom agents · Local-first
 </p>
 
 <p align="center">
-  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/release-v1.5.7-111827.svg" alt="Latest release: v1.5.7"></a>
-  <img src="https://img.shields.io/badge/macOS-14%2B-111827.svg" alt="macOS 14+">
-  <img src="https://img.shields.io/badge/Swift-6.0-F05138.svg" alt="Swift 6.0">
-  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/download-DMG-0ea5e9.svg" alt="Download DMG"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-635bff.svg" alt="License: Apache-2.0"></a>
-  <a href="https://agentsignalbar.app"><img src="https://img.shields.io/badge/site-agentsignalbar.app-14b8a6.svg" alt="Website: agentsignalbar.app"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/github/v/release/guan-ops/Agent-Signal-Bar?style=flat-square&amp;color=111827" alt="Latest release"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/macOS-14%2B-111827?style=flat-square" alt="macOS 14+"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-0ea5e9?style=flat-square" alt="Universal for Apple Silicon and Intel Macs"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-635bff?style=flat-square" alt="License: Apache-2.0"></a>
+  <a href="https://agentsignalbar.app"><img src="https://img.shields.io/badge/site-agentsignalbar.app-14b8a6?style=flat-square" alt="Website: agentsignalbar.app"></a>
 </p>
 
 <p align="center">
   <a href="https://agentsignalbar.app">
-    <img src="docs/assets/readme-hero-en.svg?v=20260603-2320" alt="Agent Signal Bar website hero preview" width="100%">
+    <img src="docs/assets/readme-hero-en.svg?v=20260805-1" alt="Agent Signal Bar shows local AI-agent activity through menu bar traffic lights" width="100%">
   </a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/AgentSignalBar.dmg"><strong>Download the latest DMG</strong></a>
+  · <a href="https://agentsignalbar.app">Website</a>
+  · <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+Agent Signal Bar turns local AI-agent activity into a simple traffic-light language in your macOS menu bar and an optional floating desktop signal. It automatically detects Codex activity across Desktop, CLI/TUI, VS Code, Xcode, and IDEA from known local session logs. Optional hooks add permission and low-latency events, while Claude Code, scripts, and custom agents can report through local hooks, the bundled CLI, or JSON events.
+
+## Why Agent Signal Bar
+
+- **Stay in flow.** See whether an agent is thinking, working, or done without reopening its terminal or editor.
+- **Know when to act.** Permission and failure states take priority, so normal activity cannot hide a red alert.
+- **Keep status visible.** Use the compact menu bar signal, the draggable desktop signal, or both.
+- **Keep control local.** Core activity monitoring uses known local logs and state files; no Agent Signal Bar account or backend is required.
+
+## Install
+
+### Requirements
+
+- macOS 14 Sonoma or later
+- Apple Silicon or Intel Mac
+
+### Download and first run
+
+1. Download [`AgentSignalBar.dmg`](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/AgentSignalBar.dmg) from the latest GitHub Release.
+2. Open the DMG and drag `AgentSignalLight.app` into `Applications`.
+3. Open Agent Signal Bar from `Applications`.
+
+> [!NOTE]
+> Current GitHub builds are ad-hoc signed and not notarized. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or use **System Settings → Privacy & Security → Open Anyway**.
+
+The green **Code → Download ZIP** button downloads source code, not an app installer. After installation, use **Agent Signal Bar → Check for Updates…** or **Settings → About → Updates** for Sparkle updates.
+
+## See it in action
+
 <table width="100%">
   <tr>
-    <td align="center" width="18%"><strong>Layout</strong></td>
-    <td align="center" width="41%"><strong>Minimal Dots</strong></td>
-    <td align="center" width="41%"><strong>Classic Lamp</strong></td>
+    <td align="center" width="26%"><strong>Floating signal</strong></td>
+    <td align="center" width="37%"><strong>Detailed menu</strong></td>
+    <td align="center" width="37%"><strong>Simple menu</strong></td>
   </tr>
   <tr>
-    <td align="center"><strong>Horizontal</strong></td>
-    <td align="center"><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar Minimal Dots horizontal animated status bar preview" width="100%"></td>
-    <td align="center"><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar Classic Lamp horizontal animated status bar preview" width="100%"></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Vertical</strong></td>
-    <td align="center"><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar Minimal Dots vertical animated status bar preview" width="100%"></td>
-    <td align="center"><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar Classic Lamp vertical animated status bar preview" width="100%"></td>
+    <td align="center"><a href="docs/assets/floating-signal-light.png"><img src="docs/assets/floating-signal-light.png" alt="Floating Agent Signal Bar light with quota, active-agent, and token badges" width="250"></a></td>
+    <td align="center"><a href="docs/assets/menu-bar-panel-detailed-en.png"><img src="docs/assets/menu-bar-panel-detailed-en.png" alt="Detailed Agent Signal Bar menu bar panel with a live Codex session and recent events" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/menu-bar-simple-en.png"><img src="docs/assets/menu-bar-simple-en.png" alt="Simple Agent Signal Bar menu with a live Codex session, quota, and quick actions" width="100%"></a></td>
   </tr>
 </table>
 
-<p align="center">
-  <em>All styles use the red/yellow/green sequence effect.</em>
-</p>
+All three are screen-region captures with the desktop left in context. The floating signal stays above your desktop, follows the menu bar state, and supports dragging, free resizing, size presets, horizontal or vertical layouts, and compact session and usage popovers.
 
-Agent Signal Bar is a local-first macOS app that uses three red, yellow, and green signal lights in the menu bar and on the desktop to show the current state of local AI agents. It helps you see whether Codex, Claude Code, or a local script is idle, thinking, working, done, waiting for approval, or blocked without switching back to a terminal or editor.
+### Activity and usage
 
-## Floating Signal Light
-
-<p align="center">
-  <img src="docs/assets/floating-signal-light-v1.4.1.png" alt="Agent Signal Bar floating desktop signal light with quota, running-agent, and token badges" width="286">
-</p>
-
-The floating signal light stays visible on the desktop, syncs with the menu bar light, and supports dragging, resizing, vertical or horizontal layouts, compact running-agent, quota, and token badges, plus small popovers for current sessions and usage. Sound alerts can be configured separately for completion and green flashing.
-
-Listen to the bundled New Zealand crossing sounds: [green flash sound](Sources/AgentSignalLight/Resources/waiting-signal-nz.m4a) · [completion sound](Sources/AgentSignalLight/Resources/completion-signal-nz.m4a).
-
-## Download And Open
-
-For normal use, download the app from [GitHub Releases](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest), not from the green `Code` button. The `Code > Download ZIP` file is source code and does not contain a ready-to-open app installer.
-
-1. Open the [latest release](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest).
-2. Download `AgentSignalBar.dmg`.
-3. Open the DMG and drag `AgentSignalLight.app` to `Applications`.
-4. Open Agent Signal Bar from `Applications`.
-
-After the first install, use `Agent Signal Bar > Check for Updates...` or `Settings > About > Updates` to let Sparkle download and install future releases.
-
-If macOS blocks the first launch because the build is not notarized yet, right-click the app and choose `Open`, or use `System Settings > Privacy & Security > Open Anyway`.
-
-Developers can also download the source code and run `./script/build_and_run.sh`.
-
-## Menu Bar Panel
-
-<table>
+<table width="100%">
   <tr>
-    <td align="center"><strong>Detailed Panel</strong></td>
-    <td align="center"><strong>Simple Menu</strong></td>
+    <td align="center" width="50%"><strong>Activity</strong></td>
+    <td align="center" width="50%"><strong>Usage</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/assets/menu-bar-panel-detailed-v1.2.2-en.png" alt="Agent Signal Bar detailed menu bar panel" width="360"></td>
-    <td><img src="docs/assets/menu-bar-panel-simple-v1.2.2-en.png" alt="Agent Signal Bar simple native menu bar panel" width="360"></td>
+    <td align="center"><a href="docs/assets/settings-activity-en.png"><img src="docs/assets/settings-activity-en.png" alt="Agent Signal Bar Activity page showing a running Codex Desktop session and recent events" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/settings-usage-en.png"><img src="docs/assets/settings-usage-en.png" alt="Agent Signal Bar Usage page showing Codex quota, reset credits, and GPT-5.6 token estimates" width="100%"></a></td>
   </tr>
 </table>
 
-Click the menu bar signal light to open either the detailed panel or the simple native-style menu. Both show the current status and live agent activity. The detailed panel keeps the quick actions focused on pausing monitoring, opening settings, and quitting; the simple menu can also show open-agent shortcuts when relevant.
+The Activity capture shows a real local Codex Desktop session. The Usage page combines Codex quota windows, limit-reset credits, local token and estimated-cost history, and saved-account switching; its values are synthetic local demo data, and the token chart uses GPT-5.6 data—no personal account or credential data is included.
 
-## Usage Dashboard
+### Choose your look
 
-<p align="center">
-  <img src="docs/assets/settings-usage-v1.4.1-en.png" alt="Agent Signal Bar Usage page with Codex quota, token usage chart, and tool call totals" width="720">
-</p>
-
-The Usage page combines Codex quota, local token usage, and tool-call totals from local Codex logs. Daily bars support hover details, including per-model token and estimated cost breakdowns.
-
-## Settings Liquid Glass Comparison
-
-<table>
+<table width="100%">
   <tr>
-    <td align="center"><strong>Without Liquid Glass</strong></td>
-    <td align="center"><strong>Default Liquid Glass</strong></td>
+    <td align="center" width="50%"><strong>Minimal Dots</strong></td>
+    <td align="center" width="50%"><strong>Classic Lamp</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/assets/settings-solid-en.png" alt="Agent Signal Bar settings window Activity page without Liquid Glass" width="420"></td>
-    <td><img src="docs/assets/settings-liquid-glass-default-en.png" alt="Agent Signal Bar settings window Activity page with the default standard Liquid Glass effect" width="420"></td>
+    <td align="center"><img src="docs/assets/status-bar-minimal-dots.gif" alt="Minimal Dots status light animation" width="100%"></td>
+    <td align="center"><img src="docs/assets/status-bar-classic-lamp.gif" alt="Classic Lamp status light animation" width="100%"></td>
   </tr>
 </table>
 
-Both images are real screenshots of the current Activity page. The left image shows the normal solid settings window, while the right image shows the default Standard Liquid Glass style with the desktop background participating in the window material. Liquid Glass is on by default and can be adjusted between Standard and Enhanced in `General > Liquid glass`.
+Both styles support horizontal and vertical layouts. You can also tune blink speed, breathing strength, per-state effects, color theme, Liquid Glass appearance, and completion or warning sounds—including the bundled New Zealand crossing sounds.
 
-## Features
+## What you get
 
-- macOS menu bar signal light with horizontal and vertical layouts.
-- Floating desktop signal light with drag, resize, badges, current-session popover, and synced animation.
-- Separate sound choices for completion and green flashing, including New Zealand crossing sounds.
-- Two visual styles: classic signal board and minimal dots.
-- Menu bar panel with current status, running agents, recent activity, pause/settings actions, and quit.
-- Settings window with Activity, General, Connections, Advanced, and About pages.
-- Codex Desktop activity monitoring without required hooks, plus optional Codex hooks, Claude Code hooks, and generic JSON event input.
-- Multi-session aggregation so permission, failure, and blocked states are not overwritten by normal working states.
-- Local CLI for scripts, automation, and custom agents.
-- Multilingual UI with system-language detection and manual language switching.
-- Customizable light effects, including blink speed, breathing strength, and per-state effect choices.
-- Theme selection and launch at login.
-- No cloud service is required. State files, hooks, and diagnostics stay on your Mac.
+- **Menu bar and desktop signals** with synchronized red, yellow, and green animations.
+- **Attention-first multi-session aggregation** that protects permission, blocked, failure, and review states from ordinary work events.
+- **Codex monitoring without required hooks** across Desktop, CLI/TUI, VS Code, Xcode, and IDEA, plus session, quota, token, and cost views.
+- **Saved Codex accounts** with account-bound credentials, quota snapshots, and reset-credit data.
+- **Detailed and native-style menu panels** with live sessions, recent activity, pause, settings, and relevant app shortcuts.
+- **Local extension points** through Codex hooks, Claude Code hooks, a generic JSON adapter, and the `agent-signal` CLI.
+- **Desktop-friendly customization** with two visual styles, size presets, free resizing, sound profiles, themes, launch at login, and multilingual UI.
 
-## Signal Language
+## Signal language
 
-| Agent state | Default effect | Meaning |
+| Agent state | Default effect | What it means |
 | --- | --- | --- |
 | Idle `idle` | steady green | Nothing needs attention |
 | Thinking `thinking` | fast green flash | The agent is reasoning about the task |
-| Working `working` | slow green flash | The agent is editing files, running tools, or testing |
-| Step done `tool_done` | slow green flash | One step finished and the workflow may continue |
-| Done `done` | steady green | The task is complete and will return to idle shortly |
+| Working `working` | slow green flash | The agent is editing, running tools, or testing |
+| Step done `tool_done` | slow green flash | One step finished; the workflow may continue |
+| Done `done` | steady green | The task finished and will soon return to idle |
 | Attention `attention` / `notification` | flashing yellow | Check when convenient |
-| Permission `permission` / `permission_request` | flashing red | Approval is needed now |
+| Permission `permission` / `permission_request` | flashing red | Your approval is needed now |
 | Blocked `blocked` / `failure` / `error` | fast flashing red | Immediate action is needed |
-| Stale `stale` | gray/yellow warning | The state file is old, damaged, or untrusted |
-| Off `off` / `pause` | all lights off or static gray | Monitoring is paused |
+| Stale `stale` | gray/yellow warning | The local state is old, damaged, or untrusted |
+| Off `off` / `pause` | off or static gray | Monitoring is paused |
 
-Default effect settings:
+Red and yellow states are protected from newer ordinary-work events. See the full [signal language and aggregation rules](docs/LAMP_LANGUAGE.md).
 
-- Thinking: fast green flash
-- Working: slow green flash
-- Done: steady green
+## Integrations
 
-Effects can be customized in the Advanced page of the settings window.
+| Source | Connection | Current support |
+| --- | --- | --- |
+| Codex Desktop, CLI/TUI, VS Code, Xcode, and IDEA | Known local Codex session logs; optional hooks | Hook-free activity monitoring is verified; hooks add permission and low-latency events |
+| Claude Code | Claude Code hooks | Not tested on a physical machine |
+| Local scripts and custom agents | Bundled CLI or generic JSON events | Supported through the shared local state model |
 
-## Light Effect Preview
+Start with the [Codex setup](docs/CODEX_SETUP.md), [Claude Code setup](docs/CLAUDE_CODE_SETUP.md), or [local script setup](docs/LOCAL_SCRIPT_SETUP.md).
 
-<p align="center">
-  <img src="docs/assets/light-effects-landscape-en.gif" alt="Agent Signal Bar light effect preview" width="900">
-</p>
+## Privacy and network access
 
-## Aggregation Priority
+Agent Signal Bar is local-first, but it is not described as fully offline:
 
-When multiple agents or sessions are active, the menu bar shows the highest-priority state:
+- Agent activity is detected from known local Codex logs or local hook, CLI, and JSON state.
+- State snapshots, hook events, cost-scan caches, and exported diagnostics remain on your Mac unless you choose to share them.
+- Optional Codex account and quota features connect directly to OpenAI and can use local Codex credentials or optional `chatgpt.com` browser-session data. Saved account credentials and manually entered cookies use macOS Keychain storage.
+- Service-status and update checks contact OpenAI Status and GitHub/Sparkle respectively.
+- No Agent Signal Bar backend account or project-hosted cloud service is required.
 
-```text
-paused > blocked > permission > needs_review > stale > active > completed > ready
-```
+## CLI and custom agents
 
-Red states are never overwritten by normal work. Yellow attention states are also protected from newer working events. `done` is visible for 30 seconds by default, then returns to idle.
-
-## Quick Start
-
-Build and run:
-
-```bash
-./script/build_and_run.sh
-```
-
-Verify the app:
-
-```bash
-./script/build_and_run.sh --verify
-```
-
-Open the settings window for UI verification:
-
-```bash
-./script/build_and_run.sh --ui-verify
-```
-
-Run local diagnostics:
-
-```bash
-./script/doctor.sh
-./script/doctor.sh --full
-```
-
-Package the app:
-
-```bash
-./script/package_app.sh --release
-```
-
-Build local zip and DMG artifacts:
-
-```bash
-./script/package_release.sh
-```
-
-Release packaging builds universal macOS executables by default (`arm64 x86_64`)
-so the DMG and bundled CLI run on Apple Silicon and Intel Macs. It publishes
-legacy Sparkle assets (`appcast.xml`, `AgentSignalBar.dmg`) plus the migration
-assets (`AgentSignalBar-macos-universal-appcast.xml`,
-`AgentSignalBar-v<version>-macos-universal.dmg`). For a local
-single-architecture package, run `AGENT_SIGNAL_LIGHT_ARCHS=native ./script/package_release.sh`.
-
-Sparkle update feeds are generated as `dist/appcast.xml` for existing installs and `dist/AgentSignalBar-macos-universal-appcast.xml` for migrated installs. Local packaging uses the Sparkle signing key from Keychain; GitHub Actions requires the private key in the `SPARKLE_PRIVATE_KEY` secret.
-
-## CLI
-
-Install the CLI:
+Install the bundled CLI wrappers:
 
 ```bash
 ./script/install_cli.sh
 ```
 
-Update state:
+Publish and inspect state:
 
 ```bash
-./scripts/agent-signal idle
-./scripts/agent-signal thinking --session codex-main --agent codex
-./scripts/agent-signal working --session codex-main --agent codex --event PreToolUse
-./scripts/agent-signal permission --session claude-main --agent claude-code --event PermissionRequest
-./scripts/agent-signal blocked --session job-1 --agent script --event Failed
-./scripts/agent-signal done --session codex-main --agent codex --event Stop
-```
-
-Read state:
-
-```bash
-./scripts/agent-signal status
+./scripts/agent-signal working --session build-1 --agent script --event BuildStarted
+./scripts/agent-signal done --session build-1 --agent script --event BuildFinished
 ./scripts/agent-signal status --json
-```
-
-Reset to idle:
-
-```bash
-./scripts/agent-signal reset
 ```
 
 Wrap any command as an agent run:
 
 ```bash
-./scripts/agent-signal-run \
-  --session nightly-build \
-  --agent script \
-  -- ./run-build.sh
+./scripts/agent-signal-run --session nightly-build --agent script -- ./run-build.sh
 ```
 
-## Agent Integration
+The event contract and environment variables are documented in the [state schema](docs/STATE_SCHEMA.md).
 
-Codex Desktop can work without manually installing hooks. Keep `Monitor Codex Desktop` enabled in the app and Agent Signal Bar will read local Codex session logs to detect thinking, working, step-done, and done states. Hooks are optional for Codex Desktop, but they are still useful for Codex CLI/TUI, Codex IDE compatibility, project-scoped automation, Claude Code, and other local agents that report events directly.
+## Build from source
 
-Codex Desktop activity comes from the local Codex session log. Normal browser usage does not trigger Agent Signal Bar unless it is part of an active Codex task that is using tools.
-
-Integration verification status:
-
-- Codex has been tested in real use and is fully verified.
-- Claude Code hook support is implemented, but it has not yet been verified with a live Claude Code workflow.
-
-Install hooks when you need CLI/IDE or Claude Code integration:
+Requires macOS 14+, Swift 6, and the full Xcode toolchain.
 
 ```bash
-./script/install_hooks.py --target all --codex-scope project --dry-run
-./script/install_hooks.py --target all --codex-scope project --install
+./script/build_and_run.sh --verify
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+./script/doctor.sh
 ```
 
-For development, project-scoped Codex hooks are recommended so project-level and user-level hooks do not fire at the same time.
+Release packaging and Sparkle-feed details live in [GitHub release management](docs/GITHUB_RELEASES.md) and the [release checklist](docs/RELEASE_CHECKLIST.md).
 
-Generic JSON input:
+## Contributing
 
-```bash
-echo '{"event":"AgentStarted","agent":"local-script","session_id":"local-main"}' \
-  | ./scripts/generic-agent-signal-hook
+Issues and focused pull requests are welcome.
 
-echo '{"event":"ApprovalRequired","agent":"local-script","session_id":"local-main"}' \
-  | ./scripts/generic-agent-signal-hook
-```
+1. Open an [issue](https://github.com/guan-ops/Agent-Signal-Bar/issues) for bugs or behavior changes that need discussion.
+2. Keep changes scoped and preserve the local-first data boundary.
+3. Run the build verification and Swift tests above before opening a pull request.
 
-## State File
-
-Default state file:
-
-```text
-/tmp/agent-signal/status.json
-```
-
-Example:
-
-```json
-{
-  "schema_version": 1,
-  "aggregate": "working",
-  "updated_at": "2026-05-28T03:45:00Z",
-  "sessions": {
-    "codex-main": {
-      "agent": "codex",
-      "signal": "working",
-      "last_event": "PreToolUse",
-      "updated_at": "2026-05-28T03:45:00Z"
-    }
-  },
-  "events": [
-    {
-      "id": "D4204E0A-5B5D-4DFB-A3BC-643E6C7C6F8F",
-      "session_id": "codex-main",
-      "agent": "codex",
-      "signal": "working",
-      "event": "PreToolUse",
-      "updated_at": "2026-05-28T03:45:00Z"
-    }
-  ]
-}
-```
-
-Environment variables:
-
-```bash
-export AGENT_SIGNAL_LIGHT_STATE_FILE=/path/to/status.json
-export AGENT_SIGNAL_LIGHT_STATE_DIR=/tmp/agent-signal
-export AGENT_SIGNAL_LIGHT_EVENT_LIMIT=50
-export AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS=90
-export SIGNAL_LIGHT_SESSION_TTL_SECONDS=1800
-```
-
-## Project Layout
-
-```text
-Sources/
-  AgentSignalLight/        macOS app, menu bar, settings window
-  AgentSignalLightCore/    state model, aggregation, hook mapping
-  AgentSignalLightUI/      signal rendering and icon geometry
-  AgentSignalCLI/          agent-signal CLI
-scripts/                   CLI wrappers and hook wrappers
-script/                    build, install, diagnostics, packaging scripts
-docs/                      integration docs, state schema, release checklist
-Tests/                     Swift tests
-```
+For questions and product ideas, use [GitHub Discussions](https://github.com/guan-ops/Agent-Signal-Bar/discussions).
 
 ## Documentation
 
-- [Signal language](docs/LAMP_LANGUAGE.md)
-- [State schema](docs/STATE_SCHEMA.md)
-- [Codex setup](docs/CODEX_SETUP.md)
-- [Claude Code setup](docs/CLAUDE_CODE_SETUP.md)
-- [Local script setup](docs/LOCAL_SCRIPT_SETUP.md)
-- [GitHub release management](docs/GITHUB_RELEASES.md)
-- [Release checklist](docs/RELEASE_CHECKLIST.md)
-- [Changelog](CHANGELOG.md)
+- [Signal language](docs/LAMP_LANGUAGE.md) · [State schema](docs/STATE_SCHEMA.md)
+- [Codex setup](docs/CODEX_SETUP.md) · [Claude Code setup](docs/CLAUDE_CODE_SETUP.md) · [Local scripts](docs/LOCAL_SCRIPT_SETUP.md)
+- [Changelog](CHANGELOG.md) · [GitHub releases](docs/GITHUB_RELEASES.md) · [Release checklist](docs/RELEASE_CHECKLIST.md)
 
-## License
+## Credits and license
 
-Source code is licensed under the [Apache License 2.0](LICENSE).
+Agent Signal Bar is built by XiongYang Guan ([guan-ops](https://github.com/guan-ops)). The bundled New Zealand crossing sounds were recorded for this project.
 
-Non-code assets use separate terms:
+Token-usage JSONL scanning is adapted from [CodexBar](https://github.com/steipete/CodexBar), created by Peter Steinberger and licensed under the MIT License. Full attribution is recorded in [NOTICE](NOTICE).
 
-- Bundled audio files, including the New Zealand crossing sounds, plus app icons,
-  logos, screenshots, GIFs, and marketing artwork are covered by
-  [ASSET_LICENSES.md](ASSET_LICENSES.md).
-- The `Agent Signal Bar` name and brand assets are covered by
-  [TRADEMARKS.md](TRADEMARKS.md).
-
-Attribution is recorded in [NOTICE](NOTICE).
-
-© 2026 XiongYang Guan ([guan-ops](https://github.com/guan-ops))
+Source code is licensed under the [Apache License 2.0](LICENSE). Non-code assets use the terms in [ASSET_LICENSES.md](ASSET_LICENSES.md), and the project name and brand assets are covered by [TRADEMARKS.md](TRADEMARKS.md).
