@@ -3692,7 +3692,15 @@ final class MenuBarStatusModel: ObservableObject {
     private static func latestCompletionCutoffsBySourceKey(_ events: [RecentSignalEvent]) -> [String: Date] {
         var cutoffs: [String: Date] = [:]
 
-        for event in events where event.signal.displayState == .completed {
+        // 完成截止不仅认 `.completed`（done / Stop），也要认 `sessionEnd` / `turnEnd`：
+        // 否则会话结束后的瞬态红灯（blocked / permission）会因 events 数组里的残留，
+        // 被 recentActivityFallbackSessions 回溯成虚拟 session，导致面板永久红灯
+        // （即使 agent 早已结束）。这与状态存储层 preserveAgainstSessionEndSignal 的
+        // 修复意图一致：会话结束时应能清除之前的 blocked。
+        for event in events
+        where event.signal.displayState == .completed
+            || event.signal == .sessionEnd
+            || event.signal == .turnEnd {
             let sourceKey = ActivityPresentation.activitySourceKey(for: event)
             if let existing = cutoffs[sourceKey], existing >= event.updatedAt {
                 continue
@@ -3739,7 +3747,10 @@ final class MenuBarStatusModel: ObservableObject {
         _ event: RecentSignalEvent,
         completionCutoffsBySourceKey: [String: Date]
     ) -> Bool {
-        guard event.signal.displayState == .active else {
+        // 与 session 版一致，用统一的「是否被完成事件的截止覆盖」判定，
+        // 让 blocked / permission 等瞬态红灯也能被更晚的 .completed / sessionEnd / turnEnd 清除，
+        // 避免被回溯成永久红灯的虚拟 session。
+        guard shouldCompletedEventSupersedeDisplayState(event.signal.displayState) else {
             return false
         }
 
@@ -3805,9 +3816,9 @@ final class MenuBarStatusModel: ObservableObject {
 
     private static func shouldCompletedEventSupersedeDisplayState(_ displayState: DisplayState) -> Bool {
         switch displayState {
-        case .active, .needsReview, .permission:
+        case .active, .needsReview, .permission, .blocked:
             return true
-        case .ready, .completed, .blocked, .stale, .paused:
+        case .ready, .completed, .stale, .paused:
             return false
         }
     }
