@@ -500,8 +500,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
 
     private func soundSignature() -> String {
         let snapshot = model.floatingSignalLightSnapshot
-        let updatedAt = snapshot.updatedAt?.timeIntervalSince1970 ?? 0
-        return "\(snapshot.aggregate.rawValue)|\(Int(updatedAt))|\(snapshot.sessions.count)"
+        return "\(snapshot.aggregate.rawValue)"
     }
 
 }
