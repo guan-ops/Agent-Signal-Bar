@@ -407,6 +407,11 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             action: #selector(toggleFloatingSignalSoundFromMenu)
         ))
         menu.addItem(.separator())
+        menu.addItem(actionMenuItem(
+            model.text("清除信号", "Clear Signal"),
+            imageName: "xmark.circle.fill",
+            action: #selector(clearSignalFromMenu)
+        ))
         menu.addItem(actionMenuItem(model.text("设置", "Settings"), imageName: "gearshape", action: #selector(openSettingsFromMenu)))
         menu.addItem(actionMenuItem(model.text("退出", "Quit"), imageName: "power", action: #selector(quitFromMenu)))
     }
@@ -738,6 +743,10 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
 
     @objc private func quitFromMenu() {
         NSApplication.shared.terminate(nil)
+    }
+
+    @objc private func clearSignalFromMenu() {
+        model.clearSessions()
     }
 
     private func removeStatusItem() {
