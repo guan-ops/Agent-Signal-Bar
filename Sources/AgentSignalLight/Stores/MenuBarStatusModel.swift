@@ -977,7 +977,9 @@ final class MenuBarStatusModel: ObservableObject {
             ?? Self.cachedLatestAgentTokenUsage()
         latestAgentTokenUsageSessionID = snapshotTokenObservation?.sessionID
         latestAgentTokenUsageUpdatedAt = snapshotTokenObservation?.updatedAt
-            ?? latestAgentQuota?.updatedAt
+            ?? latestAgentQuota.flatMap { quota in
+                quota.tokenUsage == nil ? nil : quota.updatedAt
+            }
         // The process-global UserDefaults value has no account or session
         // identity. It may populate the UI briefly, but must never become a
         // pending counter. Only the state snapshot can prove ownership here.
@@ -5237,14 +5239,24 @@ final class MenuBarStatusModel: ObservableObject {
             )
         }
 
-        if let newestCounter = liveTokenCounters.values.max(by: {
+        let newestCounter = liveTokenCounters.values.max(by: {
             ($0.updatedAt ?? .distantPast) < ($1.updatedAt ?? .distantPast)
-        }) {
+        })
+        if let newestCounter,
+           latestAgentTokenUsage?.effectiveTotalTokens == newestCounter.totalTokens {
             latestAgentTokenUsageSessionID = newestCounter.sessionID
             latestAgentTokenUsageUpdatedAt = newestCounter.updatedAt
+        } else if let usage = latestAgentTokenUsage,
+                  let quota = snapshot.quota,
+                  quota.tokenUsage == usage {
+            latestAgentTokenUsageSessionID = nil
+            latestAgentTokenUsageUpdatedAt = quota.updatedAt
         } else {
             latestAgentTokenUsageSessionID = nil
-            latestAgentTokenUsageUpdatedAt = snapshot.updatedAt
+            // `snapshot.updatedAt` is a general file-write timestamp and can
+            // come from a newer credits or quota-only refresh. Without token
+            // evidence it cannot order later token observations.
+            latestAgentTokenUsageUpdatedAt = nil
         }
         if let quota = snapshot.quota {
             Self.cacheLatestAgentQuota(quota)
@@ -5813,7 +5825,11 @@ final class MenuBarStatusModel: ObservableObject {
         }
 
         let shouldReplaceLatestUsage: Bool
-        if (acceptedSourceOrderIsNewer || acceptedObservationMatchesCounter),
+        if latestAgentTokenUsage == nil {
+            // A quota or account snapshot may be newer while carrying no token
+            // data. Its timestamp must not block the first valid observation.
+            shouldReplaceLatestUsage = true
+        } else if (acceptedSourceOrderIsNewer || acceptedObservationMatchesCounter),
            Self.liveTokenSessionKey(latestAgentTokenUsageSessionID) == key {
             // Keep the persisted/displayed usage aligned with the accepted
             // counter when a newer source snapshot or later JSONL byte carries

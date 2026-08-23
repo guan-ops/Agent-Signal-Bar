@@ -6218,6 +6218,92 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testNewerAccountSnapshotWriteDoesNotTimestampOlderPersistedTokenUsage() throws {
+        let defaults = UserDefaults.standard
+        let cacheKeys = [
+            "cachedLatestAgentQuota",
+            "cachedLatestAgentTokenUsage",
+            "isCodexDesktopMonitoringEnabled",
+        ]
+        let cachedValues = cacheKeys.map { ($0, defaults.object(forKey: $0)) }
+        cacheKeys.forEach(defaults.removeObject(forKey:))
+        defaults.set(false, forKey: "isCodexDesktopMonitoringEnabled")
+        defer {
+            for (key, value) in cachedValues {
+                if let value {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("token-snapshot-write-time-\(UUID().uuidString)", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "snapshot-write-time@example.com",
+            accountID: "acct_snapshot_write_time",
+            accessToken: "snapshot-write-time-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: root.appendingPathComponent("accounts.json")
+        )
+        _ = try manager.saveCurrentAccount()
+        let account = try XCTUnwrap(try manager.loadState().currentAccount)
+        let activationAt = Date(timeIntervalSince1970: 2_000_000_000)
+        let observationAt = activationAt.addingTimeInterval(60)
+        let snapshotAt = activationAt.addingTimeInterval(120)
+        let quota = AgentQuotaStatus(
+            remainingPercent: 80,
+            updatedAt: snapshotAt
+        )
+        XCTAssertNil(quota.tokenUsage)
+
+        let usageStore = CodexAccountUsageSnapshotStore(
+            fileURL: root.appendingPathComponent("usage.json")
+        )
+        usageStore.store(
+            account: account,
+            quota: quota,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 100),
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [],
+            updatedAt: snapshotAt
+        )
+
+        let model = MenuBarStatusModel(
+            store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore,
+            nowProvider: { activationAt }
+        )
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 100)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 150),
+            sessionID: "snapshot-write-time-session",
+            updatedAt: observationAt,
+            observationCursor: CodexTokenObservationCursor(
+                sourceID: "/test/snapshot-write-time.jsonl",
+                sourceGeneration: "snapshot-write-time-generation",
+                endOffset: 150,
+                lineFingerprint: "snapshot-write-time-line-150"
+            )
+        )
+
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 150)
+        XCTAssertEqual(model.latestAgentQuota?.updatedAt, snapshotAt)
+    }
+
+    @MainActor
     func testLegacyUnscopedScalarDoesNotDoubleCountMultipleIdentifiedSessions() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("legacy-multi-session-\(UUID().uuidString)", isDirectory: true)
@@ -7938,6 +8024,66 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testQuotaTimestampWithoutTokenUsageCannotBlockFirstLiveObservation() throws {
+        let defaults = UserDefaults.standard
+        let cacheKeys = ["cachedLatestAgentQuota", "cachedLatestAgentTokenUsage"]
+        let cachedValues = cacheKeys.map { ($0, defaults.object(forKey: $0)) }
+        cacheKeys.forEach(defaults.removeObject(forKey:))
+        defaults.set(
+            try JSONEncoder().encode(AgentTokenUsage(totalTokens: 100)),
+            forKey: "cachedLatestAgentTokenUsage"
+        )
+        defer {
+            for (key, value) in cachedValues {
+                if let value {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let observationAt = Date(timeIntervalSince1970: 2_000_000_000)
+        let quotaAt = observationAt.addingTimeInterval(60)
+        _ = try fixture.store.applySessionQuota(
+            AgentQuotaStatus(
+                remainingPercent: 80,
+                updatedAt: quotaAt
+            ),
+            sessionID: "quota-without-token-usage",
+            agent: "codex-desktop",
+            updatedAt: quotaAt
+        )
+
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            nowProvider: { observationAt }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 100)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 150),
+            sessionID: "quota-without-token-usage",
+            updatedAt: observationAt,
+            observationCursor: CodexTokenObservationCursor(
+                sourceID: "/test/quota-without-token-usage.jsonl",
+                sourceGeneration: "quota-without-token-usage-generation",
+                endOffset: 150,
+                lineFingerprint: "quota-without-token-usage-line-150"
+            )
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: observationAt), 150)
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 150)
+    }
+
+    @MainActor
     func testLaterCursorInSameSnapshotWinsDespiteEarlierEventTimestamp() throws {
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -8129,7 +8275,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(oldUpdate.quota.tokenUsage?.effectiveTotalTokens, 100)
 
         let roundTripStore = SignalStateStore(
-            stateFileURL: fixture.directory.appendingPathComponent("roundtrip-status.json")
+            stateFileURL: fixture.directory.appendingPathComponent("roundtrip-status.json"),
+            sessionTTLSeconds: 86_400
         )
         _ = try roundTripStore.applySessionQuota(
             oldUpdate.quota,
