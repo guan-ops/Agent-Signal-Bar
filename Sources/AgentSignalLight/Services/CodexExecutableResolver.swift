@@ -207,6 +207,8 @@ enum CodexExecutableResolver {
     private static func codexDesktopAppCLICandidates(fileManager: FileManager) -> [String] {
         let home = fileManager.homeDirectoryForCurrentUser.path
         return [
+            "\(home)/Applications/ChatGPT.app/Contents/Resources/codex",
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
             "\(home)/Applications/Codex.app/Contents/Resources/codex",
             "/Applications/Codex.app/Contents/Resources/codex"
         ]

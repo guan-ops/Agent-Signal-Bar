@@ -72,6 +72,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let lines = [
+            #"{"timestamp":"2026-07-11T01:59:59.000Z","type":"session_meta","payload":{"id":"codex-56-cost-session","originator":"Codex Desktop"}}"#,
             #"{"timestamp":"2026-07-11T02:00:00.000Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
             #"{"timestamp":"2026-07-11T02:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":200000,"output_tokens":100000,"total_tokens":1100000},"last_token_usage":{"input_tokens":1000000,"cached_input_tokens":200000,"output_tokens":100000,"total_tokens":1100000}}}}"#,
         ].joined(separator: "\n")
@@ -107,6 +108,49 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(totalCost, 7.1, accuracy: 0.000_001)
         XCTAssertEqual(report.data.first?.modelBreakdowns?.first?.modelName, "gpt-5.6-sol")
         XCTAssertEqual(modelCost, 7.1, accuracy: 0.000_001)
+    }
+
+    func testClaudeScanReturnsFreshReportWhenCacheSaveFails() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-cache-save-failure-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let invalidCacheRoot = root.appendingPathComponent("cache-root-file", isDirectory: false)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        try Data("not a directory".utf8).write(to: invalidCacheRoot)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let line = #"{"type":"assistant","timestamp":"2026-07-11T02:00:00.000Z","requestId":"request-1","sessionId":"session-1","message":{"id":"message-1","model":"claude-sonnet-4-5-20250929","usage":{"input_tokens":100,"output_tokens":50}}}"#
+        try line.write(
+            to: sessionsRoot.appendingPathComponent("session.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let calendar = Calendar(identifier: .gregorian)
+        let since = try XCTUnwrap(calendar.date(from: DateComponents(
+            timeZone: TimeZone(secondsFromGMT: 0),
+            year: 2026,
+            month: 7,
+            day: 11
+        )))
+        let until = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: since))
+        let now = try XCTUnwrap(calendar.date(byAdding: .hour, value: 12, to: since))
+
+        let report = CostUsageScanner.loadDailyReport(
+            provider: .claude,
+            since: since,
+            until: until,
+            now: now,
+            options: CostUsageScanner.Options(
+                claudeProjectsRoots: [sessionsRoot],
+                cacheRoot: invalidCacheRoot,
+                forceRescan: true
+            )
+        )
+
+        XCTAssertEqual(report.data.count, 1)
+        XCTAssertEqual(report.data.first?.totalTokens, 150)
+        XCTAssertEqual(report.summary?.totalTokens, 150)
     }
 
     func testReleaseInfoPrefersCurrentManifestOverBundledReleaseInfo() throws {
@@ -281,7 +325,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
     func testCodexDesktopSessionParserMapsTokenCountToQuotaStatus() {
         let line = """
-        {"timestamp":"2026-06-18T08:10:20.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"last_token_usage":{"input_tokens":34567,"cached_input_tokens":12000,"output_tokens":2345,"reasoning_output_tokens":567,"total_tokens":36912}},"rate_limits":{"limit_id":"codex_bengalfox","limit_name":"GPT-5.3-Codex-Spark","primary":{"used_percent":42.5,"window_minutes":300,"resets_at":1781788782},"secondary":{"used_percent":12.0,"window_minutes":10080,"resets_at":1782375582}}}}
+        {"timestamp":"2026-06-18T08:10:20.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":50000,"cached_input_tokens":18000,"output_tokens":4000,"reasoning_output_tokens":900,"total_tokens":54000},"last_token_usage":{"input_tokens":34567,"cached_input_tokens":12000,"output_tokens":2345,"reasoning_output_tokens":567,"total_tokens":36912}},"rate_limits":{"limit_id":"codex_bengalfox","limit_name":"GPT-5.3-Codex-Spark","primary":{"used_percent":42.5,"window_minutes":300,"resets_at":1781788782},"secondary":{"used_percent":12.0,"window_minutes":10080,"resets_at":1782375582}}}}
         """
 
         let quotaUpdate = CodexDesktopSessionParser.quotaUpdate(
@@ -306,6 +350,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(quotaUpdate?.quota.tokenUsage?.reasoningOutputTokens, 567)
         XCTAssertEqual(quotaUpdate?.quota.tokenUsage?.effectiveTotalTokens, 36_912)
         XCTAssertEqual(quotaUpdate?.quota.tokenUsage?.contextWindowTokens, 258_400)
+        XCTAssertEqual(quotaUpdate?.tokenActivityUsage?.effectiveTotalTokens, 54_000)
     }
 
     func testCodexDesktopSessionParserMapsTokenCountToActivityPoint() {
@@ -363,6 +408,2979 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(days.first?.totalTokens, 1_650)
         XCTAssertNil(days.first?.modelTokenTotals["gpt-5.5"])
         XCTAssertNil(days.first?.modelTokenTotals["gpt-5"])
+    }
+
+    func testCostUsageScannerDefersEventsAfterStrictScanCutoff() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cost-cutoff-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines = [
+            #"{"timestamp":"2026-06-18T07:59:59.000Z","type":"session_meta","payload":{"id":"019c846a-b85e-7bd3-924b-cc33e3f180d9","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-06-18T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100}}}}"#,
+            #"{"timestamp":"2026-06-18T08:02:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":150,"output_tokens":150},"last_token_usage":{"input_tokens":500,"cached_input_tokens":50,"output_tokens":50}}}}"#
+        ].joined(separator: "\n")
+        let sessionURL = root.appendingPathComponent("rollout-cutoff.jsonl")
+        try lines.write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let firstTimestamp = try XCTUnwrap(formatter.date(from: "2026-06-18T08:00:00.000Z"))
+        let cutoff = try XCTUnwrap(formatter.date(from: "2026-06-18T08:01:00.000Z"))
+        let finalCutoff = try XCTUnwrap(formatter.date(from: "2026-06-18T08:03:00.000Z"))
+        let range = CostUsageScanner.CostUsageDayRange(since: firstTimestamp, until: finalCutoff)
+
+        let first = CostUsageScanner.parseCodexFile(
+            fileURL: sessionURL,
+            range: range,
+            through: cutoff
+        )
+        let firstTokens = first.days.values
+            .flatMap(\.values)
+            .reduce(0) { $0 + ($1[safe: 0] ?? 0) + ($1[safe: 2] ?? 0) }
+        XCTAssertEqual(firstTokens, 1_100)
+        XCTAssertLessThan(first.parsedBytes, Int64(lines.utf8.count))
+
+        let deferred = CostUsageScanner.parseCodexFile(
+            fileURL: sessionURL,
+            range: range,
+            through: finalCutoff,
+            startOffset: first.parsedBytes,
+            initialModel: first.lastModel,
+            initialTotals: first.lastCountedTotals,
+            initialRawTotalsBaseline: first.lastRawTotalsBaseline,
+            initialHasDivergentTotals: first.hasDivergentTotals,
+            initialCodexTurnID: first.lastCodexTurnID
+        )
+        let deferredTokens = deferred.days.values
+            .flatMap(\.values)
+            .reduce(0) { $0 + ($1[safe: 0] ?? 0) + ($1[safe: 2] ?? 0) }
+        XCTAssertEqual(deferredTokens, 550)
+        XCTAssertEqual(deferred.parsedBytes, Int64(lines.utf8.count))
+
+        var options = CostUsageScanner.Options(
+            codexSessionsRoot: root,
+            cacheRoot: root.appendingPathComponent("cost-cache", isDirectory: true)
+        )
+        options.refreshMinIntervalSeconds = 0
+        let firstReport = CostUsageScanner.loadDailyReport(
+            provider: .codex,
+            since: firstTimestamp,
+            until: cutoff,
+            now: cutoff,
+            options: options
+        )
+        XCTAssertEqual(firstReport.data.compactMap(\.totalTokens).reduce(0, +), 1_100)
+
+        // The file is unchanged; the cache must remember the unread byte offset
+        // and consume the deferred line when the strict cutoff advances.
+        let finalReport = CostUsageScanner.loadDailyReport(
+            provider: .codex,
+            since: firstTimestamp,
+            until: finalCutoff,
+            now: finalCutoff,
+            options: options
+        )
+        XCTAssertEqual(finalReport.data.compactMap(\.totalTokens).reduce(0, +), 1_650)
+    }
+
+    func testProductionTokenScannerMarksCacheCommitFailureIncomplete() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cost-commit-failure-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionURL = root.appendingPathComponent("rollout-2026-06-18T08-00-00.jsonl")
+        try [
+            #"{"timestamp":"2026-06-18T07:59:59.000Z","type":"session_meta","payload":{"id":"commit-failure-session","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-06-18T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let cacheRootBlocker = root.appendingPathComponent("cache-root-is-a-file")
+        try Data("not a directory".utf8).write(to: cacheRootBlocker)
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            costUsageCacheRootURL: cacheRootBlocker,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let cutoff = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-06-18T08:01:00Z"))
+
+        let result = scanner.scanDailyActivityResult(now: cutoff, days: 1, progress: nil)
+
+        XCTAssertFalse(result.isComplete)
+        XCTAssertTrue(result.watermarks.isEmpty)
+        XCTAssertTrue(result.days.isEmpty)
+    }
+
+    func testPiSessionScannerDefersUnchangedFutureLinesUntilCutoffAdvances() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pi-cutoff-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionURL = sessionsRoot.appendingPathComponent(
+            "2026-06-18T07-59-59-000Z_pi-cutoff.jsonl"
+        )
+        try [
+            #"{"type":"model_change","timestamp":"2026-06-18T07:59:59.000Z","provider":"openai-codex","modelId":"gpt-5"}"#,
+            #"{"type":"message","timestamp":"2026-06-18T08:00:00.000Z","message":{"role":"assistant","provider":"openai-codex","model":"gpt-5","usage":{"input":100,"output":0,"totalTokens":100}}}"#,
+            #"{"type":"message","timestamp":"2026-06-18T08:02:00.000Z","message":{"role":"assistant","provider":"openai-codex","model":"gpt-5","usage":{"input":50,"output":0,"totalTokens":50}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let since = try XCTUnwrap(formatter.date(from: "2026-06-18T00:00:00.000Z"))
+        let firstCutoff = try XCTUnwrap(formatter.date(from: "2026-06-18T08:01:00.000Z"))
+        let finalCutoff = try XCTUnwrap(formatter.date(from: "2026-06-18T08:03:00.000Z"))
+        let options = PiSessionCostScanner.Options(
+            piSessionsRoot: sessionsRoot,
+            cacheRoot: cacheRoot,
+            refreshMinIntervalSeconds: 0
+        )
+
+        let first = try PiSessionCostScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: since,
+            until: firstCutoff,
+            now: firstCutoff,
+            options: options,
+            checkCancellation: nil
+        )
+        XCTAssertEqual(first.data.compactMap(\.totalTokens).reduce(0, +), 100)
+        let partialCache = PiSessionCostCacheIO.load(cacheRoot: cacheRoot)
+        let partialUsage = try XCTUnwrap(partialCache.files.values.first)
+        XCTAssertLessThan(partialUsage.parsedBytes, partialUsage.size)
+
+        let final = try PiSessionCostScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: since,
+            until: finalCutoff,
+            now: finalCutoff,
+            options: options,
+            checkCancellation: nil
+        )
+        XCTAssertEqual(final.data.compactMap(\.totalTokens).reduce(0, +), 150)
+        let finalCache = PiSessionCostCacheIO.load(cacheRoot: cacheRoot)
+        let finalUsage = try XCTUnwrap(finalCache.files.values.first)
+        XCTAssertEqual(finalUsage.parsedBytes, finalUsage.size)
+    }
+
+    func testForceRescanPreservesDormantSessionForAppendDiscoveryAfterThirtyDayWindow() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dormant-session-inventory-\(UUID().uuidString)", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let oldAt = try XCTUnwrap(formatter.date(from: "2026-01-01T08:00:00.000Z"))
+        let firstNow = try XCTUnwrap(formatter.date(from: "2026-06-01T09:00:00.000Z"))
+        let finalNow = try XCTUnwrap(formatter.date(from: "2026-08-23T09:00:00.000Z"))
+        let oldURL = root.appendingPathComponent("rollout-2026-01-01T08-00-00-dormant.jsonl")
+        try [
+            #"{"timestamp":"2026-01-01T07:59:59.000Z","type":"session_meta","payload":{"id":"dormant-session","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-01-01T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: oldURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: oldAt], ofItemAtPath: oldURL.path)
+
+        let currentURL = root.appendingPathComponent("rollout-2026-06-01T08-00-00-current.jsonl")
+        try [
+            #"{"timestamp":"2026-06-01T07:59:59.000Z","type":"session_meta","payload":{"id":"current-session","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-06-01T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20},"last_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: currentURL, atomically: true, encoding: .utf8)
+
+        var options = CostUsageScanner.Options(codexSessionsRoot: root, cacheRoot: cacheRoot)
+        options.refreshMinIntervalSeconds = 0
+        options.forceRescan = true
+        let firstSince = Calendar.current.date(byAdding: .day, value: -29, to: firstNow) ?? firstNow
+        let first = try CostUsageScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: firstSince,
+            until: firstNow,
+            now: firstNow,
+            options: options,
+            checkCancellation: nil
+        )
+        XCTAssertEqual(first.data.compactMap(\.totalTokens).reduce(0, +), 20)
+        let inventoryCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let dormantStub = try XCTUnwrap(
+            inventoryCache.files.values.first(where: { $0.sessionId == "dormant-session" })
+        )
+        XCTAssertTrue(dormantStub.days.isEmpty)
+        XCTAssertEqual(dormantStub.parsedBytes, dormantStub.size)
+
+        options.forceRescan = false
+        try FileHandle(forWritingTo: oldURL).appendString(
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"# + "\n"
+        )
+        let finalSince = Calendar.current.startOfDay(for: finalNow)
+        let final = try CostUsageScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: finalSince,
+            until: finalNow,
+            now: finalNow,
+            options: options,
+            checkCancellation: nil
+        )
+        XCTAssertEqual(final.data.compactMap(\.totalTokens).reduce(0, +), 50)
+    }
+
+    func testDormantOwnerStubCanPromoteToLongerDuplicateAndResumeScanning() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dormant-owner-promotion-\(UUID().uuidString)", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let oldAt = try XCTUnwrap(formatter.date(from: "2026-01-01T08:00:00.000Z"))
+        let firstNow = try XCTUnwrap(formatter.date(from: "2026-06-01T09:00:00.000Z"))
+        let finalNow = try XCTUnwrap(formatter.date(from: "2026-08-23T09:00:00.000Z"))
+        let meta = #"{"timestamp":"2026-01-01T07:59:59.000Z","type":"session_meta","payload":{"id":"dormant-promotion","originator":"Codex Desktop"}}"#
+        let oldToken = #"{"timestamp":"2026-01-01T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let oldDirectory = root
+            .appendingPathComponent("2026", isDirectory: true)
+            .appendingPathComponent("01", isDirectory: true)
+            .appendingPathComponent("01", isDirectory: true)
+        try FileManager.default.createDirectory(at: oldDirectory, withIntermediateDirectories: true)
+        let oldURL = oldDirectory.appendingPathComponent(
+            "rollout-2026-01-01T08-00-00-dormant.jsonl"
+        )
+        try [meta, oldToken].joined(separator: "\n").appending("\n")
+            .write(to: oldURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: oldAt], ofItemAtPath: oldURL.path)
+
+        let currentURL = root.appendingPathComponent("rollout-2026-06-01T08-00-00-current.jsonl")
+        try [
+            #"{"timestamp":"2026-06-01T07:59:59.000Z","type":"session_meta","payload":{"id":"current-for-dormant-promotion","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-06-01T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20},"last_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: currentURL, atomically: true, encoding: .utf8)
+
+        var options = CostUsageScanner.Options(codexSessionsRoot: root, cacheRoot: cacheRoot)
+        options.refreshMinIntervalSeconds = 0
+        let firstSince = Calendar.current.date(byAdding: .day, value: -29, to: firstNow) ?? firstNow
+        _ = try CostUsageScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: firstSince,
+            until: firstNow,
+            now: firstNow,
+            options: options,
+            checkCancellation: nil
+        )
+        let stubCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let stub = try XCTUnwrap(stubCache.files.values.first(where: {
+            $0.sessionId == "dormant-promotion" && $0.codexInventoryOnly != true
+        }))
+        XCTAssertTrue(stub.days.isEmpty)
+        XCTAssertNil(stub.committedPrefixFingerprint)
+
+        let longerURL = root.appendingPathComponent("rollout-2026-08-23T08-00-00-dormant-copy.jsonl")
+        let todayToken = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        try [meta, oldToken, todayToken].joined(separator: "\n").appending("\n")
+            .write(to: longerURL, atomically: true, encoding: .utf8)
+
+        let finalSince = Calendar.current.startOfDay(for: finalNow)
+        let promoted = try CostUsageScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: finalSince,
+            until: finalNow,
+            now: finalNow,
+            options: options,
+            checkCancellation: nil
+        )
+        XCTAssertEqual(promoted.data.compactMap(\.totalTokens).reduce(0, +), 50)
+        let stable = try CostUsageScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: finalSince,
+            until: finalNow,
+            now: finalNow,
+            options: options,
+            checkCancellation: nil
+        )
+        XCTAssertEqual(stable.data.compactMap(\.totalTokens).reduce(0, +), 50)
+        let finalCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertEqual(finalCache.files.values.filter {
+            $0.sessionId == "dormant-promotion" && $0.codexInventoryOnly != true
+        }.count, 1)
+        XCTAssertNotNil(finalCache.files.values.first(where: {
+            $0.sessionId == "dormant-promotion" && $0.codexInventoryOnly != true
+        })?.committedPrefixFingerprint)
+    }
+
+    func testSessionInventoryQuarantinesNoMetaFileAndDetectsLaterRepair() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("no-meta-inventory-\(UUID().uuidString)", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let malformedURL = root.appendingPathComponent("rollout-2026-08-23T07-00-00-malformed.jsonl")
+        try #"{"timestamp":"2026-08-23T07:00:00.000Z","type":"event_msg","payload":{"type":"notice"}}"#
+            .appending("\n")
+            .write(to: malformedURL, atomically: true, encoding: .utf8)
+        let validURL = root.appendingPathComponent("rollout-2026-08-23T07-30-00-valid.jsonl")
+        try [
+            #"{"timestamp":"2026-08-23T07:29:59.000Z","type":"session_meta","payload":{"id":"valid-session","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T07:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20},"last_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: validURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let since = Calendar.current.startOfDay(for: now)
+        var options = CostUsageScanner.Options(codexSessionsRoot: root, cacheRoot: cacheRoot)
+        options.refreshMinIntervalSeconds = 0
+
+        let first = try CostUsageScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: since,
+            until: now,
+            now: now,
+            options: options,
+            checkCancellation: nil
+        )
+        XCTAssertEqual(first.data.compactMap(\.totalTokens).reduce(0, +), 20)
+        let firstCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let malformedPath = malformedURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let quarantined = try XCTUnwrap(
+            firstCache.files.first(where: {
+                URL(fileURLWithPath: $0.key).standardizedFileURL.resolvingSymlinksInPath().path
+                    == malformedPath
+            })?.value,
+            "cached paths: \(firstCache.files.keys.sorted())"
+        )
+        XCTAssertNil(quarantined.sessionId)
+        XCTAssertEqual(quarantined.codexInventoryOnly, true)
+        XCTAssertTrue(quarantined.days.isEmpty)
+        XCTAssertEqual(quarantined.parsedBytes, 0)
+
+        try FileHandle(forWritingTo: malformedURL).appendString([
+            #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"repaired-session","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30,"cached_input_tokens":0,"output_tokens":0,"total_tokens":30},"last_token_usage":{"input_tokens":30,"cached_input_tokens":0,"output_tokens":0,"total_tokens":30}}}}"#,
+        ].joined(separator: "\n").appending("\n"))
+
+        let repaired = try CostUsageScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: since,
+            until: now,
+            now: now,
+            options: options,
+            checkCancellation: nil
+        )
+        XCTAssertEqual(repaired.data.compactMap(\.totalTokens).reduce(0, +), 50)
+        let repairedCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let repairedUsage = try XCTUnwrap(
+            repairedCache.files.first(where: {
+                URL(fileURLWithPath: $0.key).standardizedFileURL.resolvingSymlinksInPath().path
+                    == malformedPath
+            })?.value
+        )
+        XCTAssertEqual(repairedUsage.sessionId, "repaired-session")
+        XCTAssertNotEqual(repairedUsage.codexInventoryOnly, true)
+    }
+
+    func testDuplicateSessionPathExtensionPromotesOwnerWithoutDoubleCounting() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("duplicate-session-inventory-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionID = "duplicate-session"
+        let meta = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"duplicate-session","originator":"Codex Desktop"}}"#
+        let initial = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let firstURL = sessionsRoot.appendingPathComponent("rollout-2026-08-23T08-00-00-a.jsonl")
+        let secondURL = sessionsRoot.appendingPathComponent("rollout-2026-08-23T08-00-00-b.jsonl")
+        for url in [firstURL, secondURL] {
+            try [meta, initial].joined(separator: "\n").appending("\n")
+                .write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let first = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(first.isComplete)
+        XCTAssertEqual(first.days.compactMap(\.totalTokens).reduce(0, +), 100)
+
+        let firstCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let duplicates = firstCache.files.filter { $0.value.sessionId == sessionID }
+        XCTAssertEqual(duplicates.count, 2)
+        let sentinelPath = try XCTUnwrap(
+            duplicates.first(where: { $0.value.codexInventoryOnly == true })?.key
+        )
+        try FileHandle(forWritingTo: URL(fileURLWithPath: sentinelPath)).appendString(
+            #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"# + "\n"
+        )
+
+        let recovered = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(recovered.isComplete)
+        XCTAssertEqual(recovered.days.compactMap(\.totalTokens).reduce(0, +), 150)
+        let recoveredCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertNotEqual(recoveredCache.files[sentinelPath]?.codexInventoryOnly, true)
+        XCTAssertEqual(
+            recoveredCache.files.values.filter { $0.sessionId == sessionID }.count,
+            2
+        )
+        XCTAssertEqual(
+            recoveredCache.files.values.filter {
+                $0.sessionId == sessionID && $0.codexInventoryOnly == true
+            }.count,
+            1
+        )
+
+        let stable = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(stable.isComplete)
+        XCTAssertEqual(stable.days.compactMap(\.totalTokens).reduce(0, +), 150)
+    }
+
+    func testInitialDuplicateSessionChoosesTheCopyWithTheGreatestProvenFrontier() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("duplicate-session-frontier-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionID = "frontier-session"
+        let meta = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"frontier-session","originator":"Codex Desktop"}}"#
+        let first = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let extensionLine = #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        let shorterURL = sessionsRoot.appendingPathComponent("rollout-2026-08-23T08-00-00-a.jsonl")
+        let longerURL = sessionsRoot.appendingPathComponent("rollout-2026-08-23T08-00-00-b.jsonl")
+        try [meta, first].joined(separator: "\n").appending("\n")
+            .write(to: shorterURL, atomically: true, encoding: .utf8)
+        try [meta, first, extensionLine].joined(separator: "\n").appending("\n")
+            .write(to: longerURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let result = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(result.isComplete)
+        XCTAssertEqual(result.days.compactMap(\.totalTokens).reduce(0, +), 150)
+
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let longerPath = longerURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let shorterPath = shorterURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let longerUsage = cache.files.first {
+            URL(fileURLWithPath: $0.key).standardizedFileURL.resolvingSymlinksInPath().path == longerPath
+        }?.value
+        let shorterUsage = cache.files.first {
+            URL(fileURLWithPath: $0.key).standardizedFileURL.resolvingSymlinksInPath().path == shorterPath
+        }?.value
+        XCTAssertNotEqual(longerUsage?.codexInventoryOnly, true)
+        XCTAssertEqual(shorterUsage?.codexInventoryOnly, true)
+        XCTAssertEqual(cache.files.values.filter { $0.sessionId == sessionID }.count, 2)
+    }
+
+    func testInitialDivergentDuplicateSessionPreservesConsistencyInsteadOfChoosingByPath() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("divergent-session-frontier-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let meta = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"divergent-session","originator":"Codex Desktop"}}"#
+        let first = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let divergent = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200},"last_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200}}}}"#
+        try [meta, first].joined(separator: "\n").appending("\n")
+            .write(
+                to: sessionsRoot.appendingPathComponent("rollout-2026-08-23T08-00-00-a.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+        try [meta, divergent].joined(separator: "\n").appending("\n")
+            .write(
+                to: sessionsRoot.appendingPathComponent("rollout-2026-08-23T08-00-00-b.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let result = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertFalse(result.isComplete)
+        XCTAssertTrue(result.days.isEmpty)
+    }
+
+    func testHardLinkedDuplicateSentinelOrderingCannotDropOwnerAggregate() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hardlink-session-order-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        for sentinelSortsFirst in [true, false] {
+            let caseRoot = root.appendingPathComponent(
+                sentinelSortsFirst ? "sentinel-first" : "owner-first",
+                isDirectory: true
+            )
+            let sessionsRoot = caseRoot.appendingPathComponent("sessions", isDirectory: true)
+            let cacheRoot = caseRoot.appendingPathComponent("cache", isDirectory: true)
+            try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+
+            let ownerName = sentinelSortsFirst ? "b-owner.jsonl" : "a-owner.jsonl"
+            let sentinelName = sentinelSortsFirst ? "a-sentinel.jsonl" : "b-sentinel.jsonl"
+            let ownerURL = sessionsRoot.appendingPathComponent(ownerName)
+            let sentinelURL = sessionsRoot.appendingPathComponent(sentinelName)
+            let sessionID = sentinelSortsFirst ? "hardlink-first" : "hardlink-last"
+            try [
+                #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#,
+                #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+            ].joined(separator: "\n").appending("\n")
+                .write(to: ownerURL, atomically: true, encoding: .utf8)
+
+            let scanner = CodexTokenActivityScanner(
+                sessionRootURLs: [sessionsRoot],
+                costUsageCacheRootURL: cacheRoot,
+                usesAgentSignalCostUsageScanner: true
+            )
+            let initial = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+            XCTAssertTrue(initial.isComplete)
+            XCTAssertEqual(initial.days.compactMap(\.totalTokens).reduce(0, +), 100)
+
+            try FileManager.default.linkItem(at: ownerURL, to: sentinelURL)
+            let inventoried = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+            XCTAssertTrue(inventoried.isComplete)
+            XCTAssertEqual(inventoried.days.compactMap(\.totalTokens).reduce(0, +), 100)
+
+            try FileHandle(forWritingTo: ownerURL).appendString(
+                #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"# + "\n"
+            )
+            let appended = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+            XCTAssertTrue(appended.isComplete, "sentinelSortsFirst=\(sentinelSortsFirst)")
+            XCTAssertEqual(
+                appended.days.compactMap(\.totalTokens).reduce(0, +),
+                150,
+                "sentinelSortsFirst=\(sentinelSortsFirst)"
+            )
+
+            let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+            let copies = cache.files.values.filter { $0.sessionId == sessionID }
+            XCTAssertEqual(copies.count, 2)
+            XCTAssertEqual(copies.filter { $0.codexInventoryOnly != true }.count, 1)
+            XCTAssertEqual(copies.filter { $0.codexInventoryOnly == true }.count, 1)
+        }
+    }
+
+    func testDuplicateSentinelRewrittenAsNewSessionBecomesIndependentOwner() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("duplicate-new-session-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ownerURL = sessionsRoot.appendingPathComponent("a-owner.jsonl")
+        let sentinelURL = sessionsRoot.appendingPathComponent("b-sentinel.jsonl")
+        let sessionA = [
+            #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"session-a","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        try sessionA.write(to: ownerURL, atomically: true, encoding: .utf8)
+        try sessionA.write(to: sentinelURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        XCTAssertEqual(
+            scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+                .days.compactMap(\.totalTokens).reduce(0, +),
+            100
+        )
+
+        let sessionB = [
+            #"{"timestamp":"2026-08-23T08:29:59.000Z","type":"session_meta","payload":{"id":"session-b","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        let handle = try FileHandle(forWritingTo: sentinelURL)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data(sessionB.utf8))
+        try handle.close()
+
+        let separated = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(separated.isComplete)
+        XCTAssertEqual(separated.days.compactMap(\.totalTokens).reduce(0, +), 150)
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let owners = cache.files.values.filter { $0.codexInventoryOnly != true }
+        XCTAssertEqual(Set(owners.compactMap(\.sessionId)), ["session-a", "session-b"])
+    }
+
+    func testDuplicateRewrittenToExistingSessionReconcilesAgainstGlobalOwner() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("duplicate-existing-session-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionA = [
+            #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"session-a","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        let sessionB = [
+            #"{"timestamp":"2026-08-23T08:09:59.000Z","type":"session_meta","payload":{"id":"session-b","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:10:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200},"last_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        let ownerAURL = sessionsRoot.appendingPathComponent("a-owner-a.jsonl")
+        let sentinelAURL = sessionsRoot.appendingPathComponent("b-sentinel-a.jsonl")
+        let ownerBURL = sessionsRoot.appendingPathComponent("c-owner-b.jsonl")
+        try sessionA.write(to: ownerAURL, atomically: true, encoding: .utf8)
+        try sessionA.write(to: sentinelAURL, atomically: true, encoding: .utf8)
+        try sessionB.write(to: ownerBURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        XCTAssertEqual(
+            scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+                .days.compactMap(\.totalTokens).reduce(0, +),
+            300
+        )
+
+        let handle = try FileHandle(forWritingTo: sentinelAURL)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data(sessionB.utf8))
+        try handle.close()
+
+        let reconciled = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(reconciled.isComplete)
+        XCTAssertEqual(reconciled.days.compactMap(\.totalTokens).reduce(0, +), 300)
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertEqual(
+            cache.files.values.filter {
+                $0.sessionId == "session-b" && $0.codexInventoryOnly != true
+            }.count,
+            1
+        )
+        XCTAssertEqual(cache.files.values.filter { $0.sessionId == "session-b" }.count, 2)
+    }
+
+    func testSimultaneousDuplicateSessionMovesUseOneGlobalReconciliationPlan() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("duplicate-global-plan-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let metaA = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"global-a","originator":"Codex Desktop"}}"#
+        let tokenA100 = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let metaB = #"{"timestamp":"2026-08-23T08:09:59.000Z","type":"session_meta","payload":{"id":"global-b","originator":"Codex Desktop"}}"#
+        let tokenB200 = #"{"timestamp":"2026-08-23T08:10:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200},"last_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200}}}}"#
+        let tokenB250 = #"{"timestamp":"2026-08-23T08:20:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":250,"cached_input_tokens":0,"output_tokens":0,"total_tokens":250},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        let tokenB300 = #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":0,"total_tokens":300},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+
+        let ownerAURL = sessionsRoot.appendingPathComponent("a-owner-a.jsonl")
+        let sentinelAURL = sessionsRoot.appendingPathComponent("b-sentinel-a.jsonl")
+        let ownerBURL = sessionsRoot.appendingPathComponent("c-owner-b.jsonl")
+        let sentinelBURL = sessionsRoot.appendingPathComponent("d-sentinel-b.jsonl")
+        let sessionA = [metaA, tokenA100].joined(separator: "\n").appending("\n")
+        let sessionB = [metaB, tokenB200].joined(separator: "\n").appending("\n")
+        try sessionA.write(to: ownerAURL, atomically: true, encoding: .utf8)
+        try sessionA.write(to: sentinelAURL, atomically: true, encoding: .utf8)
+        try sessionB.write(to: ownerBURL, atomically: true, encoding: .utf8)
+        try sessionB.write(to: sentinelBURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let initial = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(initial.isComplete)
+        XCTAssertEqual(initial.days.compactMap(\.totalTokens).reduce(0, +), 300)
+
+        let movedA = [metaB, tokenB200, tokenB250].joined(separator: "\n").appending("\n")
+        let movedHandle = try FileHandle(forWritingTo: sentinelAURL)
+        try movedHandle.truncate(atOffset: 0)
+        try movedHandle.write(contentsOf: Data(movedA.utf8))
+        try movedHandle.close()
+        try FileHandle(forWritingTo: sentinelBURL).appendString(tokenB250 + "\n" + tokenB300 + "\n")
+
+        let reconciled = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(reconciled.isComplete)
+        XCTAssertEqual(reconciled.days.compactMap(\.totalTokens).reduce(0, +), 400)
+        let stable = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(stable.isComplete)
+        XCTAssertEqual(stable.days.compactMap(\.totalTokens).reduce(0, +), 400)
+
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertEqual(
+            cache.files.values.filter {
+                $0.sessionId == "global-b" && $0.codexInventoryOnly != true
+            }.count,
+            1
+        )
+        XCTAssertEqual(cache.files.values.filter { $0.sessionId == "global-b" }.count, 3)
+        let ownerBPath = try XCTUnwrap(
+            cache.files.first(where: {
+                $0.value.sessionId == "global-b" && $0.value.codexInventoryOnly != true
+            })?.key
+        )
+        XCTAssertEqual(
+            URL(fileURLWithPath: ownerBPath).standardizedFileURL.resolvingSymlinksInPath().path,
+            sentinelBURL.standardizedFileURL.resolvingSymlinksInPath().path,
+            "the longest globally consistent B copy must become the sole owner"
+        )
+    }
+
+    func testGlobalReconciliationRecoversOldSessionWhenItsOwnerMovesAgain() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("duplicate-owner-chain-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        func tokenLine(sessionTotal: Int, delta: Int, timestamp: String) -> String {
+            #"{"timestamp":"\#(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":\#(sessionTotal),"cached_input_tokens":0,"output_tokens":0,"total_tokens":\#(sessionTotal)},"last_token_usage":{"input_tokens":\#(delta),"cached_input_tokens":0,"output_tokens":0,"total_tokens":\#(delta)}}}}"#
+        }
+        let metaA = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"chain-a","originator":"Codex Desktop"}}"#
+        let metaB = #"{"timestamp":"2026-08-23T08:09:59.000Z","type":"session_meta","payload":{"id":"chain-b","originator":"Codex Desktop"}}"#
+        let metaC = #"{"timestamp":"2026-08-23T08:39:59.000Z","type":"session_meta","payload":{"id":"chain-c","originator":"Codex Desktop"}}"#
+        let sessionA = [metaA, tokenLine(sessionTotal: 100, delta: 100, timestamp: "2026-08-23T08:00:00.000Z")]
+            .joined(separator: "\n").appending("\n")
+        let sessionB = [metaB, tokenLine(sessionTotal: 200, delta: 200, timestamp: "2026-08-23T08:10:00.000Z")]
+            .joined(separator: "\n").appending("\n")
+        let extendedB = [
+            metaB,
+            tokenLine(sessionTotal: 200, delta: 200, timestamp: "2026-08-23T08:10:00.000Z"),
+            tokenLine(sessionTotal: 250, delta: 50, timestamp: "2026-08-23T08:20:00.000Z"),
+        ].joined(separator: "\n").appending("\n")
+        let sessionC = [metaC, tokenLine(sessionTotal: 50, delta: 50, timestamp: "2026-08-23T08:40:00.000Z")]
+            .joined(separator: "\n").appending("\n")
+
+        let ownerAURL = sessionsRoot.appendingPathComponent("a-owner-a.jsonl")
+        let sentinelAURL = sessionsRoot.appendingPathComponent("b-sentinel-a.jsonl")
+        let ownerBURL = sessionsRoot.appendingPathComponent("c-owner-b.jsonl")
+        let sentinelBURL = sessionsRoot.appendingPathComponent("d-sentinel-b.jsonl")
+        try sessionA.write(to: ownerAURL, atomically: true, encoding: .utf8)
+        try sessionA.write(to: sentinelAURL, atomically: true, encoding: .utf8)
+        try sessionB.write(to: ownerBURL, atomically: true, encoding: .utf8)
+        try sessionB.write(to: sentinelBURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let initial = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(initial.isComplete)
+        XCTAssertEqual(initial.days.compactMap(\.totalTokens).reduce(0, +), 300)
+
+        let movedSentinel = try FileHandle(forWritingTo: sentinelAURL)
+        try movedSentinel.truncate(atOffset: 0)
+        try movedSentinel.write(contentsOf: Data(extendedB.utf8))
+        try movedSentinel.close()
+        let movedOwner = try FileHandle(forWritingTo: ownerBURL)
+        try movedOwner.truncate(atOffset: 0)
+        try movedOwner.write(contentsOf: Data(sessionC.utf8))
+        try movedOwner.close()
+
+        let reconciled = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(reconciled.isComplete)
+        XCTAssertEqual(reconciled.days.compactMap(\.totalTokens).reduce(0, +), 400)
+        let stable = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(stable.isComplete)
+        XCTAssertEqual(stable.days.compactMap(\.totalTokens).reduce(0, +), 400)
+
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        for sessionId in ["chain-a", "chain-b", "chain-c"] {
+            XCTAssertEqual(
+                cache.files.values.filter {
+                    $0.sessionId == sessionId && $0.codexInventoryOnly != true
+                }.count,
+                1,
+                "\(sessionId) must have exactly one aggregate owner"
+            )
+        }
+    }
+
+    func testRepairedNoMetadataSentinelCanSafelyExtendExistingSessionOwner() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repaired-duplicate-sentinel-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let meta = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"repair-session","originator":"Codex Desktop"}}"#
+        let first = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let extensionLine = #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        let ownerURL = sessionsRoot.appendingPathComponent("a-owner.jsonl")
+        let deferredURL = sessionsRoot.appendingPathComponent("b-deferred.jsonl")
+        try [meta, first].joined(separator: "\n").appending("\n")
+            .write(to: ownerURL, atomically: true, encoding: .utf8)
+        try (#"{"timestamp":"2026-08-23T08:10:00.000Z","type":"event_msg","payload":{"type":"notice"}}"# + "\n")
+            .write(to: deferredURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        XCTAssertEqual(
+            scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+                .days.compactMap(\.totalTokens).reduce(0, +),
+            100
+        )
+
+        let repaired = [meta, first, extensionLine].joined(separator: "\n").appending("\n")
+        let handle = try FileHandle(forWritingTo: deferredURL)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data(repaired.utf8))
+        try handle.close()
+
+        let promoted = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(promoted.isComplete)
+        XCTAssertEqual(promoted.days.compactMap(\.totalTokens).reduce(0, +), 150)
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertEqual(
+            cache.files.values.filter {
+                $0.sessionId == "repair-session" && $0.codexInventoryOnly != true
+            }.count,
+            1
+        )
+    }
+
+    func testTwoNoMetadataSentinelsRepairThroughOneGlobalPlan() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repaired-sentinel-chain-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let meta = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"repair-chain","originator":"Codex Desktop"}}"#
+        let token100 = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let token150 = #"{"timestamp":"2026-08-23T08:20:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        let token200 = #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        let ownerURL = sessionsRoot.appendingPathComponent("a-owner.jsonl")
+        let shorterURL = sessionsRoot.appendingPathComponent("b-shorter-deferred.jsonl")
+        let longerURL = sessionsRoot.appendingPathComponent("c-longer-deferred.jsonl")
+        try [meta, token100].joined(separator: "\n").appending("\n")
+            .write(to: ownerURL, atomically: true, encoding: .utf8)
+        let noMetadata = #"{"timestamp":"2026-08-23T08:10:00.000Z","type":"event_msg","payload":{"type":"notice"}}"# + "\n"
+        try noMetadata.write(to: shorterURL, atomically: true, encoding: .utf8)
+        try noMetadata.write(to: longerURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let initial = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(initial.isComplete)
+        XCTAssertEqual(initial.days.compactMap(\.totalTokens).reduce(0, +), 100)
+
+        let shorter = [meta, token100, token150].joined(separator: "\n").appending("\n")
+        let longer = [meta, token100, token150, token200].joined(separator: "\n").appending("\n")
+        for (url, contents) in [(shorterURL, shorter), (longerURL, longer)] {
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.truncate(atOffset: 0)
+            try handle.write(contentsOf: Data(contents.utf8))
+            try handle.close()
+        }
+
+        let repaired = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(repaired.isComplete)
+        XCTAssertEqual(repaired.days.compactMap(\.totalTokens).reduce(0, +), 200)
+        let stable = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(stable.isComplete)
+        XCTAssertEqual(stable.days.compactMap(\.totalTokens).reduce(0, +), 200)
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertEqual(
+            cache.files.values.filter {
+                $0.sessionId == "repair-chain" && $0.codexInventoryOnly != true
+            }.count,
+            1
+        )
+    }
+
+    func testUnchangedSentinelPromotesWhenFormerOwnerMovesToNewSession() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("stable-sentinel-promotion-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionB = [
+            #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"stable-b","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200},"last_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        let sessionC = [
+            #"{"timestamp":"2026-08-23T08:29:59.000Z","type":"session_meta","payload":{"id":"moved-c","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        let ownerURL = sessionsRoot.appendingPathComponent("a-former-owner.jsonl")
+        let sentinelURL = sessionsRoot.appendingPathComponent("b-stable-sentinel.jsonl")
+        try sessionB.write(to: ownerURL, atomically: true, encoding: .utf8)
+        try sessionB.write(to: sentinelURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let initial = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(initial.isComplete)
+        XCTAssertEqual(initial.days.compactMap(\.totalTokens).reduce(0, +), 200)
+
+        let handle = try FileHandle(forWritingTo: ownerURL)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data(sessionC.utf8))
+        try handle.close()
+
+        let reconciled = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(reconciled.isComplete)
+        XCTAssertEqual(reconciled.days.compactMap(\.totalTokens).reduce(0, +), 250)
+        let stable = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(stable.isComplete)
+        XCTAssertEqual(stable.days.compactMap(\.totalTokens).reduce(0, +), 250)
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertEqual(
+            Set(cache.files.values.filter { $0.codexInventoryOnly != true }.compactMap(\.sessionId)),
+            ["stable-b", "moved-c"]
+        )
+    }
+
+    func testDuplicateOwnerPromotionPreservesRetainedHistoryOutsideCurrentWindow() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("duplicate-retained-history-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines = [
+            #"{"timestamp":"2025-09-01T07:59:59.000Z","type":"session_meta","payload":{"id":"retained-history","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2025-09-01T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
+        ]
+        let extensionLine = #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        let ownerURL = sessionsRoot.appendingPathComponent("a-owner.jsonl")
+        let sentinelURL = sessionsRoot.appendingPathComponent("b-sentinel.jsonl")
+        let original = lines.joined(separator: "\n").appending("\n")
+        try original.write(to: ownerURL, atomically: true, encoding: .utf8)
+        try original.write(to: sentinelURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let historical = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(historical.isComplete)
+        XCTAssertEqual(historical.days.compactMap(\.totalTokens).reduce(0, +), 150)
+
+        try FileHandle(forWritingTo: sentinelURL).appendString(extensionLine + "\n")
+        let today = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(today.isComplete)
+        XCTAssertEqual(today.days.compactMap(\.totalTokens).reduce(0, +), 100)
+
+        let historicalAgain = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(historicalAgain.isComplete)
+        XCTAssertEqual(historicalAgain.days.compactMap(\.totalTokens).reduce(0, +), 200)
+    }
+
+    func testSamePathGenerationReplacementPreservesRetainedHistory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("replacement-retained-history-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let originalLines = [
+            #"{"timestamp":"2025-09-01T07:59:59.000Z","type":"session_meta","payload":{"id":"same-path-history","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2025-09-01T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
+        ]
+        let replacementLine = #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        let sessionURL = sessionsRoot.appendingPathComponent("rollout.jsonl")
+        try originalLines.joined(separator: "\n").appending("\n")
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let historical = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(historical.isComplete)
+        XCTAssertEqual(historical.days.compactMap(\.totalTokens).reduce(0, +), 150)
+        let oldGeneration = CostUsageScanner.codexFileMetadata(fileURL: sessionURL).fileId
+
+        try (originalLines + [replacementLine]).joined(separator: "\n").appending("\n")
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+        let newGeneration = CostUsageScanner.codexFileMetadata(fileURL: sessionURL).fileId
+        XCTAssertNotEqual(oldGeneration, newGeneration)
+
+        let today = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(today.isComplete)
+        XCTAssertEqual(today.days.compactMap(\.totalTokens).reduce(0, +), 100)
+        let historicalAgain = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(historicalAgain.isComplete)
+        XCTAssertEqual(historicalAgain.days.compactMap(\.totalTokens).reduce(0, +), 200)
+    }
+
+    func testHardLinkOwnerRenameAndDuplicatePromotionPreserveRetainedHistory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hardlink-rename-history-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let originalLines = [
+            #"{"timestamp":"2025-09-01T07:59:59.000Z","type":"session_meta","payload":{"id":"hardlink-history","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2025-09-01T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
+        ]
+        let extensionLine = #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        let original = originalLines.joined(separator: "\n").appending("\n")
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+
+        for sentinelSortsFirst in [false, true] {
+            let caseRoot = root.appendingPathComponent(
+                sentinelSortsFirst ? "sentinel-first" : "owner-first",
+                isDirectory: true
+            )
+            let sessionsRoot = caseRoot.appendingPathComponent("sessions", isDirectory: true)
+            let cacheRoot = caseRoot.appendingPathComponent("cache", isDirectory: true)
+            try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+            let ownerURL = sessionsRoot.appendingPathComponent(
+                sentinelSortsFirst ? "b-owner.jsonl" : "a-owner.jsonl"
+            )
+            let hardlinkURL = sessionsRoot.appendingPathComponent(
+                sentinelSortsFirst ? "a-sentinel.jsonl" : "b-sentinel.jsonl"
+            )
+            let extendableURL = sessionsRoot.appendingPathComponent("c-extendable.jsonl")
+            try original.write(to: ownerURL, atomically: true, encoding: .utf8)
+
+            let scanner = CodexTokenActivityScanner(
+                sessionRootURLs: [sessionsRoot],
+                costUsageCacheRootURL: cacheRoot,
+                usesAgentSignalCostUsageScanner: true
+            )
+            let initial = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+            XCTAssertTrue(initial.isComplete, "sentinelSortsFirst=\(sentinelSortsFirst)")
+            XCTAssertEqual(
+                initial.days.compactMap(\.totalTokens).reduce(0, +),
+                150,
+                "sentinelSortsFirst=\(sentinelSortsFirst)"
+            )
+
+            try FileManager.default.linkItem(at: ownerURL, to: hardlinkURL)
+            try original.write(to: extendableURL, atomically: true, encoding: .utf8)
+            let inventoried = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+            XCTAssertTrue(inventoried.isComplete, "sentinelSortsFirst=\(sentinelSortsFirst)")
+            XCTAssertEqual(inventoried.days.compactMap(\.totalTokens).reduce(0, +), 150)
+
+            let renamedOwnerURL = sessionsRoot.appendingPathComponent("z-renamed-owner.jsonl")
+            try FileManager.default.moveItem(at: ownerURL, to: renamedOwnerURL)
+            try FileHandle(forWritingTo: extendableURL).appendString(extensionLine + "\n")
+
+            let today = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+            XCTAssertTrue(today.isComplete, "sentinelSortsFirst=\(sentinelSortsFirst)")
+            XCTAssertEqual(
+                today.days.compactMap(\.totalTokens).reduce(0, +),
+                100,
+                "sentinelSortsFirst=\(sentinelSortsFirst)"
+            )
+            let historical = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+            XCTAssertTrue(historical.isComplete, "sentinelSortsFirst=\(sentinelSortsFirst)")
+            XCTAssertEqual(
+                historical.days.compactMap(\.totalTokens).reduce(0, +),
+                200,
+                "sentinelSortsFirst=\(sentinelSortsFirst)"
+            )
+        }
+    }
+
+    func testOwnerRenameOverStaleSentinelPreservesRetainedHistory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rename-over-stale-sentinel-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ownerURL = sessionsRoot.appendingPathComponent("a-owner.jsonl")
+        let staleSentinelURL = sessionsRoot.appendingPathComponent("z-stale-sentinel.jsonl")
+        let ownerContents = [
+            #"{"timestamp":"2025-09-01T07:59:59.000Z","type":"session_meta","payload":{"id":"rename-over-sentinel","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2025-09-01T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        try ownerContents.write(to: ownerURL, atomically: true, encoding: .utf8)
+        try (#"{"timestamp":"2026-08-23T08:10:00.000Z","type":"event_msg","payload":{"type":"notice"}}"# + "\n")
+            .write(to: staleSentinelURL, atomically: true, encoding: .utf8)
+
+        let ownerGeneration = CostUsageScanner.codexFileMetadata(fileURL: ownerURL).fileId
+        let staleGeneration = CostUsageScanner.codexFileMetadata(fileURL: staleSentinelURL).fileId
+        XCTAssertNotEqual(ownerGeneration, staleGeneration)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let historical = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(historical.isComplete)
+        XCTAssertEqual(historical.days.compactMap(\.totalTokens).reduce(0, +), 150)
+        let initialCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertEqual(
+            initialCache.files.first(where: {
+                URL(fileURLWithPath: $0.key).lastPathComponent == staleSentinelURL.lastPathComponent
+            })?.value.codexInventoryOnly,
+            true
+        )
+
+        try FileManager.default.removeItem(at: staleSentinelURL)
+        try FileManager.default.moveItem(at: ownerURL, to: staleSentinelURL)
+        XCTAssertEqual(
+            CostUsageScanner.codexFileMetadata(fileURL: staleSentinelURL).fileId,
+            ownerGeneration
+        )
+
+        let today = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(today.isComplete)
+        XCTAssertEqual(today.days.compactMap(\.totalTokens).reduce(0, +), 50)
+        let historicalAgain = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(historicalAgain.isComplete)
+        XCTAssertEqual(historicalAgain.days.compactMap(\.totalTokens).reduce(0, +), 150)
+
+        let finalCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertFalse(finalCache.files.keys.contains(where: {
+            URL(fileURLWithPath: $0).lastPathComponent == ownerURL.lastPathComponent
+        }))
+        let finalOwner = finalCache.files.first(where: {
+            URL(fileURLWithPath: $0.key).lastPathComponent == staleSentinelURL.lastPathComponent
+        })?.value
+        XCTAssertEqual(finalOwner?.sessionId, "rename-over-sentinel")
+        XCTAssertNotEqual(finalOwner?.codexInventoryOnly, true)
+    }
+
+    func testHardLinkSentinelInheritsDeletedOwnerLedger() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hardlink-sentinel-ledger-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ownerURL = sessionsRoot.appendingPathComponent("a-owner.jsonl")
+        let sentinelURL = sessionsRoot.appendingPathComponent("b-hardlink-sentinel.jsonl")
+        try [
+            #"{"timestamp":"2025-09-01T07:59:59.000Z","type":"session_meta","payload":{"id":"hardlink-ledger","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2025-09-01T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: ownerURL, atomically: true, encoding: .utf8)
+        try FileManager.default.linkItem(at: ownerURL, to: sentinelURL)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let historical = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(historical.isComplete)
+        XCTAssertEqual(historical.days.compactMap(\.totalTokens).reduce(0, +), 150)
+
+        let initialCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let initialOwner = initialCache.files.first(where: {
+            URL(fileURLWithPath: $0.key).lastPathComponent == ownerURL.lastPathComponent
+        })?.value
+        let initialSentinel = initialCache.files.first(where: {
+            URL(fileURLWithPath: $0.key).lastPathComponent == sentinelURL.lastPathComponent
+        })?.value
+        XCTAssertNotEqual(initialOwner?.codexInventoryOnly, true)
+        XCTAssertEqual(initialSentinel?.codexInventoryOnly, true)
+
+        try FileManager.default.removeItem(at: ownerURL)
+        let today = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(today.isComplete)
+        XCTAssertEqual(today.days.compactMap(\.totalTokens).reduce(0, +), 50)
+        let historicalAgain = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(historicalAgain.isComplete)
+        XCTAssertEqual(historicalAgain.days.compactMap(\.totalTokens).reduce(0, +), 150)
+
+        let finalCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertFalse(finalCache.files.keys.contains(where: {
+            URL(fileURLWithPath: $0).lastPathComponent == ownerURL.lastPathComponent
+        }))
+        let finalOwner = finalCache.files.first(where: {
+            URL(fileURLWithPath: $0.key).lastPathComponent == sentinelURL.lastPathComponent
+        })?.value
+        XCTAssertEqual(finalOwner?.sessionId, "hardlink-ledger")
+        XCTAssertNotEqual(finalOwner?.codexInventoryOnly, true)
+    }
+
+    func testSwappedOwnerPathsKeepBothRetainedLedgers() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("swapped-owner-ledgers-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let firstURL = sessionsRoot.appendingPathComponent("a-first.jsonl")
+        let secondURL = sessionsRoot.appendingPathComponent("b-second.jsonl")
+        try [
+            #"{"timestamp":"2025-09-01T07:59:59.000Z","type":"session_meta","payload":{"id":"swap-session-a","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2025-09-01T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: firstURL, atomically: true, encoding: .utf8)
+        try [
+            #"{"timestamp":"2025-09-01T07:59:59.000Z","type":"session_meta","payload":{"id":"swap-session-b","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2025-09-01T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200},"last_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200}}}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":250,"cached_input_tokens":0,"output_tokens":0,"total_tokens":250},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: secondURL, atomically: true, encoding: .utf8)
+
+        let firstGeneration = CostUsageScanner.codexFileMetadata(fileURL: firstURL).fileId
+        let secondGeneration = CostUsageScanner.codexFileMetadata(fileURL: secondURL).fileId
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let historical = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(historical.isComplete)
+        XCTAssertEqual(historical.days.compactMap(\.totalTokens).reduce(0, +), 400)
+
+        let temporaryURL = sessionsRoot.appendingPathComponent("swap.tmp")
+        try FileManager.default.moveItem(at: firstURL, to: temporaryURL)
+        try FileManager.default.moveItem(at: secondURL, to: firstURL)
+        try FileManager.default.moveItem(at: temporaryURL, to: secondURL)
+        XCTAssertEqual(CostUsageScanner.codexFileMetadata(fileURL: firstURL).fileId, secondGeneration)
+        XCTAssertEqual(CostUsageScanner.codexFileMetadata(fileURL: secondURL).fileId, firstGeneration)
+
+        let today = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(today.isComplete)
+        XCTAssertEqual(today.days.compactMap(\.totalTokens).reduce(0, +), 100)
+        let historicalAgain = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(historicalAgain.isComplete)
+        XCTAssertEqual(historicalAgain.days.compactMap(\.totalTokens).reduce(0, +), 400)
+
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertEqual(
+            cache.files.values.filter {
+                $0.sessionId == "swap-session-a" && $0.codexInventoryOnly != true
+            }.count,
+            1
+        )
+        XCTAssertEqual(
+            cache.files.values.filter {
+                $0.sessionId == "swap-session-b" && $0.codexInventoryOnly != true
+            }.count,
+            1
+        )
+    }
+
+    func testDeletedOwnerUsesPriorFrontierToChooseExactSentinel() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("deleted-owner-frontier-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let meta = #"{"timestamp":"2025-09-01T07:59:59.000Z","type":"session_meta","payload":{"id":"deleted-owner-session","originator":"Codex Desktop"}}"#
+        let oldToken = #"{"timestamp":"2025-09-01T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let todayToken = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        let original = [meta, oldToken, todayToken].joined(separator: "\n").appending("\n")
+        let ownerURL = sessionsRoot.appendingPathComponent("a-owner.jsonl")
+        let exactURL = sessionsRoot.appendingPathComponent("b-exact.jsonl")
+        let divergentURL = sessionsRoot.appendingPathComponent("c-divergent.jsonl")
+        for url in [ownerURL, exactURL, divergentURL] {
+            try original.write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let initial = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(initial.isComplete)
+        XCTAssertEqual(initial.days.compactMap(\.totalTokens).reduce(0, +), 150)
+
+        let divergentGeneration = CostUsageScanner.codexFileMetadata(fileURL: divergentURL).fileId
+        try FileManager.default.removeItem(at: ownerURL)
+        let divergent = [
+            meta,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        let divergentHandle = try FileHandle(forWritingTo: divergentURL)
+        try divergentHandle.truncate(atOffset: 0)
+        try divergentHandle.write(contentsOf: Data(divergent.utf8))
+        try divergentHandle.close()
+        XCTAssertEqual(
+            CostUsageScanner.codexFileMetadata(fileURL: divergentURL).fileId,
+            divergentGeneration
+        )
+
+        let today = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(today.isComplete)
+        XCTAssertEqual(today.days.compactMap(\.totalTokens).reduce(0, +), 50)
+        let historical = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(historical.isComplete)
+        XCTAssertEqual(historical.days.compactMap(\.totalTokens).reduce(0, +), 150)
+
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let exactUsage = cache.files.first(where: {
+            URL(fileURLWithPath: $0.key).lastPathComponent == exactURL.lastPathComponent
+        })?.value
+        let divergentUsage = cache.files.first(where: {
+            URL(fileURLWithPath: $0.key).lastPathComponent == divergentURL.lastPathComponent
+        })?.value
+        XCTAssertNotEqual(exactUsage?.codexInventoryOnly, true)
+        XCTAssertEqual(divergentUsage?.codexInventoryOnly, true)
+        XCTAssertEqual(divergentUsage?.codexDuplicateQuarantined, true)
+    }
+
+    func testNewlyDivergentSameGenerationSentinelStaysQuarantined() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("same-generation-quarantine-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let meta = #"{"timestamp":"2025-09-01T07:59:59.000Z","type":"session_meta","payload":{"id":"same-generation-session","originator":"Codex Desktop"}}"#
+        let oldToken = #"{"timestamp":"2025-09-01T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let todayToken = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        let original = [meta, oldToken, todayToken].joined(separator: "\n").appending("\n")
+        let ownerURL = sessionsRoot.appendingPathComponent("a-owner.jsonl")
+        let exactURL = sessionsRoot.appendingPathComponent("b-exact.jsonl")
+        let divergentURL = sessionsRoot.appendingPathComponent("c-divergent.jsonl")
+        for url in [ownerURL, exactURL, divergentURL] {
+            try original.write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let initial = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(initial.isComplete)
+        XCTAssertEqual(initial.days.compactMap(\.totalTokens).reduce(0, +), 150)
+
+        let divergentGeneration = CostUsageScanner.codexFileMetadata(fileURL: divergentURL).fileId
+        let divergent = [
+            meta,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        let divergentHandle = try FileHandle(forWritingTo: divergentURL)
+        try divergentHandle.truncate(atOffset: 0)
+        try divergentHandle.write(contentsOf: Data(divergent.utf8))
+        try divergentHandle.close()
+        XCTAssertEqual(
+            CostUsageScanner.codexFileMetadata(fileURL: divergentURL).fileId,
+            divergentGeneration
+        )
+        try [
+            #"{"timestamp":"2026-08-23T08:29:59.000Z","type":"session_meta","payload":{"id":"unrelated-session","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20},"last_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(
+                to: sessionsRoot.appendingPathComponent("d-unrelated.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        let today = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(today.isComplete)
+        XCTAssertEqual(today.days.compactMap(\.totalTokens).reduce(0, +), 70)
+        let historical = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(historical.isComplete)
+        XCTAssertEqual(historical.days.compactMap(\.totalTokens).reduce(0, +), 170)
+
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let divergentUsage = cache.files.first(where: {
+            URL(fileURLWithPath: $0.key).lastPathComponent == divergentURL.lastPathComponent
+        })?.value
+        XCTAssertEqual(divergentUsage?.codexInventoryOnly, true)
+        XCTAssertEqual(divergentUsage?.codexDuplicateQuarantined, true)
+        let stable = scanner.scanDailyActivityResult(now: now, days: 365, progress: nil)
+        XCTAssertTrue(stable.isComplete)
+        XCTAssertEqual(stable.days.compactMap(\.totalTokens).reduce(0, +), 170)
+    }
+
+    func testShortDuplicateCannotReplaceCorruptedOwnerWithoutCoveringCommittedFrontier() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("short-duplicate-frontier-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let meta = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"frontier-guard","originator":"Codex Desktop"}}"#
+        let first = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let second = #"{"timestamp":"2026-08-23T08:20:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        let ownerURL = sessionsRoot.appendingPathComponent("a-owner.jsonl")
+        let shortURL = sessionsRoot.appendingPathComponent("b-short.jsonl")
+        try [meta, first, second].joined(separator: "\n").appending("\n")
+            .write(to: ownerURL, atomically: true, encoding: .utf8)
+        try [meta, first].joined(separator: "\n").appending("\n")
+            .write(to: shortURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let initial = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(initial.isComplete)
+        XCTAssertEqual(initial.days.compactMap(\.totalTokens).reduce(0, +), 150)
+
+        let handle = try FileHandle(forWritingTo: ownerURL)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data(
+            (#"{"timestamp":"2026-08-23T08:40:00.000Z","type":"event_msg","payload":{"type":"notice"}}"# + "\n").utf8
+        ))
+        try handle.close()
+        try [
+            #"{"timestamp":"2026-08-23T08:44:59.000Z","type":"session_meta","payload":{"id":"unrelated-session","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:45:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20},"last_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(
+                to: sessionsRoot.appendingPathComponent("c-unrelated.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        let incomplete = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertFalse(incomplete.isComplete)
+        XCTAssertEqual(incomplete.days.compactMap(\.totalTokens).reduce(0, +), 150)
+    }
+
+    func testFullDuplicateCanReplaceAndQuarantineDivergentFormerOwner() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("full-duplicate-quarantine-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let meta = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"quarantine-session","originator":"Codex Desktop"}}"#
+        let token100 = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let original = [meta, token100].joined(separator: "\n").appending("\n")
+        let formerOwnerURL = sessionsRoot.appendingPathComponent("a-former-owner.jsonl")
+        let replacementURL = sessionsRoot.appendingPathComponent("b-full-copy.jsonl")
+        try original.write(to: formerOwnerURL, atomically: true, encoding: .utf8)
+        try original.write(to: replacementURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        XCTAssertEqual(
+            scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+                .days.compactMap(\.totalTokens).reduce(0, +),
+            100
+        )
+
+        let divergent = [
+            meta,
+            #"{"timestamp":"2026-08-23T08:20:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        let oldGeneration = CostUsageScanner.codexFileMetadata(fileURL: formerOwnerURL).fileId
+        try divergent.write(to: formerOwnerURL, atomically: true, encoding: .utf8)
+        XCTAssertNotEqual(
+            oldGeneration,
+            CostUsageScanner.codexFileMetadata(fileURL: formerOwnerURL).fileId
+        )
+
+        let quarantined = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(quarantined.isComplete)
+        XCTAssertEqual(quarantined.days.compactMap(\.totalTokens).reduce(0, +), 100)
+
+        try [
+            #"{"timestamp":"2026-08-23T08:39:59.000Z","type":"session_meta","payload":{"id":"post-quarantine-session","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:40:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20},"last_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(
+                to: sessionsRoot.appendingPathComponent("c-post-quarantine.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+        let stable = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(stable.isComplete)
+        XCTAssertEqual(stable.days.compactMap(\.totalTokens).reduce(0, +), 120)
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let ownerPath = try XCTUnwrap(
+            cache.files.first(where: {
+                $0.value.sessionId == "quarantine-session"
+                    && $0.value.codexInventoryOnly != true
+            })?.key
+        )
+        XCTAssertEqual(
+            URL(fileURLWithPath: ownerPath).standardizedFileURL.resolvingSymlinksInPath().path,
+            replacementURL.standardizedFileURL.resolvingSymlinksInPath().path
+        )
+        let quarantinedUsage = try XCTUnwrap(
+            cache.files.first(where: {
+                URL(fileURLWithPath: $0.key).standardizedFileURL.resolvingSymlinksInPath().path
+                    == formerOwnerURL.standardizedFileURL.resolvingSymlinksInPath().path
+            })?.value
+        )
+        XCTAssertEqual(quarantinedUsage.codexInventoryOnly, true)
+        XCTAssertEqual(quarantinedUsage.codexDuplicateQuarantined, true)
+    }
+
+    func testValidExtendedDuplicateWinsOverDivergentFormerOwner() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("duplicate-valid-extension-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let meta = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"trusted-chain","originator":"Codex Desktop"}}"#
+        let token100 = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let token150 = #"{"timestamp":"2026-08-23T08:20:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        let original = [meta, token100].joined(separator: "\n").appending("\n")
+        let ownerURL = sessionsRoot.appendingPathComponent("a-owner.jsonl")
+        let stableURL = sessionsRoot.appendingPathComponent("b-stable.jsonl")
+        let extendedURL = sessionsRoot.appendingPathComponent("c-extended.jsonl")
+        try original.write(to: ownerURL, atomically: true, encoding: .utf8)
+        try original.write(to: stableURL, atomically: true, encoding: .utf8)
+        try original.write(to: extendedURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        XCTAssertEqual(
+            scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+                .days.compactMap(\.totalTokens).reduce(0, +),
+            100
+        )
+
+        let divergent = [
+            meta,
+            #"{"timestamp":"2026-08-23T08:10:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":0,"total_tokens":40},"last_token_usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":0,"total_tokens":40}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        let ownerHandle = try FileHandle(forWritingTo: ownerURL)
+        try ownerHandle.truncate(atOffset: 0)
+        try ownerHandle.write(contentsOf: Data(divergent.utf8))
+        try ownerHandle.close()
+        try FileHandle(forWritingTo: extendedURL).appendString(token150 + "\n")
+
+        let reconciled = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(reconciled.isComplete)
+        XCTAssertEqual(reconciled.days.compactMap(\.totalTokens).reduce(0, +), 150)
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let ownerPath = try XCTUnwrap(
+            cache.files.first(where: {
+                $0.value.sessionId == "trusted-chain" && $0.value.codexInventoryOnly != true
+            })?.key
+        )
+        XCTAssertEqual(
+            URL(fileURLWithPath: ownerPath).standardizedFileURL.resolvingSymlinksInPath().path,
+            extendedURL.standardizedFileURL.resolvingSymlinksInPath().path
+        )
+    }
+
+    func testIncrementalScanRejectsSameInodeRewriteWhenCommittedPrefixChanged() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("same-inode-prefix-rewrite-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionURL = sessionsRoot.appendingPathComponent("rollout-rewrite.jsonl")
+        let oldPrefix = [
+            #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"session-a","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        try oldPrefix.write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        XCTAssertEqual(
+            scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+                .days.compactMap(\.totalTokens).reduce(0, +),
+            100
+        )
+
+        let rewrittenPrefix = [
+            #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"session-b","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens": 50,"cached_input_tokens":0,"output_tokens":0,"total_tokens": 50},"last_token_usage":{"input_tokens": 50,"cached_input_tokens":0,"output_tokens":0,"total_tokens": 50}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        XCTAssertEqual(rewrittenPrefix.utf8.count, oldPrefix.utf8.count)
+        let appended = #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":80,"cached_input_tokens":0,"output_tokens":0,"total_tokens":80},"last_token_usage":{"input_tokens":30,"cached_input_tokens":0,"output_tokens":0,"total_tokens":30}}}}"# + "\n"
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data((rewrittenPrefix + appended).utf8))
+        try handle.close()
+
+        let rescanned = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(rescanned.isComplete)
+        XCTAssertEqual(rescanned.days.compactMap(\.totalTokens).reduce(0, +), 80)
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertEqual(cache.files.values.first(where: { $0.codexInventoryOnly != true })?.sessionId, "session-b")
+    }
+
+    func testStatFingerprintDetectsSameInodeSameSizeRewriteWithRestoredMtime() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("same-stat-millisecond-rewrite-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionURL = sessionsRoot.appendingPathComponent("rollout-same-stat.jsonl")
+        let initialContents = [
+            #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"stat-session-a","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        let rewrittenContents = [
+            #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"stat-session-b","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens": 50,"cached_input_tokens":0,"output_tokens":0,"total_tokens": 50},"last_token_usage":{"input_tokens": 50,"cached_input_tokens":0,"output_tokens":0,"total_tokens": 50}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        XCTAssertEqual(initialContents.utf8.count, rewrittenContents.utf8.count)
+        try initialContents.write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let initial = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(initial.isComplete)
+        XCTAssertEqual(initial.days.compactMap(\.totalTokens).reduce(0, +), 100)
+
+        let originalMetadata = CostUsageScanner.codexFileMetadata(fileURL: sessionURL)
+        let originalModificationDate = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: sessionURL.path)[.modificationDate] as? Date
+        )
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data(rewrittenContents.utf8))
+        try handle.close()
+        try FileManager.default.setAttributes(
+            [.modificationDate: originalModificationDate],
+            ofItemAtPath: sessionURL.path
+        )
+
+        let rewrittenMetadata = CostUsageScanner.codexFileMetadata(fileURL: sessionURL)
+        XCTAssertEqual(rewrittenMetadata.fileId, originalMetadata.fileId)
+        XCTAssertEqual(rewrittenMetadata.size, originalMetadata.size)
+        XCTAssertEqual(rewrittenMetadata.mtimeUnixMs, originalMetadata.mtimeUnixMs)
+        XCTAssertNotEqual(rewrittenMetadata.statFingerprint, originalMetadata.statFingerprint)
+
+        let rescanned = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(rescanned.isComplete)
+        XCTAssertEqual(rescanned.days.compactMap(\.totalTokens).reduce(0, +), 50)
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let rewrittenUsage = cache.files.first(where: {
+            URL(fileURLWithPath: $0.key).lastPathComponent == sessionURL.lastPathComponent
+        })?.value
+        XCTAssertEqual(rewrittenUsage?.sessionId, "stat-session-b")
+        XCTAssertEqual(rewrittenUsage?.sourceStatFingerprint, rewrittenMetadata.statFingerprint)
+    }
+
+    func testCommittedPrefixDigestDetectsRewriteBeforeUnchangedLastTokenLine() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prefix-digest-earlier-rewrite-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let metaA = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"session-a","originator":"Codex Desktop"}}"#
+        let metaB = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"session-b","originator":"Codex Desktop"}}"#
+        let unchangedToken = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let sessionURL = sessionsRoot.appendingPathComponent("rollout-anchor-rewrite.jsonl")
+        let initialPrefix = [metaA, unchangedToken].joined(separator: "\n").appending("\n")
+        try initialPrefix.write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        XCTAssertEqual(
+            scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+                .days.compactMap(\.totalTokens).reduce(0, +),
+            100
+        )
+
+        let rewrittenPrefix = [metaB, unchangedToken].joined(separator: "\n").appending("\n")
+        XCTAssertEqual(rewrittenPrefix.utf8.count, initialPrefix.utf8.count)
+        let appended = #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"# + "\n"
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data((rewrittenPrefix + appended).utf8))
+        try handle.close()
+
+        let rescanned = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(rescanned.isComplete)
+        XCTAssertEqual(rescanned.days.compactMap(\.totalTokens).reduce(0, +), 150)
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertEqual(cache.files.values.first(where: { $0.codexInventoryOnly != true })?.sessionId, "session-b")
+    }
+
+    func testCommittedPrefixFingerprintRejectsPathSwapBetweenStatAndOpen() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prefix-fd-swap-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let targetURL = root.appendingPathComponent("target.jsonl")
+        let originalBackupURL = root.appendingPathComponent("original.jsonl")
+        let replacementURL = root.appendingPathComponent("replacement.jsonl")
+        try "AAAA\n".write(to: targetURL, atomically: true, encoding: .utf8)
+        try "BBBB\n".write(to: replacementURL, atomically: true, encoding: .utf8)
+
+        var checkpoint = 0
+        let fingerprint = try CostUsageScanner.codexCommittedPrefixFingerprint(
+            fileURL: targetURL,
+            throughOffset: 5,
+            checkCancellation: {
+                checkpoint += 1
+                switch checkpoint {
+                case 1:
+                    try FileManager.default.moveItem(at: targetURL, to: originalBackupURL)
+                    try FileManager.default.moveItem(at: replacementURL, to: targetURL)
+                case 2:
+                    try FileManager.default.moveItem(at: targetURL, to: replacementURL)
+                    try FileManager.default.moveItem(at: originalBackupURL, to: targetURL)
+                default:
+                    XCTFail("descriptor mismatch must be rejected before hashing")
+                }
+            }
+        )
+
+        XCTAssertNil(fingerprint)
+        XCTAssertEqual(checkpoint, 2)
+        XCTAssertEqual(try String(contentsOf: targetURL, encoding: .utf8), "AAAA\n")
+    }
+
+    func testPrefixRelationshipRejectsPathSwapBetweenStatAndOpen() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("relationship-fd-swap-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lhsURL = root.appendingPathComponent("lhs.jsonl")
+        let lhsBackupURL = root.appendingPathComponent("lhs-original.jsonl")
+        let replacementURL = root.appendingPathComponent("lhs-replacement.jsonl")
+        let rhsURL = root.appendingPathComponent("rhs.jsonl")
+        try "AAAA\n".write(to: lhsURL, atomically: true, encoding: .utf8)
+        try "BBBB\n".write(to: replacementURL, atomically: true, encoding: .utf8)
+        try "AAAA\n".write(to: rhsURL, atomically: true, encoding: .utf8)
+
+        var checkpoint = 0
+        XCTAssertThrowsError(try CostUsageScanner.codexFilePrefixRelationship(
+            lhsURL: lhsURL,
+            rhsURL: rhsURL,
+            checkCancellation: {
+                checkpoint += 1
+                switch checkpoint {
+                case 1:
+                    try FileManager.default.moveItem(at: lhsURL, to: lhsBackupURL)
+                    try FileManager.default.moveItem(at: replacementURL, to: lhsURL)
+                case 2:
+                    try FileManager.default.moveItem(at: lhsURL, to: replacementURL)
+                    try FileManager.default.moveItem(at: lhsBackupURL, to: lhsURL)
+                default:
+                    XCTFail("descriptor mismatch must be rejected before comparison")
+                }
+            }
+        ))
+        XCTAssertEqual(checkpoint, 2)
+        XCTAssertEqual(try String(contentsOf: lhsURL, encoding: .utf8), "AAAA\n")
+    }
+
+    func testParentDuplicatePromotionPrecedesChildForkBaselineResolution() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fork-parent-promotion-order-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let parentMeta = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"parent-session","originator":"Codex Desktop"}}"#
+        let parent100 = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let parent150 = #"{"timestamp":"2026-08-23T08:20:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        let parentOwnerURL = sessionsRoot.appendingPathComponent("m-parent-owner.jsonl")
+        let parentSentinelURL = sessionsRoot.appendingPathComponent("z-parent-sentinel.jsonl")
+        let parentInitial = [parentMeta, parent100].joined(separator: "\n").appending("\n")
+        try parentInitial.write(to: parentOwnerURL, atomically: true, encoding: .utf8)
+        try parentInitial.write(to: parentSentinelURL, atomically: true, encoding: .utf8)
+
+        let childMeta = #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"session_meta","payload":{"id":"child-session","forked_from_id":"parent-session","timestamp":"2026-08-23T08:30:00.000Z","originator":"Codex Desktop"}}"#
+        let child100 = #"{"timestamp":"2026-08-23T08:31:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let childURL = sessionsRoot.appendingPathComponent("a-child.jsonl")
+        try [childMeta, child100].joined(separator: "\n").appending("\n")
+            .write(to: childURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let initial = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(initial.isComplete)
+        XCTAssertEqual(initial.days.compactMap(\.totalTokens).reduce(0, +), 100)
+
+        try FileHandle(forWritingTo: parentSentinelURL).appendString(parent150 + "\n")
+        let child150 = #"{"timestamp":"2026-08-23T08:31:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150}}}}"#
+        let child170 = #"{"timestamp":"2026-08-23T08:40:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":170,"cached_input_tokens":0,"output_tokens":0,"total_tokens":170},"last_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20}}}}"#
+        let childHandle = try FileHandle(forWritingTo: childURL)
+        try childHandle.truncate(atOffset: 0)
+        try childHandle.write(contentsOf: Data(
+            [childMeta, child150, child170].joined(separator: "\n").appending("\n").utf8
+        ))
+        try childHandle.close()
+
+        let reconciled = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(reconciled.isComplete)
+        XCTAssertEqual(reconciled.days.compactMap(\.totalTokens).reduce(0, +), 170)
+    }
+
+    func testCachedOwnerWithoutSessionMetadataCannotEraseLastKnownGoodAggregate() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("owner-metadata-loss-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionURL = sessionsRoot.appendingPathComponent("rollout-2026-08-23T08-00-00-owner.jsonl")
+        let meta = #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"owner-session","originator":"Codex Desktop"}}"#
+        let first = #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        try [meta, first].joined(separator: "\n").appending("\n")
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let initial = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(initial.isComplete)
+        XCTAssertEqual(initial.days.compactMap(\.totalTokens).reduce(0, +), 100)
+
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data(
+            (#"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"notice"}}"# + "\n").utf8
+        ))
+        try handle.close()
+
+        let incomplete = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertFalse(incomplete.isComplete)
+        XCTAssertEqual(incomplete.days.compactMap(\.totalTokens).reduce(0, +), 100)
+        let retained = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let retainedOwner = try XCTUnwrap(
+            retained.files.values.first(where: { $0.sessionId == "owner-session" })
+        )
+        XCTAssertNotEqual(retainedOwner.codexInventoryOnly, true)
+
+        let repaired = #"{"timestamp":"2026-08-23T08:45:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        try [meta, repaired].joined(separator: "\n").appending("\n")
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+        let recovered = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(recovered.isComplete)
+        XCTAssertEqual(recovered.days.compactMap(\.totalTokens).reduce(0, +), 50)
+    }
+
+    func testSymlinkSessionRootRetargetRebuildsCanonicalInventory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("symlink-session-root-\(UUID().uuidString)", isDirectory: true)
+        let firstTarget = root.appendingPathComponent("first-target", isDirectory: true)
+        let secondTarget = root.appendingPathComponent("second-target", isDirectory: true)
+        let link = root.appendingPathComponent("sessions-link", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstTarget, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondTarget, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: firstTarget)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        func writeSession(to directory: URL, id: String, total: Int) throws {
+            let url = directory.appendingPathComponent("rollout-2026-08-23T08-00-00-\(id).jsonl")
+            try [
+                #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"\#(id)","originator":"Codex Desktop"}}"#,
+                #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":\#(total),"cached_input_tokens":0,"output_tokens":0,"total_tokens":\#(total)},"last_token_usage":{"input_tokens":\#(total),"cached_input_tokens":0,"output_tokens":0,"total_tokens":\#(total)}}}}"#,
+            ].joined(separator: "\n").appending("\n")
+                .write(to: url, atomically: true, encoding: .utf8)
+        }
+        try writeSession(to: firstTarget, id: "first-session", total: 10)
+        try writeSession(to: secondTarget, id: "second-session", total: 20)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let since = Calendar.current.startOfDay(for: now)
+        var options = CostUsageScanner.Options(codexSessionsRoot: link, cacheRoot: cacheRoot)
+        options.refreshMinIntervalSeconds = 0
+        let first = try CostUsageScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: since,
+            until: now,
+            now: now,
+            options: options,
+            checkCancellation: nil
+        )
+        XCTAssertEqual(first.data.compactMap(\.totalTokens).reduce(0, +), 10)
+
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: secondTarget)
+        let second = try CostUsageScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: since,
+            until: now,
+            now: now,
+            options: options,
+            checkCancellation: nil
+        )
+        XCTAssertEqual(second.data.compactMap(\.totalTokens).reduce(0, +), 20)
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertTrue(
+            cache.files.keys.allSatisfy {
+                URL(fileURLWithPath: $0).pathComponents.contains("second-target")
+            },
+            "cached paths: \(cache.files.keys.sorted())"
+        )
+        XCTAssertFalse(cache.files.keys.contains {
+            URL(fileURLWithPath: $0).pathComponents.contains("first-target")
+        })
+    }
+
+    func testInventoryDirectoryMutationBeforeCommitPreservesLastGoodCache() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("inventory-commit-race-\(UUID().uuidString)", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let firstURL = root.appendingPathComponent("rollout-2026-08-23T08-00-00-first.jsonl")
+        try [
+            #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"first-session","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":0,"total_tokens":10},"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":0,"total_tokens":10}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: firstURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let since = Calendar.current.startOfDay(for: now)
+        var options = CostUsageScanner.Options(codexSessionsRoot: root, cacheRoot: cacheRoot)
+        options.refreshMinIntervalSeconds = 0
+        let initial = try CostUsageScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: since,
+            until: now,
+            now: now,
+            options: options,
+            checkCancellation: nil
+        )
+        XCTAssertEqual(initial.data.compactMap(\.totalTokens).reduce(0, +), 10)
+
+        let racedURL = root.appendingPathComponent("rollout-2026-08-23T08-30-00-raced.jsonl")
+        options.forceRescan = true
+        options.codexInventoryBeforeCommitHook = {
+            try? [
+                #"{"timestamp":"2026-08-23T08:29:59.000Z","type":"session_meta","payload":{"id":"raced-session","originator":"Codex Desktop"}}"#,
+                #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20},"last_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20}}}}"#,
+            ].joined(separator: "\n").appending("\n")
+                .write(to: racedURL, atomically: true, encoding: .utf8)
+        }
+        XCTAssertThrowsError(try CostUsageScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: since,
+            until: now,
+            now: now,
+            options: options,
+            checkCancellation: nil
+        ))
+
+        let retainedCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let retained = CostUsageScanner.buildCodexReportFromCache(
+            cache: retainedCache,
+            range: CostUsageScanner.CostUsageDayRange(since: since, until: now),
+            modelsDevCacheRoot: cacheRoot
+        )
+        XCTAssertEqual(retained.data.compactMap(\.totalTokens).reduce(0, +), 10)
+        XCTAssertNil(retainedCache.files[racedURL.path])
+    }
+
+    func testInventoryAllowsAppendToAnExistingGenerationAndConsumesTheNewFrontier() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("inventory-existing-file-append-\(UUID().uuidString)", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionURL = root.appendingPathComponent("rollout-2026-08-23T08-00-00-active.jsonl")
+        try [
+            #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"active-session","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":0,"total_tokens":10},"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":0,"total_tokens":10}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let since = Calendar.current.startOfDay(for: now)
+        var options = CostUsageScanner.Options(codexSessionsRoot: root, cacheRoot: cacheRoot)
+        options.refreshMinIntervalSeconds = 0
+        var didAppend = false
+        options.codexInventoryAfterMetadataHook = {
+            guard !didAppend else { return }
+            didAppend = true
+            try? FileHandle(forWritingTo: sessionURL).appendString(
+                #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30,"cached_input_tokens":0,"output_tokens":0,"total_tokens":30},"last_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":0,"total_tokens":20}}}}"# + "\n"
+            )
+        }
+
+        let report = try CostUsageScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: since,
+            until: now,
+            now: now,
+            options: options,
+            checkCancellation: nil
+        )
+        XCTAssertTrue(didAppend)
+        XCTAssertEqual(report.data.compactMap(\.totalTokens).reduce(0, +), 30)
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        XCTAssertEqual(cache.codexSessionInventoryComplete, true)
+        XCTAssertEqual(cache.files[sessionURL.path]?.parsedBytes, cache.files[sessionURL.path]?.size)
+    }
+
+    func testCostUsageScannerRetriesAnUnterminatedTokenLineFromItsBeginning() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cost-partial-line-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
+        let meta = #"{"timestamp":"2026-06-18T07:59:59.000Z","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#
+        let first = #"{"timestamp":"2026-06-18T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100}}}}"#
+        let second = #"{"timestamp":"2026-06-18T08:02:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":150,"output_tokens":150},"last_token_usage":{"input_tokens":500,"cached_input_tokens":50,"output_tokens":50}}}}"#
+        let splitIndex = second.index(second.endIndex, offsetBy: -19)
+        let sessionURL = root.appendingPathComponent("rollout-partial-\(sessionID).jsonl")
+        try "\(meta)\n\(first)\n\(second[..<splitIndex])"
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let since = try XCTUnwrap(formatter.date(from: "2026-06-18T00:00:00.000Z"))
+        let through = try XCTUnwrap(formatter.date(from: "2026-06-18T09:00:00.000Z"))
+        var options = CostUsageScanner.Options(
+            codexSessionsRoot: root,
+            cacheRoot: root.appendingPathComponent("cost-cache", isDirectory: true)
+        )
+        options.refreshMinIntervalSeconds = 0
+
+        let partialReport = CostUsageScanner.loadDailyReport(
+            provider: .codex,
+            since: since,
+            until: through,
+            now: through,
+            options: options
+        )
+        XCTAssertEqual(partialReport.data.compactMap(\.totalTokens).reduce(0, +), 1_100)
+        let partialCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: options.cacheRoot)
+        let partialUsage = try XCTUnwrap(partialCache.files.values.first)
+        XCTAssertLessThan(try XCTUnwrap(partialUsage.parsedBytes), partialUsage.size)
+
+        try FileHandle(forWritingTo: sessionURL).appendString(String(second[splitIndex...]) + "\n")
+        let completeReport = CostUsageScanner.loadDailyReport(
+            provider: .codex,
+            since: since,
+            until: through,
+            now: through,
+            options: options
+        )
+        XCTAssertEqual(completeReport.data.compactMap(\.totalTokens).reduce(0, +), 1_650)
+    }
+
+    @MainActor
+    func testDuplicateSentinelWatermarkAbsorbsLiveCursorWithoutDoubleCounting() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("duplicate-sentinel-watermark-\(UUID().uuidString)", isDirectory: true)
+        let firstRoot = root.appendingPathComponent("first", isDirectory: true)
+        let secondRoot = root.appendingPathComponent("second", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cost-cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let eventAt = now.addingTimeInterval(-1)
+        let sessionID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
+        let filenameDay = ISO8601DateFormatter().string(from: now).prefix(10)
+        let filename = "rollout-\(filenameDay)T12-00-00-\(sessionID).jsonl"
+        let lines = [
+            #"{"timestamp":"\#(isoTimestamp(eventAt))","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"\#(isoTimestamp(eventAt))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+        ]
+        for sessionsRoot in [firstRoot, secondRoot] {
+            try lines.joined(separator: "\n").appending("\n")
+                .write(
+                    to: sessionsRoot.appendingPathComponent(filename),
+                    atomically: true,
+                    encoding: .utf8
+                )
+        }
+
+        let productionScanner = CodexTokenActivityScanner(
+            sessionRootURLs: [firstRoot, secondRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let scanResult = productionScanner.scanDailyActivityResult(
+            now: now,
+            days: 1,
+            progress: nil
+        )
+        XCTAssertTrue(scanResult.isComplete)
+        XCTAssertEqual(scanResult.days.compactMap(\.totalTokens).reduce(0, +), 100)
+
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let duplicateEntries = cache.files.filter { $0.value.sessionId == sessionID }
+        XCTAssertEqual(duplicateEntries.count, 2)
+        let sentinelEntry = try XCTUnwrap(
+            duplicateEntries.first(where: { $0.value.codexInventoryOnly == true })
+        )
+        let ownerEntry = try XCTUnwrap(
+            duplicateEntries.first(where: { $0.value.codexInventoryOnly != true })
+        )
+        let sentinelGeneration = try XCTUnwrap(sentinelEntry.value.sourceGeneration)
+        XCTAssertNotEqual(sentinelGeneration, ownerEntry.value.sourceGeneration)
+
+        let sentinelSourceID = URL(fileURLWithPath: sentinelEntry.key)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+        let monitor = CodexDesktopActivityMonitor(
+            sessionRootURLs: [firstRoot, secondRoot],
+            replaysInitialHistory: true
+        )
+        let liveUpdate = try XCTUnwrap(
+            monitor.pollResult(now: now).quotaUpdates.first(where: {
+                $0.tokenObservationCursor?.sourceID == sentinelSourceID
+            })
+        )
+        let liveCursor = try XCTUnwrap(liveUpdate.tokenObservationCursor)
+        let aliasWatermark = try XCTUnwrap(
+            scanResult.watermarks.first(where: {
+                $0.sourceID == sentinelSourceID
+                    && $0.sourceGeneration == sentinelGeneration
+            })
+        )
+        XCTAssertEqual(aliasWatermark.endOffset, liveCursor.endOffset)
+        XCTAssertEqual(aliasWatermark.lineFingerprint, liveCursor.lineFingerprint)
+
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let applied = expectation(description: "duplicate sentinel cursor absorbed")
+        let controlledScanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { _, _ in scanResult }
+        )
+        defer { controlledScanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: controlledScanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied { applied.fulfill() }
+            },
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(
+            try XCTUnwrap(liveUpdate.tokenActivityUsage),
+            sessionID: liveUpdate.sessionID,
+            updatedAt: eventAt,
+            observationCursor: liveCursor
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 100)
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(controlledScanner.waitUntilScanStarts(seconds: 1))
+        controlledScanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+
+        XCTAssertEqual(controlledScanner.scanCallCount, 1)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 100)
+    }
+
+    @MainActor
+    func testQuarantinedDuplicateCursorIsRejectedWithoutPermanentRetry() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("quarantined-cursor-watermark-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cost-cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let initialEventAt = now.addingTimeInterval(-2)
+        let divergentEventAt = now.addingTimeInterval(-1)
+        let sessionID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
+        let liveSessionID = "codex-desktop:\(sessionID)"
+        let filenameDay = ISO8601DateFormatter().string(from: now).prefix(10)
+        let meta = #"{"timestamp":"\#(isoTimestamp(initialEventAt))","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#
+        let token100 = #"{"timestamp":"\#(isoTimestamp(initialEventAt))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let firstURL = sessionsRoot.appendingPathComponent(
+            "rollout-\(filenameDay)T12-00-00-\(sessionID).jsonl"
+        )
+        let secondURL = sessionsRoot.appendingPathComponent(
+            "rollout-\(filenameDay)T12-00-01-\(sessionID).jsonl"
+        )
+        for url in [firstURL, secondURL] {
+            try [meta, token100].joined(separator: "\n").appending("\n")
+                .write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        let productionScanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let initialResult = productionScanner.scanDailyActivityResult(
+            now: now,
+            days: 1,
+            progress: nil
+        )
+        XCTAssertTrue(initialResult.isComplete)
+        XCTAssertEqual(initialResult.days.compactMap(\.totalTokens).reduce(0, +), 100)
+
+        let initialCache = CostUsageCacheIO.load(provider: .codex, cacheRoot: cacheRoot)
+        let formerOwnerEntry = try XCTUnwrap(initialCache.files.first(where: {
+            $0.value.sessionId == sessionID && $0.value.codexInventoryOnly != true
+        }))
+        let formerOwnerSourceID = URL(fileURLWithPath: formerOwnerEntry.key)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+        let formerOwnerGeneration = try XCTUnwrap(formerOwnerEntry.value.sourceGeneration)
+        let initialOwnerWatermark = try XCTUnwrap(initialResult.watermarks.first(where: {
+            $0.sourceID == formerOwnerSourceID
+                && $0.sourceGeneration == formerOwnerGeneration
+        }))
+        let initialCursor = CodexTokenObservationCursor(
+            sourceID: initialOwnerWatermark.sourceID,
+            sourceGeneration: initialOwnerWatermark.sourceGeneration,
+            endOffset: initialOwnerWatermark.endOffset,
+            lineFingerprint: initialOwnerWatermark.lineFingerprint
+        )
+
+        let padding = String(repeating: "x", count: 512)
+        let token50 = """
+        {"timestamp":"\(isoTimestamp(divergentEventAt))","type":"event_msg","payload":{"type":"token_count","padding":"\(padding)","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}
+        """
+        let formerOwnerURL = URL(fileURLWithPath: formerOwnerEntry.key)
+        let handle = try FileHandle(forWritingTo: formerOwnerURL)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data([meta, token50].joined(separator: "\n").appending("\n").utf8))
+        try handle.close()
+
+        let quarantinedResult = productionScanner.scanDailyActivityResult(
+            now: now,
+            days: 1,
+            progress: nil
+        )
+        XCTAssertTrue(quarantinedResult.isComplete)
+        XCTAssertEqual(quarantinedResult.days.compactMap(\.totalTokens).reduce(0, +), 100)
+        let quarantineWatermark = try XCTUnwrap(quarantinedResult.watermarks.first(where: {
+            $0.sourceID == formerOwnerSourceID
+                && $0.sourceGeneration == formerOwnerGeneration
+                && $0.endOffset == .max
+        }))
+        XCTAssertEqual(quarantineWatermark.sessionID, sessionID)
+
+        let divergentPoll = CodexDesktopActivityMonitor(
+            sessionsRootURL: sessionsRoot,
+            replaysInitialHistory: true
+        ).pollResult(now: now)
+        let divergentUpdate = try XCTUnwrap(
+            divergentPoll.quotaUpdates.first(where: {
+                $0.tokenObservationCursor?.sourceID == formerOwnerSourceID
+            }),
+            "expected source \(formerOwnerSourceID); observed \(divergentPoll.quotaUpdates.compactMap { $0.tokenObservationCursor?.sourceID })"
+        )
+        let divergentCursor = try XCTUnwrap(divergentUpdate.tokenObservationCursor)
+        XCTAssertGreaterThan(divergentCursor.endOffset, initialCursor.endOffset)
+        XCTAssertEqual(divergentUpdate.tokenActivityUsage?.effectiveTotalTokens, 50)
+
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let firstApplied = expectation(description: "initial duplicate owner applied")
+        let quarantineApplied = expectation(description: "quarantined cursor disposed")
+        var appliedCount = 0
+        let controlledScanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { _, callIndex in
+                callIndex == 1 ? initialResult : quarantinedResult
+            }
+        )
+        defer { controlledScanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: controlledScanner,
+            tokenActivityScanObserver: { disposition in
+                guard disposition == .applied else { return }
+                appliedCount += 1
+                if appliedCount == 1 {
+                    firstApplied.fulfill()
+                } else {
+                    quarantineApplied.fulfill()
+                }
+            },
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: liveSessionID,
+            updatedAt: initialEventAt,
+            observationCursor: initialCursor
+        )
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(controlledScanner.waitUntilScanStarts(seconds: 1))
+        controlledScanner.finishScan()
+        await fulfillment(of: [firstApplied], timeout: 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 100)
+
+        model.updateLatestAgentTokenUsage(
+            try XCTUnwrap(divergentUpdate.tokenActivityUsage),
+            sessionID: divergentUpdate.sessionID,
+            updatedAt: divergentEventAt,
+            observationCursor: divergentCursor
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 150)
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(controlledScanner.waitUntilScanStarts(seconds: 1))
+        controlledScanner.finishScan()
+        await fulfillment(of: [quarantineApplied], timeout: 2)
+
+        XCTAssertEqual(controlledScanner.scanCallCount, 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 100)
+
+        // The poll writes an exact observation before the scanner's quarantine
+        // can reject its cursor. Its cursor-less, whole-second state-file copy
+        // must not bypass that tombstone and recreate a divergent counter.
+        let rejectedEventAt = divergentEventAt.addingTimeInterval(0.456)
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 600),
+            sessionID: liveSessionID,
+            updatedAt: rejectedEventAt,
+            observationCursor: divergentCursor,
+            stateShadowUsage: AgentTokenUsage(totalTokens: 60)
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 100)
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 60),
+            sessionID: liveSessionID,
+            updatedAt: Date(
+                timeIntervalSince1970: rejectedEventAt.timeIntervalSince1970.rounded(.down)
+            )
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 100)
+
+        let survivingOwnerWatermark = try XCTUnwrap(
+            quarantinedResult.watermarks.first(where: {
+                $0.sessionID == sessionID
+                    && $0.endOffset != .max
+                    && $0.totalTokens == 100
+            })
+        )
+        let ownerGrowthCursor = CodexTokenObservationCursor(
+            sourceID: survivingOwnerWatermark.sourceID,
+            sourceGeneration: survivingOwnerWatermark.sourceGeneration,
+            endOffset: survivingOwnerWatermark.endOffset + 100,
+            lineFingerprint: "owner-growth-150"
+        )
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 150),
+            sessionID: liveSessionID,
+            updatedAt: now,
+            observationCursor: ownerGrowthCursor
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 150)
+
+        model.updateLatestAgentTokenUsage(
+            try XCTUnwrap(divergentUpdate.tokenActivityUsage),
+            sessionID: divergentUpdate.sessionID,
+            updatedAt: now.addingTimeInterval(1),
+            observationCursor: divergentCursor
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 150)
+    }
+
+    @MainActor
+    func testFirstLiveCursorAfterScannedFrontierUsesNumericBaseline() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+        let scannedAt = now.addingTimeInterval(-2)
+        let liveAt = now.addingTimeInterval(-1)
+        let sessionID = "scan-first-session"
+        let liveSessionID = "codex-desktop:\(sessionID)"
+        let sourceID = "/tmp/scan-first-session.jsonl"
+        let generation = "device:scan-first-inode"
+        let scanResult = CodexTokenActivityScanResult(
+            days: [CodexTokenActivityDay(
+                day: Calendar.current.startOfDay(for: now),
+                totalTokens: 100
+            )],
+            watermarks: [CodexTokenActivityScanWatermark(
+                sessionID: sessionID,
+                sourceID: sourceID,
+                sourceGeneration: generation,
+                endOffset: 100,
+                lineFingerprint: "frontier-100",
+                eventTimestamp: scannedAt,
+                totalTokens: 100
+            )]
+        )
+        let applied = expectation(description: "scan-first frontier applied")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { _, _ in scanResult }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied { applied.fulfill() }
+            },
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 100)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 150),
+            sessionID: liveSessionID,
+            updatedAt: liveAt,
+            observationCursor: CodexTokenObservationCursor(
+                sourceID: sourceID,
+                sourceGeneration: generation,
+                endOffset: 200,
+                lineFingerprint: "frontier-150"
+            )
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 150)
+    }
+
+    @MainActor
+    func testNoSessionMetadataTokenLineCannotCreatePendingRetry() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("no-meta-live-token-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cost-cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let eventAt = now.addingTimeInterval(-1)
+        let sessionID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
+        let filenameDay = ISO8601DateFormatter().string(from: now).prefix(10)
+        let tokenLine = #"{"timestamp":"\#(isoTimestamp(eventAt))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":0,"total_tokens":40},"last_token_usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":0,"total_tokens":40}}}}"#
+        try tokenLine.appending("\n").write(
+            to: sessionsRoot.appendingPathComponent(
+                "rollout-\(filenameDay)T12-00-00-\(sessionID).jsonl"
+            ),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: sessionsRoot,
+            replaysInitialHistory: true
+        )
+        XCTAssertTrue(monitor.pollResult(now: now).quotaUpdates.isEmpty)
+
+        let productionScanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let scanResult = productionScanner.scanDailyActivityResult(
+            now: now,
+            days: 1,
+            progress: nil
+        )
+        XCTAssertTrue(scanResult.isComplete)
+        XCTAssertTrue(scanResult.days.isEmpty)
+
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let applied = expectation(description: "no-meta scan applied without retry")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { _, _ in scanResult }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: monitor,
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied { applied.fulfill() }
+            },
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+
+        XCTAssertEqual(scanner.scanCallCount, 1)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 0)
+    }
+
+    func testLongInitialTailUsesBoundedHeaderProbeToConfirmTokenSession() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("long-tail-session-meta-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let eventAt = now.addingTimeInterval(-1)
+        let sessionID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
+        let filenameDay = ISO8601DateFormatter().string(from: now).prefix(10)
+        let meta = #"{"timestamp":"\#(isoTimestamp(eventAt))","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#
+        let padding = #"{"timestamp":"2026-08-23T00:00:00.000Z","type":"event_msg","payload":{"type":"notice","text":"\#(String(repeating: "x", count: 2_048))"}}"#
+        let tokenLine = #"{"timestamp":"\#(isoTimestamp(eventAt))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":75,"cached_input_tokens":0,"output_tokens":0,"total_tokens":75},"last_token_usage":{"input_tokens":75,"cached_input_tokens":0,"output_tokens":0,"total_tokens":75}}}}"#
+        try [meta, padding, tokenLine].joined(separator: "\n").appending("\n").write(
+            to: root.appendingPathComponent(
+                "rollout-\(filenameDay)T12-00-00-\(sessionID).jsonl"
+            ),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: root,
+            maxInitialTailBytes: 512,
+            maxSessionMetadataProbeBytes: 1_024,
+            replaysInitialHistory: true
+        )
+        let update = try XCTUnwrap(monitor.pollResult(now: now).quotaUpdates.first)
+
+        XCTAssertEqual(update.sessionID, "codex-desktop:\(sessionID)")
+        XCTAssertEqual(update.tokenActivityUsage?.effectiveTotalTokens, 75)
+        XCTAssertNotNil(update.tokenObservationCursor)
+    }
+
+    func testLiveMonitorCursorMatchesAuthoritativeScannerWatermark() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cursor-watermark-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let eventAt = now.addingTimeInterval(-1)
+        let timestamp = isoTimestamp(eventAt)
+        let sessionID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
+        let filenameDay = ISO8601DateFormatter().string(from: now).prefix(10)
+        let sessionURL = sessionsRoot.appendingPathComponent(
+            "rollout-\(filenameDay)T23-00-00-\(sessionID).jsonl"
+        )
+        let tokenLine = #"{"timestamp":"\#(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":1150,"cached_input_tokens":200,"output_tokens":100,"total_tokens":1250},"last_token_usage":{"input_tokens":200,"cached_input_tokens":25,"output_tokens":50,"total_tokens":250}}}}"#
+        let splitIndex = tokenLine.index(tokenLine.endIndex, offsetBy: -23)
+        let metaLine = #"{"timestamp":"\#(timestamp)","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#
+        try "\(metaLine)\n\(tokenLine[..<splitIndex])"
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: sessionsRoot,
+            replaysInitialHistory: true
+        )
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: root.appendingPathComponent("cost-cache", isDirectory: true)
+        )
+        XCTAssertTrue(monitor.pollResult(now: now).quotaUpdates.isEmpty)
+        XCTAssertTrue(scanner.scanDailyActivityResult(now: now, days: 1, progress: nil).watermarks.isEmpty)
+
+        try FileHandle(forWritingTo: sessionURL)
+            .appendString(String(tokenLine[splitIndex...]) + "\n")
+        let liveUpdate = try XCTUnwrap(monitor.pollResult(now: now).quotaUpdates.first)
+        let cursor = try XCTUnwrap(liveUpdate.tokenObservationCursor)
+        XCTAssertEqual(liveUpdate.tokenActivityUsage?.effectiveTotalTokens, 1_250)
+        XCTAssertEqual(liveUpdate.quota.tokenUsage?.effectiveTotalTokens, 250)
+
+        let result = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        // The daily report counts the observed last-turn delta, while the exact
+        // watermark retains the raw cumulative total used to reconcile live state.
+        XCTAssertEqual(result.days.compactMap(\.totalTokens).reduce(0, +), 250)
+        XCTAssertTrue(result.watermarks.contains { watermark in
+            watermark.sourceID == cursor.sourceID
+                && watermark.sourceGeneration == cursor.sourceGeneration
+                && watermark.sourceStatFingerprint == cursor.sourceStatFingerprint
+                && watermark.sourceChangeTimeNanoseconds
+                    == cursor.sourceChangeTimeNanoseconds
+                && watermark.sourceStatFingerprint != nil
+                && watermark.sourceChangeTimeNanoseconds != nil
+                && watermark.endOffset == cursor.endOffset
+                && watermark.lineFingerprint == cursor.lineFingerprint
+                && watermark.totalTokens == 1_250
+        })
+    }
+
+    func testUnresolvedForkScannerCountsChildLastTurnsBeforePublishingWatermarks() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unresolved-fork-watermark-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let firstAt = now.addingTimeInterval(-2)
+        let secondAt = now.addingTimeInterval(-1)
+        let childSessionID = "019c846a-b85e-7bd3-924b-cc33e3f180e0"
+        let missingParentID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
+        let filenameDay = ISO8601DateFormatter().string(from: now).prefix(10)
+        let sessionURL = root.appendingPathComponent(
+            "rollout-\(filenameDay)T12-00-00-\(childSessionID).jsonl"
+        )
+        let lines = [
+            #"{"timestamp":"\#(isoTimestamp(firstAt))","type":"session_meta","payload":{"id":"\#(childSessionID)","forked_from_id":"\#(missingParentID)","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"\#(isoTimestamp(firstAt))","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900,"cached_input_tokens":0,"output_tokens":0,"total_tokens":900},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+            #"{"timestamp":"\#(isoTimestamp(secondAt))","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":950,"cached_input_tokens":0,"output_tokens":0,"total_tokens":950},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
+        ]
+        try lines.joined(separator: "\n").appending("\n")
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [root],
+            costUsageCacheRootURL: root.appendingPathComponent("cost-cache", isDirectory: true)
+        )
+
+        let result = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+
+        XCTAssertTrue(result.isComplete)
+        XCTAssertEqual(result.days.compactMap(\.totalTokens).reduce(0, +), 150)
+        XCTAssertEqual(result.watermarks.count, 1)
+        XCTAssertEqual(result.watermarks.map(\.totalTokens), [950])
+    }
+
+    func testProductionTokenScannerPreservesWatermarksFromMultipleSessionRoots() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("multi-token-roots-\(UUID().uuidString)", isDirectory: true)
+        let firstRoot = root.appendingPathComponent("first", isDirectory: true)
+        let secondRoot = root.appendingPathComponent("second", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let timestamp = isoTimestamp(now.addingTimeInterval(-1))
+        let sharedFilename = "rollout-shared-name.jsonl"
+        let sessions = [
+            (firstRoot, "019c846a-b85e-7bd3-924b-cc33e3f180d9", 100),
+            (secondRoot, "019c846a-b85e-7bd3-924b-cc33e3f180e0", 200),
+        ]
+        for (sessionRoot, sessionID, total) in sessions {
+            let lines = [
+                #"{"timestamp":"\#(timestamp)","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#,
+                #"{"timestamp":"\#(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":\#(total),"cached_input_tokens":0,"output_tokens":0,"total_tokens":\#(total)},"last_token_usage":{"input_tokens":\#(total),"cached_input_tokens":0,"output_tokens":0,"total_tokens":\#(total)}}}}"#,
+            ]
+            try lines.joined(separator: "\n").appending("\n")
+                .write(
+                    to: sessionRoot.appendingPathComponent(sharedFilename),
+                    atomically: true,
+                    encoding: .utf8
+                )
+        }
+
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [firstRoot, secondRoot],
+            costUsageCacheRootURL: root.appendingPathComponent("cost-cache", isDirectory: true)
+        )
+        let result = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+
+        XCTAssertEqual(result.days.compactMap(\.totalTokens).reduce(0, +), 300)
+        XCTAssertEqual(result.watermarks.count, 2)
+        XCTAssertEqual(Set(result.watermarks.compactMap(\.sessionID)), Set(sessions.map(\.1)))
+        XCTAssertEqual(Set(result.watermarks.map(\.sourceID)).count, 2)
+    }
+
+    func testProductionScannerKeepsExactCursorAcrossSessionArchiveRename() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("archive-rename-watermark-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let archivedRoot = root.appendingPathComponent("archived_sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: archivedRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let timestamp = isoTimestamp(now.addingTimeInterval(-1))
+        let sessionID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
+        let filenameDay = ISO8601DateFormatter().string(from: now).prefix(10)
+        let filename = "rollout-\(filenameDay)T12-00-00-\(sessionID).jsonl"
+        let activeURL = sessionsRoot.appendingPathComponent(filename)
+        let archivedURL = archivedRoot.appendingPathComponent(filename)
+        let lines = [
+            #"{"timestamp":"\#(timestamp)","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"\#(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+        ]
+        try lines.joined(separator: "\n").appending("\n")
+            .write(to: activeURL, atomically: true, encoding: .utf8)
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot, archivedRoot],
+            costUsageCacheRootURL: root.appendingPathComponent("cost-cache", isDirectory: true)
+        )
+        let activeResult = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        let activeWatermark = try XCTUnwrap(activeResult.watermarks.first)
+
+        try FileManager.default.moveItem(at: activeURL, to: archivedURL)
+        let archivedResult = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        let archivedWatermark = try XCTUnwrap(archivedResult.watermarks.first)
+
+        XCTAssertEqual(archivedResult.days.compactMap(\.totalTokens).reduce(0, +), 100)
+        XCTAssertNotEqual(activeWatermark.sourceID, archivedWatermark.sourceID)
+        XCTAssertEqual(activeWatermark.sessionID, archivedWatermark.sessionID)
+        XCTAssertEqual(activeWatermark.sourceGeneration, archivedWatermark.sourceGeneration)
+        XCTAssertEqual(activeWatermark.endOffset, archivedWatermark.endOffset)
+        XCTAssertEqual(activeWatermark.lineFingerprint, archivedWatermark.lineFingerprint)
+    }
+
+    func testWatermarkExportRejectsSameInodeRewriteAfterCacheCommit() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watermark-owner-rewrite-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let sessionURL = sessionsRoot.appendingPathComponent(
+            "rollout-2026-08-23T08-00-00-watermark-rewrite.jsonl"
+        )
+        let initialContents = [
+            #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"watermark-rewrite","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        let rewrittenContents = initialContents.replacingOccurrences(of: "100", with: "900")
+        XCTAssertEqual(initialContents.utf8.count, rewrittenContents.utf8.count)
+        try initialContents.write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let initial = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        XCTAssertTrue(initial.isComplete)
+        XCTAssertEqual(initial.watermarks.count, 1)
+        let originalGeneration = CostUsageScanner.codexFileMetadata(fileURL: sessionURL).fileId
+
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data(rewrittenContents.utf8))
+        try handle.close()
+        XCTAssertEqual(
+            CostUsageScanner.codexFileMetadata(fileURL: sessionURL).fileId,
+            originalGeneration
+        )
+
+        XCTAssertThrowsError(try scanner.agentSignalCostUsageScanWatermarks(through: now))
+    }
+
+    func testWatermarkExportRejectsByteIdenticalNewGeneration() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watermark-owner-replacement-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let sessionURL = sessionsRoot.appendingPathComponent(
+            "rollout-2026-08-23T08-00-00-watermark-replacement.jsonl"
+        )
+        let displacedURL = sessionsRoot.appendingPathComponent("displaced.jsonl")
+        let contents = [
+            #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"watermark-replacement","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        try contents.write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        XCTAssertTrue(scanner.scanDailyActivityResult(now: now, days: 1, progress: nil).isComplete)
+        let originalGeneration = CostUsageScanner.codexFileMetadata(fileURL: sessionURL).fileId
+
+        try FileManager.default.moveItem(at: sessionURL, to: displacedURL)
+        try FileManager.default.copyItem(at: displacedURL, to: sessionURL)
+        XCTAssertNotEqual(
+            CostUsageScanner.codexFileMetadata(fileURL: sessionURL).fileId,
+            originalGeneration
+        )
+
+        XCTAssertThrowsError(try scanner.agentSignalCostUsageScanWatermarks(through: now))
+    }
+
+    func testWatermarkExportAllowsStableAppendWithoutCoveringNewBytes() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watermark-owner-append-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T09:00:00Z"))
+        let sessionURL = sessionsRoot.appendingPathComponent(
+            "rollout-2026-08-23T08-00-00-watermark-append.jsonl"
+        )
+        let initialContents = [
+            #"{"timestamp":"2026-08-23T07:59:59.000Z","type":"session_meta","payload":{"id":"watermark-append","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-08-23T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+        try initialContents.write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true
+        )
+        let initialResult = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        let initialWatermark = try XCTUnwrap(initialResult.watermarks.first)
+
+        try FileHandle(forWritingTo: sessionURL).appendString(
+            #"{"timestamp":"2026-08-23T08:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"# + "\n"
+        )
+        let preRescanWatermark = try XCTUnwrap(
+            scanner.agentSignalCostUsageScanWatermarks(through: now).first
+        )
+        XCTAssertEqual(preRescanWatermark.sourceGeneration, initialWatermark.sourceGeneration)
+        XCTAssertEqual(preRescanWatermark.endOffset, initialWatermark.endOffset)
+        XCTAssertEqual(preRescanWatermark.lineFingerprint, initialWatermark.lineFingerprint)
+        XCTAssertEqual(preRescanWatermark.totalTokens, 100)
+
+        let rescanned = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
+        let rescannedWatermark = try XCTUnwrap(rescanned.watermarks.first)
+        XCTAssertTrue(rescanned.isComplete)
+        XCTAssertEqual(rescanned.days.compactMap(\.totalTokens).reduce(0, +), 150)
+        XCTAssertGreaterThan(rescannedWatermark.endOffset, initialWatermark.endOffset)
+        XCTAssertEqual(rescannedWatermark.totalTokens, 150)
+    }
+
+    func testCostUsageCacheRetainsLatestExactFrontierBeyond4096Events() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watermark-retention-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let timestamp = isoTimestamp(now.addingTimeInterval(-1))
+        let sessionID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
+        var lines = [
+            #"{"timestamp":"\#(timestamp)","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#,
+        ]
+        for total in 1...4_097 {
+            lines.append(
+                #"{"timestamp":"\#(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":\#(total),"cached_input_tokens":0,"output_tokens":0,"total_tokens":\#(total)},"last_token_usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":0,"total_tokens":1}}}}"#
+            )
+        }
+        let sessionURL = root.appendingPathComponent("rollout-many-token-events.jsonl")
+        try lines.joined(separator: "\n").appending("\n")
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        var options = CostUsageScanner.Options(
+            codexSessionsRoot: root,
+            cacheRoot: root.appendingPathComponent("cost-cache", isDirectory: true)
+        )
+        options.refreshMinIntervalSeconds = 0
+        _ = CostUsageScanner.loadDailyReport(
+            provider: .codex,
+            since: Calendar.current.startOfDay(for: now),
+            until: now,
+            now: now,
+            options: options
+        )
+        let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: options.cacheRoot)
+        let usage = try XCTUnwrap(cache.files.values.first)
+
+        XCTAssertEqual(usage.tokenEventWatermarks?.count, 1)
+        XCTAssertEqual(usage.tokenEventWatermarks?.last?.totalTokens, 4_097)
     }
 
     func testCodexTokenActivityScannerIgnoresEmbeddedTokenCountInToolOutput() throws {
@@ -2907,6 +5925,70 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
     }
 
+    func testCodexExecutableResolverFindsChatGPTAndLegacyAppBundles() {
+        let homeURL = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+        let candidates = [
+            "/Users/tester/Applications/ChatGPT.app/Contents/Resources/codex",
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
+            "/Users/tester/Applications/Codex.app/Contents/Resources/codex",
+            "/Applications/Codex.app/Contents/Resources/codex"
+        ]
+
+        for candidate in candidates {
+            let fileManager = ExecutablePathFileManager(
+                homeDirectory: homeURL,
+                executablePaths: [candidate]
+            )
+            XCTAssertEqual(
+                CodexExecutableResolver.resolve(
+                    environment: ["PATH": "/test-empty"],
+                    fileManager: fileManager
+                ),
+                candidate
+            )
+        }
+
+        let allBundlesFileManager = ExecutablePathFileManager(
+            homeDirectory: homeURL,
+            executablePaths: Set(candidates)
+        )
+        XCTAssertEqual(
+            CodexExecutableResolver.resolve(
+                environment: ["PATH": "/test-empty"],
+                fileManager: allBundlesFileManager
+            ),
+            candidates[0]
+        )
+    }
+
+    func testCodexExecutableResolverKeepsExplicitAndPATHAheadOfAppBundles() {
+        let explicit = "/test-explicit/codex"
+        let pathBinary = "/test-path/codex"
+        let bundled = "/Applications/ChatGPT.app/Contents/Resources/codex"
+        let fileManager = ExecutablePathFileManager(
+            homeDirectory: URL(fileURLWithPath: "/Users/tester", isDirectory: true),
+            executablePaths: [explicit, pathBinary, bundled]
+        )
+
+        XCTAssertEqual(
+            CodexExecutableResolver.resolve(
+                environment: [
+                    "CODEX_BINARY": explicit,
+                    "PATH": "/test-path"
+                ],
+                fileManager: fileManager
+            ),
+            explicit
+        )
+        XCTAssertEqual(
+            CodexExecutableResolver.resolve(
+                environment: ["PATH": "/test-path"],
+                fileManager: fileManager
+            ),
+            pathBinary
+        )
+    }
+
     @MainActor
     func testCodexAccountUsageSnapshotsStayScopedToAccountIDWhenEmailsMatch() throws {
         let root = FileManager.default.temporaryDirectory
@@ -3080,6 +6162,3324 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(model.codexResetCreditsPresentation()?.availableText, "2 available")
         XCTAssertEqual(model.codexUsageFetchState, betaUsageFetchState)
         XCTAssertEqual(model.codexResetCreditsFetchState, betaResetFetchState)
+    }
+
+    @MainActor
+    func testAccountSnapshotWithoutTodayKeepsPersistedLiveTokensVisible() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("token-snapshot-yesterday-\(UUID().uuidString)", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        let accountStoreURL = root.appendingPathComponent("accounts.json")
+        let usageStoreURL = root.appendingPathComponent("usage.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "snapshot@example.com",
+            accountID: "acct_snapshot",
+            accessToken: "snapshot-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: accountStoreURL
+        )
+        _ = try manager.saveCurrentAccount()
+        let account = try XCTUnwrap(try manager.loadState().currentAccount)
+        let today = Calendar.current.startOfDay(for: Date())
+        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: today) ?? today
+        let usageStore = CodexAccountUsageSnapshotStore(fileURL: usageStoreURL)
+        usageStore.store(
+            account: account,
+            quota: nil,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 900),
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(day: yesterday, totalTokens: 5_000)]
+        )
+
+        let model = MenuBarStatusModel(
+            store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 900)
+        XCTAssertEqual(model.tokenActivityTotal(for: .last30Days), 5_900)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 950),
+            sessionID: "identified-session",
+            updatedAt: Date()
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 950)
+        XCTAssertEqual(model.tokenActivityTotal(for: .last30Days), 5_950)
+    }
+
+    @MainActor
+    func testLegacyUnscopedScalarDoesNotDoubleCountMultipleIdentifiedSessions() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-multi-session-\(UUID().uuidString)", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        let usageStoreURL = root.appendingPathComponent("usage.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "legacy-multi@example.com",
+            accountID: "acct_legacy_multi",
+            accessToken: "legacy-multi-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: root.appendingPathComponent("accounts.json")
+        )
+        _ = try manager.saveCurrentAccount()
+        let account = try XCTUnwrap(try manager.loadState().currentAccount)
+        let usageStore = CodexAccountUsageSnapshotStore(fileURL: usageStoreURL)
+        usageStore.store(
+            account: account,
+            quota: nil,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 900),
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: []
+        )
+
+        let model = MenuBarStatusModel(
+            store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 900)
+
+        let firstEventAt = Date().addingTimeInterval(-1)
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: "older-session-a",
+            updatedAt: firstEventAt
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 900)
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 900),
+            sessionID: "newer-session-b",
+            updatedAt: firstEventAt.addingTimeInterval(0.5)
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+    }
+
+    @MainActor
+    func testStateReloadDoesNotImportHistoricalTokensFromBeforeAccountActivation() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("account-history-filter-\(UUID().uuidString)", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "history-filter@example.com",
+            accountID: "acct_history_filter",
+            accessToken: "history-filter-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: root.appendingPathComponent("accounts.json")
+        )
+        _ = try manager.saveCurrentAccount()
+
+        let stateStore = SignalStateStore(stateFileURL: root.appendingPathComponent("status.json"))
+        let oldEventAt = Date().addingTimeInterval(-60)
+
+        let defaults = UserDefaults.standard
+        let previousMonitoring = defaults.object(forKey: "isCodexDesktopMonitoringEnabled")
+        defaults.set(false, forKey: "isCodexDesktopMonitoringEnabled")
+        defer {
+            if let previousMonitoring {
+                defaults.set(previousMonitoring, forKey: "isCodexDesktopMonitoringEnabled")
+            } else {
+                defaults.removeObject(forKey: "isCodexDesktopMonitoringEnabled")
+            }
+        }
+
+        let model = MenuBarStatusModel(
+            store: stateStore,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(
+                sessionsRootURL: root.appendingPathComponent("sessions", isDirectory: true),
+                replaysInitialHistory: false
+            ),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: CodexAccountUsageSnapshotStore(
+                fileURL: root.appendingPathComponent("usage.json")
+            )
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        _ = try stateStore.applySessionQuota(
+            AgentQuotaStatus(
+                remainingPercent: 80,
+                usedPercent: 20,
+                limitName: "Context",
+                windowMinutes: nil,
+                resetsAt: nil,
+                updatedAt: oldEventAt,
+                tokenUsage: AgentTokenUsage(totalTokens: 9_000)
+            ),
+            sessionID: "old-account-session",
+            agent: "codex-desktop",
+            updatedAt: oldEventAt
+        )
+        model.reload()
+        for _ in 0..<100 where !model.snapshot.sessions.contains(where: {
+            $0.sessionID == "old-account-session"
+        }) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        XCTAssertTrue(model.snapshot.sessions.contains { $0.sessionID == "old-account-session" })
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 0)
+    }
+
+    @MainActor
+    func testAccountSnapshotRestoresUnscannedLiveSupplement() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("token-snapshot-supplement-\(UUID().uuidString)", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        let accountStoreURL = root.appendingPathComponent("accounts.json")
+        let usageStoreURL = root.appendingPathComponent("usage.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "supplement@example.com",
+            accountID: "acct_supplement",
+            accessToken: "supplement-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: accountStoreURL
+        )
+        _ = try manager.saveCurrentAccount()
+        let account = try XCTUnwrap(try manager.loadState().currentAccount)
+        let today = Calendar.current.startOfDay(for: Date())
+        let usageStore = CodexAccountUsageSnapshotStore(fileURL: usageStoreURL)
+        usageStore.store(
+            account: account,
+            quota: nil,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 1_250),
+            liveTokenUsageScanBaseline: 1_000,
+            unscannedLiveTokenCarry: 0,
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(day: today, totalTokens: 1_000)]
+        )
+
+        let model = MenuBarStatusModel(
+            store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_250)
+
+        usageStore.store(
+            account: account,
+            quota: nil,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 100),
+            liveTokenUsageScanBaseline: 0,
+            unscannedLiveTokenCarry: 400,
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(day: today, totalTokens: 1_000)]
+        )
+        let carryModel = MenuBarStatusModel(
+            store: SignalStateStore(stateFileURL: root.appendingPathComponent("carry-status.json")),
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore
+        )
+        XCTAssertEqual(carryModel.tokenActivityTotal(for: .today), 1_500)
+    }
+
+    @MainActor
+    func testIncompatibleActivityCacheDropsLegacyFloorBeforeAuthoritativeScan() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("token-snapshot-incompatible-floor-\(UUID().uuidString)", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        let usageStoreURL = root.appendingPathComponent("usage.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "incompatible-floor@example.com",
+            accountID: "acct_incompatible_floor",
+            accessToken: "incompatible-floor-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: root.appendingPathComponent("accounts.json")
+        )
+        _ = try manager.saveCurrentAccount()
+        let account = try XCTUnwrap(try manager.loadState().currentAccount)
+        let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+        let today = Calendar.current.startOfDay(for: now)
+        let usageStore = CodexAccountUsageSnapshotStore(fileURL: usageStoreURL)
+        usageStore.store(
+            account: account,
+            quota: nil,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 1_250),
+            legacyUnscopedTokenFloor: CodexLegacyUnscopedTokenFloorSnapshot(
+                totalTokens: 1_250,
+                day: today
+            ),
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion - 1,
+            tokenActivityDays: [CodexTokenActivityDay(day: today, totalTokens: 1_000)]
+        )
+
+        let applied = expectation(description: "authoritative scan replaces incompatible legacy floor")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { _, _ in
+                CodexTokenActivityScanResult(
+                    days: [CodexTokenActivityDay(day: today, totalTokens: 900)],
+                    watermarks: []
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore,
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied { applied.fulfill() }
+            },
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 0)
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+
+        XCTAssertEqual(scanner.scanCallCount, 1)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 900)
+    }
+
+    @MainActor
+    func testIncompatibleActivityCacheDropsLegacyCursorBeforeNewSnapshotPoll() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("token-snapshot-incompatible-cursor-\(UUID().uuidString)", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        let usageStoreURL = root.appendingPathComponent("usage.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "incompatible-cursor@example.com",
+            accountID: "acct_incompatible_cursor",
+            accessToken: "incompatible-cursor-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: root.appendingPathComponent("accounts.json")
+        )
+        _ = try manager.saveCurrentAccount()
+        let account = try XCTUnwrap(try manager.loadState().currentAccount)
+        let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+        let usageStore = CodexAccountUsageSnapshotStore(fileURL: usageStoreURL)
+        usageStore.store(
+            account: account,
+            quota: nil,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 100),
+            liveTokenCounters: [CodexLiveTokenCounterSnapshot(
+                key: "legacy-key",
+                sessionID: "same-inode-session",
+                totalTokens: 100,
+                scannedBaseline: 100,
+                day: Calendar.current.startOfDay(for: now),
+                updatedAt: now,
+                observationCursor: CodexTokenObservationCursor(
+                    sourceID: "/test/same-inode.jsonl",
+                    sourceGeneration: "same-device-inode",
+                    endOffset: 100,
+                    lineFingerprint: "legacy-line-100"
+                )
+            )],
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion - 1,
+            tokenActivityDays: []
+        )
+
+        let model = MenuBarStatusModel(
+            store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore,
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 100)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 900),
+            sessionID: "same-inode-session",
+            updatedAt: now,
+            observationCursor: CodexTokenObservationCursor(
+                sourceID: "/test/same-inode.jsonl",
+                sourceGeneration: "same-device-inode",
+                sourceStatFingerprint: 200,
+                sourceChangeTimeNanoseconds: 2_000,
+                endOffset: 100,
+                lineFingerprint: "new-line-900"
+            )
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 900)
+    }
+
+    @MainActor
+    func testCoveredNewerSnapshotFrontierWinsDespiteEarlierEventTimestamp() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("covered-newer-snapshot-\(UUID().uuidString)", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        let usageStoreURL = root.appendingPathComponent("usage.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "covered-snapshot@example.com",
+            accountID: "acct_covered_snapshot",
+            accessToken: "covered-snapshot-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: root.appendingPathComponent("accounts.json")
+        )
+        _ = try manager.saveCurrentAccount()
+        let account = try XCTUnwrap(try manager.loadState().currentAccount)
+        let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+        let sourceID = "/test/covered-newer-snapshot.jsonl"
+        let sourceGeneration = "same-device-inode"
+        let sessionID = "covered-newer-snapshot-session"
+        func cursor(
+            statFingerprint: Int64,
+            changeTimeNanoseconds: Int64,
+            offset: UInt64,
+            lineFingerprint: String
+        ) -> CodexTokenObservationCursor {
+            CodexTokenObservationCursor(
+                sourceID: sourceID,
+                sourceGeneration: sourceGeneration,
+                sourceStatFingerprint: statFingerprint,
+                sourceChangeTimeNanoseconds: changeTimeNanoseconds,
+                endOffset: offset,
+                lineFingerprint: lineFingerprint
+            )
+        }
+        let oldCursor = cursor(
+            statFingerprint: 100,
+            changeTimeNanoseconds: 1_000,
+            offset: 100,
+            lineFingerprint: "old-snapshot-line-100"
+        )
+        let frontierCursor = cursor(
+            statFingerprint: 200,
+            changeTimeNanoseconds: 2_000,
+            offset: 200,
+            lineFingerprint: "new-snapshot-line-150"
+        )
+        let usageStore = CodexAccountUsageSnapshotStore(fileURL: usageStoreURL)
+        usageStore.store(
+            account: account,
+            quota: nil,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 100),
+            liveTokenCounters: [CodexLiveTokenCounterSnapshot(
+                key: "persisted-key",
+                sessionID: sessionID,
+                totalTokens: 100,
+                scannedBaseline: 100,
+                day: Calendar.current.startOfDay(for: now),
+                updatedAt: now.addingTimeInterval(10),
+                observationCursor: oldCursor
+            )],
+            liveTokenUsageScanCutoff: now,
+            liveTokenScanWatermarks: [CodexLiveTokenScanWatermarkSnapshot(
+                sessionID: sessionID,
+                sourceID: frontierCursor.sourceID,
+                sourceGeneration: frontierCursor.sourceGeneration,
+                sourceStatFingerprint: frontierCursor.sourceStatFingerprint,
+                sourceChangeTimeNanoseconds: frontierCursor.sourceChangeTimeNanoseconds,
+                endOffset: frontierCursor.endOffset,
+                lineFingerprint: frontierCursor.lineFingerprint,
+                eventTimestamp: now.addingTimeInterval(5),
+                totalTokens: 150
+            )],
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(
+                day: Calendar.current.startOfDay(for: now),
+                totalTokens: 150
+            )],
+            updatedAt: now
+        )
+
+        let model = MenuBarStatusModel(
+            store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore,
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 150)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 150),
+            sessionID: sessionID,
+            updatedAt: now.addingTimeInterval(5),
+            observationCursor: frontierCursor
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 150)
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 150)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 175),
+            sessionID: sessionID,
+            updatedAt: now.addingTimeInterval(4),
+            observationCursor: cursor(
+                statFingerprint: 200,
+                changeTimeNanoseconds: 2_000,
+                offset: 250,
+                lineFingerprint: "new-snapshot-line-175"
+            )
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 175)
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 175)
+    }
+
+    @MainActor
+    func testExactLiveObservationAlignsLatestAfterScannerAdvancesSnapshot() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+        let sessionID = "scanner-advanced-snapshot-session"
+        let sourceID = "/test/scanner-advanced-snapshot.jsonl"
+        let sourceGeneration = "same-device-inode"
+        let oldCursor = CodexTokenObservationCursor(
+            sourceID: sourceID,
+            sourceGeneration: sourceGeneration,
+            sourceStatFingerprint: 100,
+            sourceChangeTimeNanoseconds: 1_000,
+            endOffset: 100,
+            lineFingerprint: "old-snapshot-line-100"
+        )
+        let frontierCursor = CodexTokenObservationCursor(
+            sourceID: sourceID,
+            sourceGeneration: sourceGeneration,
+            sourceStatFingerprint: 200,
+            sourceChangeTimeNanoseconds: 2_000,
+            endOffset: 200,
+            lineFingerprint: "new-snapshot-line-150"
+        )
+        let applied = expectation(description: "newer scanner snapshot applied")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { scanNow, _ in
+                CodexTokenActivityScanResult(
+                    days: [CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: scanNow),
+                        totalTokens: 150
+                    )],
+                    watermarks: [CodexTokenActivityScanWatermark(
+                        sessionID: sessionID,
+                        sourceID: frontierCursor.sourceID,
+                        sourceGeneration: frontierCursor.sourceGeneration,
+                        endOffset: frontierCursor.endOffset,
+                        lineFingerprint: frontierCursor.lineFingerprint,
+                        eventTimestamp: now.addingTimeInterval(-10),
+                        totalTokens: 150,
+                        sourceStatFingerprint: frontierCursor.sourceStatFingerprint,
+                        sourceChangeTimeNanoseconds: frontierCursor.sourceChangeTimeNanoseconds
+                    )]
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied { applied.fulfill() }
+            },
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: sessionID,
+            updatedAt: now.addingTimeInterval(-5),
+            observationCursor: oldCursor
+        )
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 150)
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 100)
+
+        // The scan can move the ledger frontier before the desktop poll arrives.
+        // The exact delayed line must still align the published usage.
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 150),
+            sessionID: sessionID,
+            updatedAt: now.addingTimeInterval(-10),
+            observationCursor: frontierCursor
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 150)
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 150)
+    }
+
+    @MainActor
+    func testLiveTokenCountersRemainCorrectAcrossInterleavedSessions() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager()
+        )
+        let eventBase = Calendar.current.startOfDay(for: Date()).addingTimeInterval(60)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_000),
+            sessionID: "session-a",
+            updatedAt: eventBase
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 500),
+            sessionID: "session-b",
+            updatedAt: eventBase.addingTimeInterval(1)
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_500)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_100),
+            sessionID: "session-a",
+            updatedAt: eventBase.addingTimeInterval(2)
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_600)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 550),
+            sessionID: "session-b",
+            updatedAt: eventBase.addingTimeInterval(3)
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_650)
+    }
+
+    @MainActor
+    func testInitialSessionSnapshotPreservesFirstCounterReset() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let initialAt = Date().addingTimeInterval(-10)
+        let quota = AgentQuotaStatus(
+            remainingPercent: 80,
+            updatedAt: initialAt,
+            tokenUsage: AgentTokenUsage(totalTokens: 1_000)
+        )
+        _ = try fixture.store.applySessionQuota(
+            quota,
+            sessionID: "session-a",
+            agent: "codex-desktop",
+            updatedAt: initialAt
+        )
+
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager()
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: "session-a",
+            updatedAt: Date()
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_100)
+    }
+
+    @MainActor
+    func testPersistedPendingUsageKeepsItsOriginalDayAcrossMidnight() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("token-snapshot-midnight-\(UUID().uuidString)", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        let accountStoreURL = root.appendingPathComponent("accounts.json")
+        let usageStoreURL = root.appendingPathComponent("usage.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "midnight@example.com",
+            accountID: "acct_midnight",
+            accessToken: "midnight-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: accountStoreURL
+        )
+        _ = try manager.saveCurrentAccount()
+        let account = try XCTUnwrap(try manager.loadState().currentAccount)
+        let today = Calendar.current.startOfDay(for: Date())
+        let yesterday = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -1, to: today))
+        let yesterdayEventAt = yesterday.addingTimeInterval(12 * 60 * 60)
+        let usageStore = CodexAccountUsageSnapshotStore(fileURL: usageStoreURL)
+        usageStore.store(
+            account: account,
+            quota: nil,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 1_250),
+            liveTokenCounters: [
+                CodexLiveTokenCounterSnapshot(
+                    key: "session-a",
+                    sessionID: "session-a",
+                    totalTokens: 1_250,
+                    scannedBaseline: 1_000,
+                    day: yesterday,
+                    updatedAt: yesterdayEventAt
+                )
+            ],
+            unscannedLiveTokenCarryByDay: [],
+            liveTokenUsageScanCutoff: yesterdayEventAt.addingTimeInterval(-1),
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(day: yesterday, totalTokens: 1_000)],
+            updatedAt: yesterdayEventAt
+        )
+
+        let applied = expectation(description: "yesterday pending scan applied")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { _, _ in
+                CodexTokenActivityScanResult(
+                    days: [CodexTokenActivityDay(day: yesterday, totalTokens: 1_250)],
+                    watermarks: [testTokenScanWatermark(
+                        sessionID: "session-a",
+                        eventAt: yesterdayEventAt,
+                        totalTokens: 1_250
+                    )]
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore,
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied {
+                    applied.fulfill()
+                }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 0)
+        XCTAssertEqual(model.tokenActivityTotal(for: .last30Days), 1_250)
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 0)
+        XCTAssertEqual(model.tokenActivityTotal(for: .last30Days), 1_250)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: "session-b",
+            updatedAt: Date()
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 100)
+        XCTAssertEqual(model.tokenActivityTotal(for: .last30Days), 1_350)
+    }
+
+    @MainActor
+    func testSameSessionCumulativeCounterCrossingMidnightCountsOnlyNewDayDelta() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let firstDay = Calendar.current.startOfDay(for: Date())
+        let nextDay = try XCTUnwrap(
+            Calendar.current.date(byAdding: .day, value: 1, to: firstDay)
+        )
+        let beforeMidnight = nextDay.addingTimeInterval(-10)
+        let afterMidnight = nextDay.addingTimeInterval(10)
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            nowProvider: { afterMidnight }
+        )
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_000),
+            sessionID: "overnight-session",
+            updatedAt: beforeMidnight
+        )
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_100),
+            sessionID: "overnight-session",
+            updatedAt: afterMidnight
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: afterMidnight), 100)
+        XCTAssertEqual(model.tokenActivityTotal(for: .last30Days, now: afterMidnight), 1_100)
+    }
+
+    @MainActor
+    func testInFlightScanCrossingMidnightRetriesWithoutMovingPendingUsage() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let day = Calendar.current.startOfDay(for: Date())
+        let nextDay = try XCTUnwrap(
+            Calendar.current.date(byAdding: .day, value: 1, to: day)
+        )
+        let beforeMidnight = nextDay.addingTimeInterval(-30)
+        let eventAt = beforeMidnight.addingTimeInterval(-1)
+        let clock = TestDateClock(beforeMidnight)
+        let retrying = expectation(description: "midnight scan retried")
+        let applied = expectation(description: "post-midnight replacement applied")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { _, _ in
+                CodexTokenActivityScanResult(
+                    days: [CodexTokenActivityDay(day: day, totalTokens: 100)],
+                    watermarks: [testTokenScanWatermark(
+                        sessionID: "session-a",
+                        eventAt: eventAt,
+                        totalTokens: 100
+                    )]
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .retryingAfterUnabsorbedUsage {
+                    retrying.fulfill()
+                } else if disposition == .applied {
+                    applied.fulfill()
+                }
+            },
+            nowProvider: { clock.now() }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: "session-a",
+            updatedAt: eventAt
+        )
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        clock.advance(by: 60)
+        scanner.finishScan()
+        await fulfillment(of: [retrying], timeout: 2)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 2))
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: clock.now()), 0)
+        XCTAssertEqual(model.tokenActivityTotal(for: .last30Days, now: clock.now()), 100)
+    }
+
+    @MainActor
+    func testPendingUsageOutsideThirtyDayWindowDoesNotCausePermanentRetry() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+        let oldEventAt = try XCTUnwrap(
+            Calendar.current.date(byAdding: .day, value: -30, to: now)
+        )
+        let applied = expectation(description: "scan ignores expired pending usage")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { _, _ in
+                CodexTokenActivityScanResult(days: [], watermarks: [])
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied { applied.fulfill() }
+            },
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 750),
+            sessionID: "expired-session",
+            updatedAt: oldEventAt,
+            observationCursor: CodexTokenObservationCursor(
+                sourceID: "/test/expired-session.jsonl",
+                sourceGeneration: "expired-generation",
+                endOffset: 42,
+                lineFingerprint: "expired-line"
+            )
+        )
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+
+        XCTAssertEqual(scanner.scanCallCount, 1)
+        XCTAssertEqual(model.tokenActivityTotal(for: .last30Days, now: now), 0)
+    }
+
+    @MainActor
+    func testTokenActivityThirtyDayWindowIncludesDay29AndExcludesDay30() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+        let includedAt = try XCTUnwrap(
+            Calendar.current.date(byAdding: .day, value: -29, to: now)
+        )
+        let excludedAt = try XCTUnwrap(
+            Calendar.current.date(byAdding: .day, value: -30, to: now)
+        )
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            nowProvider: { now }
+        )
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 290),
+            sessionID: "day-29",
+            updatedAt: includedAt
+        )
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 300),
+            sessionID: "day-30",
+            updatedAt: excludedAt
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .last30Days, now: now), 290)
+    }
+
+    @MainActor
+    func testClearUsageCacheWaitsForInFlightScanBeforeRemovingScannerCaches() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedDays: { now in
+                [CodexTokenActivityDay(
+                    day: Calendar.current.startOfDay(for: now),
+                    totalTokens: 9_999
+                )]
+            }
+        )
+        defer { scanner.finishScan() }
+        let discarded = expectation(description: "cleared scan completion discarded")
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .discardedStaleContext { discarded.fulfill() }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        model.clearDebugUsageCache()
+        XCTAssertFalse(scanner.waitUntilCacheClears(seconds: 0.1))
+
+        scanner.finishScan()
+        XCTAssertTrue(scanner.waitUntilCacheClears(seconds: 2))
+        await fulfillment(of: [discarded], timeout: 2)
+        XCTAssertEqual(scanner.clearCacheCallCount, 1)
+        XCTAssertTrue(model.tokenActivityDays.isEmpty)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 0)
+    }
+
+    func testProductionTokenActivityScannerClearCacheRemovesAllDiskCaches() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("token-clear-cache-\(UUID().uuidString)", isDirectory: true)
+        let legacyCacheURL = root.appendingPathComponent("legacy-token-cache.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let costCacheURL = CostUsageCacheIO.cacheFileURL(provider: .codex, cacheRoot: root)
+        let piCacheURL = PiSessionCostCacheIO.cacheFileURL(cacheRoot: root)
+        let costCacheDirectory = costCacheURL.deletingLastPathComponent()
+        let legacyCostCacheURLs = ["codex-v8.json", "codex-v9.json", "codex-v10.json"].map {
+            costCacheDirectory.appendingPathComponent($0)
+        }
+        let legacyPiCacheURL = costCacheDirectory.appendingPathComponent("pi-sessions-v3.json")
+        let unrelatedCacheURL = costCacheDirectory.appendingPathComponent("claude-v4.json")
+        for url in [legacyCacheURL, costCacheURL, piCacheURL, legacyPiCacheURL, unrelatedCacheURL]
+            + legacyCostCacheURLs
+        {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("cache".utf8).write(to: url)
+        }
+        let scanner = CodexTokenActivityScanner(
+            sessionRootURLs: [],
+            cacheURL: legacyCacheURL,
+            costUsageCacheRootURL: root,
+            usesAgentSignalCostUsageScanner: true
+        )
+
+        scanner.clearCache()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyCacheURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: costCacheURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: piCacheURL.path))
+        for url in legacyCostCacheURLs + [legacyPiCacheURL] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelatedCacheURL.path))
+    }
+
+    @MainActor
+    func testProductionYesterdayCacheContinuesIntoTodayIncrementalScan() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("production-cache-bootstrap-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let today = Calendar.current.startOfDay(for: Date())
+        let now = today.addingTimeInterval(12 * 60 * 60)
+        let yesterday = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -1, to: today))
+        let yesterdayEventAt = yesterday.addingTimeInterval(12 * 60 * 60)
+        let todayEventAt = now.addingTimeInterval(-1)
+        let sessionID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
+        let filenameDay = ISO8601DateFormatter().string(from: now).prefix(10)
+        let sessionURL = sessionsRoot.appendingPathComponent(
+            "rollout-\(filenameDay)T12-00-00-\(sessionID).jsonl"
+        )
+        let meta = #"{"timestamp":"\#(isoTimestamp(yesterdayEventAt))","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#
+        let yesterdayLine = #"{"timestamp":"\#(isoTimestamp(yesterdayEventAt))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let todayLine = #"{"timestamp":"\#(isoTimestamp(todayEventAt))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#
+        try [meta, yesterdayLine].joined(separator: "\n").appending("\n")
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let productionScanner = CodexTokenActivityScanner(
+            sessionRootURLs: [sessionsRoot],
+            costUsageCacheRootURL: root.appendingPathComponent("cost-cache", isDirectory: true)
+        )
+        let seeded = productionScanner.scanDailyActivityResult(now: now, days: 30, progress: nil)
+        XCTAssertEqual(seeded.days.filter { Calendar.current.isDate($0.day, inSameDayAs: today) }.count, 0)
+        XCTAssertEqual(seeded.days.compactMap(\.totalTokens).reduce(0, +), 100)
+        try FileHandle(forWritingTo: sessionURL).appendString(todayLine + "\n")
+
+        try codexOAuthAuthJSON(
+            email: "bootstrap@example.com",
+            accountID: "acct_bootstrap",
+            accessToken: "bootstrap-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: root.appendingPathComponent("accounts.json")
+        )
+        _ = try manager.saveCurrentAccount()
+        let account = try XCTUnwrap(try manager.loadState().currentAccount)
+        let usageStore = CodexAccountUsageSnapshotStore(
+            fileURL: root.appendingPathComponent("usage.json")
+        )
+        usageStore.store(
+            account: account,
+            quota: nil,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 150),
+            liveTokenCounters: [CodexLiveTokenCounterSnapshot(
+                key: sessionID,
+                sessionID: sessionID,
+                totalTokens: 150,
+                scannedBaseline: 100,
+                day: today,
+                updatedAt: todayEventAt
+            )],
+            unscannedLiveTokenCarryByDay: [],
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(day: yesterday, totalTokens: 100)]
+        )
+
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { scanNow in
+                productionScanner.cachedDailyActivity(now: scanNow, days: 30)
+            },
+            scannedResultsByCall: { scanNow, _ in
+                productionScanner.scanDailyActivityResult(now: scanNow, days: 30, progress: nil)
+            }
+        )
+        defer { scanner.finishScan() }
+        let applied = expectation(description: "production incremental scan applied")
+        let model = MenuBarStatusModel(
+            store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore,
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied { applied.fulfill() }
+            },
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 50)
+
+        model.refreshTokenActivityIfNeeded()
+        let didStartScan = await Task.detached {
+            scanner.waitUntilScanStarts(seconds: 2)
+        }.value
+        XCTAssertTrue(didStartScan)
+        XCTAssertTrue(model.isTokenActivityLoading)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 50)
+        XCTAssertNil(model.tokenActivityEstimatedCost(for: .today, now: now))
+
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 3)
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 50)
+        XCTAssertGreaterThan(model.tokenActivityEstimatedCost(for: .today, now: now) ?? 0, 0)
+    }
+
+    @MainActor
+    func testOrdinaryTokenRefreshKeepsLiveUsageWhileCachedHistoryIsDisplayed() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let applied = expectation(description: "token activity scan applied")
+
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { now in
+                let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now) ?? now
+                return [CodexTokenActivityDay(day: yesterday, totalTokens: 5_000, estimatedCostUSD: 0.02)]
+            },
+            scannedDays: { now in
+                let today = Calendar.current.startOfDay(for: now)
+                let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: today) ?? today
+                return [
+                    CodexTokenActivityDay(day: yesterday, totalTokens: 5_000, estimatedCostUSD: 0.02),
+                    CodexTokenActivityDay(day: today, totalTokens: 1_000, estimatedCostUSD: 0.01)
+                ]
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied {
+                    applied.fulfill()
+                }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.appLanguage = .english
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 1_000))
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+        model.refreshTokenActivityIfNeeded()
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        for _ in 0..<100 {
+            if model.tokenActivityTotal(for: .last30Days) == 6_000 {
+                break
+            }
+            await Task.yield()
+        }
+
+        XCTAssertTrue(model.isTokenActivityLoading)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+        XCTAssertEqual(model.tokenActivityTotal(for: .last30Days), 6_000)
+        XCTAssertEqual(model.tokenUsageCostText(nil, isLoading: true), "calculating…")
+
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+
+        XCTAssertFalse(model.isTokenActivityLoading)
+        XCTAssertEqual(scanner.scanCallCount, 1)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+        XCTAssertEqual(model.tokenActivityTotal(for: .last30Days), 6_000)
+        XCTAssertEqual(try XCTUnwrap(model.tokenActivityEstimatedCost(for: .today)), 0.01, accuracy: 0.000_001)
+    }
+
+    @MainActor
+    func testTokenRefreshPreservesLiveTokensArrivingDuringScan() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let retrying = expectation(description: "stale token scan triggers a retry")
+        let applied = expectation(description: "retry token scan applied")
+
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { now, callIndex in
+                let totalTokens = callIndex == 1 ? 1_000 : 1_250
+                return CodexTokenActivityScanResult(
+                    days: [CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: now),
+                        totalTokens: totalTokens
+                    )],
+                    watermarks: [testTokenScanWatermark(
+                        sessionID: "session-a",
+                        eventAt: now,
+                        totalTokens: totalTokens,
+                        ordinal: UInt64(callIndex)
+                    )]
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                switch disposition {
+                case .retryingAfterUnabsorbedUsage:
+                    retrying.fulfill()
+                case .applied:
+                    applied.fulfill()
+                case .deferredWithRetryPending, .discardedStaleContext, .discardedInactive:
+                    break
+                }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        let firstEventAt = Date().addingTimeInterval(-10)
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_000),
+            sessionID: "session-a",
+            updatedAt: firstEventAt
+        )
+
+        model.refreshTokenActivityIfNeeded()
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_250),
+            sessionID: "session-a",
+            updatedAt: firstEventAt.addingTimeInterval(1)
+        )
+
+        let secondScanStarted = Task.detached {
+            scanner.waitUntilScanStarts(seconds: 2)
+        }
+        scanner.finishScan()
+        await fulfillment(of: [retrying], timeout: 2)
+        let didStartSecondScan = await secondScanStarted.value
+        XCTAssertTrue(didStartSecondScan)
+
+        XCTAssertTrue(model.isTokenActivityLoading)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_250)
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+
+        XCTAssertFalse(model.isTokenActivityLoading)
+        XCTAssertEqual(scanner.scanCallCount, 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_250)
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_300),
+            sessionID: "session-a",
+            updatedAt: Date()
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_300)
+    }
+
+    @MainActor
+    func testTokenRefreshDoesNotDoubleCountWhenFirstScanIncludesConcurrentLiveGrowth() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let retrying = expectation(description: "concurrent live growth invalidates first scan")
+        let applied = expectation(description: "stable retry containing live growth applied")
+
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { now, callIndex in
+                CodexTokenActivityScanResult(
+                    days: [CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: now),
+                        totalTokens: 1_250
+                    )],
+                    watermarks: [testTokenScanWatermark(
+                        sessionID: "session-a",
+                        eventAt: now,
+                        totalTokens: 1_250,
+                        ordinal: UInt64(callIndex)
+                    )]
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .retryingAfterUnabsorbedUsage {
+                    retrying.fulfill()
+                } else if disposition == .applied {
+                    applied.fulfill()
+                }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 1_000))
+
+        model.refreshTokenActivityIfNeeded()
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 1_250))
+
+        let secondScanStarted = Task.detached {
+            scanner.waitUntilScanStarts(seconds: 2)
+        }
+        scanner.finishScan()
+        await fulfillment(of: [retrying], timeout: 2)
+        let didStartSecondScan = await secondScanStarted.value
+        XCTAssertTrue(didStartSecondScan)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_250)
+
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+
+        XCTAssertEqual(scanner.scanCallCount, 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_250)
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 1_300))
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_300)
+    }
+
+    @MainActor
+    func testTokenRefreshDoesNotDoubleCountWhenScanLeadsLivePoll() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let firstApplied = expectation(description: "ahead-of-live scan applied")
+        let reconciled = expectation(description: "later live poll reconciled")
+        var appliedCount = 0
+
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { now, callIndex in
+                CodexTokenActivityScanResult(
+                    days: [CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: now),
+                        totalTokens: 1_250
+                    )],
+                    watermarks: [testTokenScanWatermark(
+                        sessionID: "session-a",
+                        eventAt: now,
+                        totalTokens: 1_250,
+                        ordinal: UInt64(callIndex)
+                    )]
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                guard disposition == .applied else { return }
+                appliedCount += 1
+                if appliedCount == 1 {
+                    firstApplied.fulfill()
+                } else {
+                    reconciled.fulfill()
+                }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        let firstEventAt = Date().addingTimeInterval(-10)
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_000),
+            sessionID: "session-a",
+            updatedAt: firstEventAt
+        )
+
+        model.refreshTokenActivityIfNeeded()
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [firstApplied], timeout: 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_250)
+
+        // The JSONL scan already contained this growth. A later live poll must
+        // consume the scanner lead instead of adding the same 250 again.
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_250),
+            sessionID: "session-a",
+            updatedAt: firstEventAt.addingTimeInterval(1)
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_250)
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [reconciled], timeout: 2)
+        XCTAssertEqual(scanner.scanCallCount, 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_250)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_300),
+            sessionID: "session-a",
+            updatedAt: Date()
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_300)
+    }
+
+    @MainActor
+    func testExactCursorScannerFrontierAbsorbsMultipleDelayedLivePolls() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let firstEventAt = Date().addingTimeInterval(-10)
+        let sourceID = "/test/scanner-ahead.jsonl"
+        let sourceGeneration = "scanner-ahead-generation"
+        func cursor(offset: UInt64, fingerprint: String) -> CodexTokenObservationCursor {
+            CodexTokenObservationCursor(
+                sourceID: sourceID,
+                sourceGeneration: sourceGeneration,
+                endOffset: offset,
+                lineFingerprint: fingerprint
+            )
+        }
+        let firstCursor = cursor(offset: 100, fingerprint: "line-1000")
+        let middleCursor = cursor(offset: 200, fingerprint: "line-1250")
+        let scannedFrontier = cursor(offset: 300, fingerprint: "line-1300")
+        let postScanCursor = cursor(offset: 400, fingerprint: "line-1350")
+        let applied = expectation(description: "exact scanner frontier applied")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { now, _ in
+                CodexTokenActivityScanResult(
+                    days: [CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: now),
+                        totalTokens: 1_300
+                    )],
+                    watermarks: [CodexTokenActivityScanWatermark(
+                        sessionID: "session-a",
+                        sourceID: scannedFrontier.sourceID,
+                        sourceGeneration: scannedFrontier.sourceGeneration,
+                        endOffset: scannedFrontier.endOffset,
+                        lineFingerprint: scannedFrontier.lineFingerprint,
+                        eventTimestamp: firstEventAt.addingTimeInterval(3),
+                        totalTokens: 1_300
+                    )]
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied { applied.fulfill() }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_000),
+            sessionID: "session-a",
+            updatedAt: firstEventAt,
+            observationCursor: firstCursor
+        )
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_300)
+
+        // A reused device/inode generation must not let another session consume
+        // this frontier merely because its offset is lower.
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: "session-b",
+            updatedAt: firstEventAt.addingTimeInterval(1),
+            observationCursor: CodexTokenObservationCursor(
+                sourceID: "/test/reused-inode.jsonl",
+                sourceGeneration: sourceGeneration,
+                endOffset: 50,
+                lineFingerprint: "session-b-line-100"
+            )
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_400)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_250),
+            sessionID: "session-a",
+            updatedAt: firstEventAt.addingTimeInterval(2),
+            observationCursor: middleCursor
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_400)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_300),
+            sessionID: "session-a",
+            updatedAt: firstEventAt.addingTimeInterval(3),
+            observationCursor: scannedFrontier
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_400)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_350),
+            sessionID: "session-a",
+            updatedAt: Date(),
+            observationCursor: postScanCursor
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_450)
+    }
+
+    @MainActor
+    func testQuarantineTombstoneDoesNotRejectNewerSameInodeSnapshot() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let sessionID = "same-inode-quarantine-session"
+        let sourceID = "/test/same-inode-quarantine.jsonl"
+        let sourceGeneration = "same-device-inode"
+        let applied = expectation(description: "old snapshot quarantine applied")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { _, _ in
+                CodexTokenActivityScanResult(
+                    days: [],
+                    watermarks: [CodexTokenActivityScanWatermark(
+                        sessionID: sessionID,
+                        sourceID: sourceID,
+                        sourceGeneration: sourceGeneration,
+                        endOffset: .max,
+                        lineFingerprint: "quarantined-old-snapshot",
+                        eventTimestamp: nil,
+                        totalTokens: nil,
+                        sourceStatFingerprint: 100,
+                        sourceChangeTimeNanoseconds: 1_000
+                    )]
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied { applied.fulfill() }
+            },
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 50),
+            sessionID: sessionID,
+            updatedAt: now,
+            observationCursor: CodexTokenObservationCursor(
+                sourceID: sourceID,
+                sourceGeneration: sourceGeneration,
+                sourceStatFingerprint: 200,
+                sourceChangeTimeNanoseconds: 2_000,
+                endOffset: 100,
+                lineFingerprint: "new-snapshot-line-50"
+            )
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 50)
+    }
+
+    @MainActor
+    func testOlderSnapshotWatermarkCannotCoverNewerSameInodeCursor() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let sessionID = "same-inode-rewrite-session"
+        let sourceID = "/test/same-inode-rewrite.jsonl"
+        let sourceGeneration = "same-device-inode"
+        let applied = expectation(description: "old snapshot frontier applied")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { scanNow, _ in
+                CodexTokenActivityScanResult(
+                    days: [CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: scanNow),
+                        totalTokens: 100
+                    )],
+                    watermarks: [CodexTokenActivityScanWatermark(
+                        sessionID: sessionID,
+                        sourceID: sourceID,
+                        sourceGeneration: sourceGeneration,
+                        endOffset: 1_000,
+                        lineFingerprint: "old-snapshot-line-100",
+                        eventTimestamp: now.addingTimeInterval(-1),
+                        totalTokens: 100,
+                        sourceStatFingerprint: 100,
+                        sourceChangeTimeNanoseconds: 1_000
+                    )]
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied { applied.fulfill() }
+            },
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 100)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 50),
+            sessionID: sessionID,
+            updatedAt: now,
+            observationCursor: CodexTokenObservationCursor(
+                sourceID: sourceID,
+                sourceGeneration: sourceGeneration,
+                sourceStatFingerprint: 200,
+                sourceChangeTimeNanoseconds: 2_000,
+                endOffset: 100,
+                lineFingerprint: "new-snapshot-line-50"
+            )
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 150)
+    }
+
+    @MainActor
+    func testEqualTimestampOlderCursorCannotCreateResetCarry() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager()
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        let eventAt = Date()
+        func cursor(_ offset: UInt64, _ fingerprint: String) -> CodexTokenObservationCursor {
+            CodexTokenObservationCursor(
+                sourceID: "/test/equal-timestamp.jsonl",
+                sourceGeneration: "equal-timestamp-generation",
+                endOffset: offset,
+                lineFingerprint: fingerprint
+            )
+        }
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 150),
+            sessionID: "session-a",
+            updatedAt: eventAt,
+            observationCursor: cursor(200, "line-150")
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: eventAt), 150)
+
+        // Delivery order is allowed to differ from JSONL byte order. The older
+        // cumulative value must be ignored, not preserved as a 150-token carry
+        // followed by a new 100-token counter.
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: "session-a",
+            updatedAt: eventAt,
+            observationCursor: cursor(100, "line-100")
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: eventAt), 150)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 175),
+            sessionID: "session-a",
+            updatedAt: eventAt,
+            observationCursor: cursor(250, "line-175")
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: eventAt), 175)
+    }
+
+    @MainActor
+    func testNewerSameInodeSnapshotWinsDespiteEarlierEventTimestamp() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = try XCTUnwrap(
+            Calendar.current.date(
+                byAdding: .hour,
+                value: 12,
+                to: Calendar.current.startOfDay(for: Date())
+            )
+        )
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        func cursor(
+            statFingerprint: Int64,
+            changeTimeNanoseconds: Int64,
+            offset: UInt64,
+            lineFingerprint: String
+        ) -> CodexTokenObservationCursor {
+            CodexTokenObservationCursor(
+                sourceID: "/test/snapshot-timestamp-rollback.jsonl",
+                sourceGeneration: "same-device-inode",
+                sourceStatFingerprint: statFingerprint,
+                sourceChangeTimeNanoseconds: changeTimeNanoseconds,
+                endOffset: offset,
+                lineFingerprint: lineFingerprint
+            )
+        }
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: "snapshot-timestamp-session",
+            updatedAt: now.addingTimeInterval(10),
+            observationCursor: cursor(
+                statFingerprint: 100,
+                changeTimeNanoseconds: 1_000,
+                offset: 100,
+                lineFingerprint: "old-snapshot-line-100"
+            )
+        )
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 150),
+            sessionID: "snapshot-timestamp-session",
+            updatedAt: now.addingTimeInterval(5),
+            observationCursor: cursor(
+                statFingerprint: 200,
+                changeTimeNanoseconds: 2_000,
+                offset: 200,
+                lineFingerprint: "new-snapshot-line-150"
+            )
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 150)
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 150)
+    }
+
+    @MainActor
+    func testLaterCursorInSameSnapshotWinsDespiteEarlierEventTimestamp() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        func cursor(offset: UInt64, lineFingerprint: String) -> CodexTokenObservationCursor {
+            CodexTokenObservationCursor(
+                sourceID: "/test/same-snapshot-byte-order.jsonl",
+                sourceGeneration: "same-device-inode",
+                sourceStatFingerprint: 300,
+                sourceChangeTimeNanoseconds: 3_000,
+                endOffset: offset,
+                lineFingerprint: lineFingerprint
+            )
+        }
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: "same-snapshot-session",
+            updatedAt: now.addingTimeInterval(10),
+            observationCursor: cursor(offset: 100, lineFingerprint: "line-100")
+        )
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 150),
+            sessionID: "same-snapshot-session",
+            updatedAt: now.addingTimeInterval(5),
+            observationCursor: cursor(offset: 200, lineFingerprint: "line-150")
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 150)
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 150)
+    }
+
+    @MainActor
+    func testEarlierCursorInSameSnapshotCannotWinWithLaterEventTimestamp() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        func cursor(offset: UInt64, lineFingerprint: String) -> CodexTokenObservationCursor {
+            CodexTokenObservationCursor(
+                sourceID: "/test/same-snapshot-byte-order.jsonl",
+                sourceGeneration: "same-device-inode",
+                sourceStatFingerprint: 300,
+                sourceChangeTimeNanoseconds: 3_000,
+                endOffset: offset,
+                lineFingerprint: lineFingerprint
+            )
+        }
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 150),
+            sessionID: "same-snapshot-session",
+            updatedAt: now.addingTimeInterval(5),
+            observationCursor: cursor(offset: 200, lineFingerprint: "line-150")
+        )
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 900),
+            sessionID: "same-snapshot-session",
+            updatedAt: now.addingTimeInterval(10),
+            observationCursor: cursor(offset: 100, lineFingerprint: "line-900")
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 150)
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 150)
+    }
+
+    @MainActor
+    func testNewerSnapshotCannotMoveLiveCounterToEarlierAccountingDay() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let today = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+        let yesterday = try XCTUnwrap(
+            Calendar.current.date(byAdding: .day, value: -1, to: today)
+        )
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            nowProvider: { today }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        func cursor(
+            statFingerprint: Int64,
+            changeTimeNanoseconds: Int64,
+            lineFingerprint: String
+        ) -> CodexTokenObservationCursor {
+            CodexTokenObservationCursor(
+                sourceID: "/test/snapshot-accounting-day.jsonl",
+                sourceGeneration: "same-device-inode",
+                sourceStatFingerprint: statFingerprint,
+                sourceChangeTimeNanoseconds: changeTimeNanoseconds,
+                endOffset: 100,
+                lineFingerprint: lineFingerprint
+            )
+        }
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 150),
+            sessionID: "accounting-day-session",
+            updatedAt: today,
+            observationCursor: cursor(
+                statFingerprint: 100,
+                changeTimeNanoseconds: 1_000,
+                lineFingerprint: "today-line-150"
+            )
+        )
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 900),
+            sessionID: "accounting-day-session",
+            updatedAt: yesterday,
+            observationCursor: cursor(
+                statFingerprint: 200,
+                changeTimeNanoseconds: 2_000,
+                lineFingerprint: "yesterday-line-900"
+            )
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: today), 150)
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 150)
+    }
+
+    @MainActor
+    func testCursorlessReplayCannotOverwriteNewerCursorSnapshot() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+        let oldExactAt = now.addingTimeInterval(10.789)
+        let newerExactAt = now.addingTimeInterval(5.123)
+        let sessionID = "cursorless-watcher-race-session"
+
+        func cursor(
+            statFingerprint: Int64,
+            changeTimeNanoseconds: Int64,
+            lineFingerprint: String
+        ) -> CodexTokenObservationCursor {
+            CodexTokenObservationCursor(
+                sourceID: "/test/cursorless-watcher-race.jsonl",
+                sourceGeneration: "same-device-inode",
+                sourceStatFingerprint: statFingerprint,
+                sourceChangeTimeNanoseconds: changeTimeNanoseconds,
+                endOffset: 100,
+                lineFingerprint: lineFingerprint
+            )
+        }
+
+        func tokenLine(at timestamp: Date, cumulative: Int, lastTurn: Int) -> String {
+            """
+            {"timestamp":"\(isoTimestamp(timestamp))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":\(cumulative),"cached_input_tokens":0,"output_tokens":0,"total_tokens":\(cumulative)},"last_token_usage":{"input_tokens":\(lastTurn),"cached_input_tokens":0,"output_tokens":0,"total_tokens":\(lastTurn)}}}}
+            """
+        }
+
+        let oldCursor = cursor(
+            statFingerprint: 100,
+            changeTimeNanoseconds: 1_000,
+            lineFingerprint: "old-snapshot-line-1000"
+        )
+        let newerCursor = cursor(
+            statFingerprint: 200,
+            changeTimeNanoseconds: 2_000,
+            lineFingerprint: "new-snapshot-line-1500"
+        )
+        let oldUpdate = try XCTUnwrap(CodexDesktopSessionParser.quotaUpdate(
+            from: tokenLine(at: oldExactAt, cumulative: 1_000, lastTurn: 100),
+            defaultSessionID: sessionID,
+            tokenObservationCursor: oldCursor
+        ))
+        let newerUpdate = try XCTUnwrap(CodexDesktopSessionParser.quotaUpdate(
+            from: tokenLine(at: newerExactAt, cumulative: 1_500, lastTurn: 150),
+            defaultSessionID: sessionID,
+            tokenObservationCursor: newerCursor
+        ))
+        XCTAssertEqual(oldUpdate.tokenActivityUsage?.effectiveTotalTokens, 1_000)
+        XCTAssertEqual(oldUpdate.quota.tokenUsage?.effectiveTotalTokens, 100)
+
+        let roundTripStore = SignalStateStore(
+            stateFileURL: fixture.directory.appendingPathComponent("roundtrip-status.json")
+        )
+        _ = try roundTripStore.applySessionQuota(
+            oldUpdate.quota,
+            sessionID: oldUpdate.sessionID,
+            agent: oldUpdate.agent,
+            updatedAt: oldUpdate.quota.updatedAt
+        )
+        let roundTrippedShadow = try XCTUnwrap(
+            roundTripStore.readSnapshot().sessions.first(where: {
+                $0.sessionID == sessionID
+            })?.quota
+        )
+        XCTAssertNotEqual(roundTrippedShadow.updatedAt, oldExactAt)
+        XCTAssertEqual(roundTrippedShadow.tokenUsage?.effectiveTotalTokens, 100)
+
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        // The watcher can capture the first cursor-less SignalState value,
+        // deliver the newer file snapshot, and only then apply the old copy.
+        model.updateLatestAgentTokenUsage(
+            try XCTUnwrap(oldUpdate.tokenActivityUsage),
+            sessionID: sessionID,
+            updatedAt: oldExactAt,
+            observationCursor: oldCursor,
+            stateShadowUsage: oldUpdate.quota.tokenUsage
+        )
+        model.updateLatestAgentTokenUsage(
+            try XCTUnwrap(newerUpdate.tokenActivityUsage),
+            sessionID: sessionID,
+            updatedAt: newerExactAt,
+            observationCursor: newerCursor,
+            stateShadowUsage: newerUpdate.quota.tokenUsage
+        )
+        model.updateLatestAgentTokenUsage(
+            try XCTUnwrap(roundTrippedShadow.tokenUsage),
+            sessionID: sessionID,
+            updatedAt: roundTrippedShadow.updatedAt
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 1_500)
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 1_500)
+    }
+
+    @MainActor
+    func testNewCursorlessResetAfterExactObservationRemainsAccepted() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+        let sessionID = "cursorless-reset-after-exact-session"
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_000),
+            sessionID: sessionID,
+            updatedAt: now,
+            observationCursor: CodexTokenObservationCursor(
+                sourceID: "/test/cursorless-reset-after-exact.jsonl",
+                sourceGeneration: "exact-generation",
+                sourceStatFingerprint: 100,
+                sourceChangeTimeNanoseconds: 1_000,
+                endOffset: 100,
+                lineFingerprint: "exact-line-1000"
+            ),
+            stateShadowUsage: AgentTokenUsage(totalTokens: 1_000)
+        )
+
+        // This is not the cursor-less shadow of the exact observation above:
+        // it is a later counter reset and must remain part of the live ledger.
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: sessionID,
+            updatedAt: now.addingTimeInterval(1)
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 1_100)
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 100)
+    }
+
+    @MainActor
+    func testOlderSameInodeSnapshotCannotWinWithLaterEventTimestamp() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = try XCTUnwrap(
+            Calendar.current.date(
+                byAdding: .hour,
+                value: 12,
+                to: Calendar.current.startOfDay(for: Date())
+            )
+        )
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        func cursor(
+            statFingerprint: Int64,
+            changeTimeNanoseconds: Int64,
+            offset: UInt64,
+            lineFingerprint: String
+        ) -> CodexTokenObservationCursor {
+            CodexTokenObservationCursor(
+                sourceID: "/test/snapshot-timestamp-reorder.jsonl",
+                sourceGeneration: "same-device-inode",
+                sourceStatFingerprint: statFingerprint,
+                sourceChangeTimeNanoseconds: changeTimeNanoseconds,
+                endOffset: offset,
+                lineFingerprint: lineFingerprint
+            )
+        }
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 150),
+            sessionID: "snapshot-timestamp-session",
+            updatedAt: now.addingTimeInterval(5),
+            observationCursor: cursor(
+                statFingerprint: 200,
+                changeTimeNanoseconds: 2_000,
+                offset: 200,
+                lineFingerprint: "new-snapshot-line-150"
+            )
+        )
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 900),
+            sessionID: "snapshot-timestamp-session",
+            updatedAt: now.addingTimeInterval(10),
+            observationCursor: cursor(
+                statFingerprint: 100,
+                changeTimeNanoseconds: 1_000,
+                offset: 100,
+                lineFingerprint: "old-snapshot-line-900"
+            )
+        )
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 150)
+        XCTAssertEqual(model.latestAgentTokenUsage?.effectiveTotalTokens, 150)
+    }
+
+    @MainActor
+    func testNewGenerationScannerFrontierRetainsDelayedPreCutoffPoll() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let baseNow = Date().addingTimeInterval(-60)
+        let clock = TestDateClock(baseNow)
+        let delayedEventAt = baseNow.addingTimeInterval(-10)
+        let cursor = CodexTokenObservationCursor(
+            sourceID: "/test/new-delayed-generation.jsonl",
+            sourceGeneration: "new-delayed-generation",
+            endOffset: 200,
+            lineFingerprint: "new-delayed-line"
+        )
+        let firstApplied = expectation(description: "initial frontier scan applied")
+        let secondApplied = expectation(description: "new generation scan applied")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { now, callIndex in
+                if callIndex == 1 {
+                    return CodexTokenActivityScanResult(
+                        days: [CodexTokenActivityDay(
+                            day: Calendar.current.startOfDay(for: now),
+                            totalTokens: 1_000
+                        )],
+                        watermarks: []
+                    )
+                }
+                return CodexTokenActivityScanResult(
+                    days: [CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: now),
+                        totalTokens: 1_100
+                    )],
+                    watermarks: [CodexTokenActivityScanWatermark(
+                        sessionID: "delayed-session",
+                        sourceID: cursor.sourceID,
+                        sourceGeneration: cursor.sourceGeneration,
+                        endOffset: cursor.endOffset,
+                        lineFingerprint: cursor.lineFingerprint,
+                        eventTimestamp: delayedEventAt,
+                        totalTokens: 100
+                    )]
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        var appliedCount = 0
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                guard disposition == .applied else { return }
+                appliedCount += 1
+                if appliedCount == 1 {
+                    firstApplied.fulfill()
+                } else if appliedCount == 2 {
+                    secondApplied.fulfill()
+                }
+            },
+            nowProvider: { clock.now() }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [firstApplied], timeout: 2)
+
+        clock.advance(by: 10)
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [secondApplied], timeout: 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_100)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: "delayed-session",
+            updatedAt: delayedEventAt,
+            observationCursor: cursor
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_100)
+    }
+
+    @MainActor
+    func testLatePreCutoffLineRemainsPendingUntilItsExactCursorIsScanned() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let firstEventAt = Date().addingTimeInterval(-20)
+        let lateEventAt = firstEventAt.addingTimeInterval(1)
+        let firstCursor = CodexTokenObservationCursor(
+            sourceID: "/test/session-a.jsonl",
+            sourceGeneration: "generation-a",
+            endOffset: 100,
+            lineFingerprint: "line-1000"
+        )
+        let lateCursor = CodexTokenObservationCursor(
+            sourceID: firstCursor.sourceID,
+            sourceGeneration: firstCursor.sourceGeneration,
+            endOffset: 200,
+            lineFingerprint: "line-1250"
+        )
+        let firstApplied = expectation(description: "first cursor-backed scan applied")
+        let secondApplied = expectation(description: "late cursor-backed scan applied")
+        var appliedCount = 0
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { now, callIndex in
+                let total = callIndex == 1 ? 1_000 : 1_250
+                let cursor = callIndex == 1 ? firstCursor : lateCursor
+                let eventAt = callIndex == 1 ? firstEventAt : lateEventAt
+                return CodexTokenActivityScanResult(
+                    days: [CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: now),
+                        totalTokens: total
+                    )],
+                    watermarks: [CodexTokenActivityScanWatermark(
+                        sessionID: "session-a",
+                        sourceID: cursor.sourceID,
+                        sourceGeneration: cursor.sourceGeneration,
+                        endOffset: cursor.endOffset,
+                        lineFingerprint: cursor.lineFingerprint,
+                        eventTimestamp: eventAt,
+                        totalTokens: total
+                    )]
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                guard disposition == .applied else { return }
+                appliedCount += 1
+                if appliedCount == 1 {
+                    firstApplied.fulfill()
+                } else if appliedCount == 2 {
+                    secondApplied.fulfill()
+                }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_000),
+            sessionID: "session-a",
+            updatedAt: firstEventAt,
+            observationCursor: firstCursor
+        )
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [firstApplied], timeout: 2)
+
+        // The event timestamp predates the committed scan, but its line was
+        // appended after EOF. A wall-clock cutoff would lose these 250 tokens.
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_250),
+            sessionID: "session-a",
+            updatedAt: lateEventAt,
+            observationCursor: lateCursor
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_250)
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [secondApplied], timeout: 2)
+        XCTAssertEqual(scanner.scanCallCount, 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_250)
+    }
+
+    @MainActor
+    func testArchivedSessionRenameStillAbsorbsExactCursor() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let eventAt = Date().addingTimeInterval(-1)
+        let liveCursor = CodexTokenObservationCursor(
+            sourceID: "/test/sessions/session-a.jsonl",
+            sourceGeneration: "device-inode-a",
+            endOffset: 420,
+            lineFingerprint: "exact-line-a"
+        )
+        let applied = expectation(description: "renamed archive cursor absorbed")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { now, _ in
+                CodexTokenActivityScanResult(
+                    days: [CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: now),
+                        totalTokens: 100
+                    )],
+                    watermarks: [CodexTokenActivityScanWatermark(
+                        sessionID: "session-a",
+                        sourceID: "/test/archived_sessions/session-a.jsonl",
+                        sourceGeneration: liveCursor.sourceGeneration,
+                        endOffset: liveCursor.endOffset,
+                        lineFingerprint: liveCursor.lineFingerprint,
+                        eventTimestamp: eventAt,
+                        totalTokens: 100
+                    )]
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied { applied.fulfill() }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: "session-a",
+            updatedAt: eventAt,
+            observationCursor: liveCursor
+        )
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 100)
+    }
+
+    @MainActor
+    func testScannerAheadThenCounterResetDoesNotDoubleCountLateUsage() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let applied = expectation(description: "scanner-ahead reset scan applied")
+        let firstEventAt = Date().addingTimeInterval(-20)
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedResultsByCall: { now, _ in
+                CodexTokenActivityScanResult(
+                    days: [CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: now),
+                        totalTokens: 1_100
+                    )],
+                    watermarks: [testTokenScanWatermark(
+                        sessionID: "session-a",
+                        eventAt: now,
+                        totalTokens: 100
+                    )]
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied {
+                    applied.fulfill()
+                }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_000),
+            sessionID: "session-a",
+            updatedAt: firstEventAt
+        )
+
+        model.refreshTokenActivityIfNeeded()
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_100)
+
+        // This reset was already present before the strict scan cutoff but its
+        // desktop poll arrived later. It must be absorbed, not added again.
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 100),
+            sessionID: "session-a",
+            updatedAt: firstEventAt.addingTimeInterval(1)
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_100)
+
+        let postScanEventAt = Date()
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 150),
+            sessionID: "session-a",
+            updatedAt: postScanEventAt
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_150)
+
+        // An older pre-cutoff event arriving out of order cannot resurrect the
+        // previous counter generation.
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_250),
+            sessionID: "session-a",
+            updatedAt: firstEventAt.addingTimeInterval(2)
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_150)
+    }
+
+    @MainActor
+    func testTokenRefreshDoesNotAdvanceBaselineWhenScanHasNoTodayData() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let clock = TestDateClock(
+            Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+        )
+        let retrying = expectation(description: "missing today triggers one immediate retry")
+        let deferred = expectation(description: "missing today remains pending after retry")
+        let applied = expectation(description: "pending refresh applies once today is available")
+
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedDaysByCall: { now, callIndex in
+                if callIndex >= 3 {
+                    return [
+                        CodexTokenActivityDay(
+                            day: Calendar.current.startOfDay(for: now),
+                            totalTokens: 900,
+                            estimatedCostUSD: 0.01
+                        )
+                    ]
+                }
+                let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now) ?? now
+                return [CodexTokenActivityDay(day: yesterday, totalTokens: 5_000)]
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(
+                sessionRootURLs: [],
+                vsCodeLogRootURL: fixture.directory,
+                replaysInitialHistory: false
+            ),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                switch disposition {
+                case .retryingAfterUnabsorbedUsage:
+                    retrying.fulfill()
+                case .deferredWithRetryPending:
+                    deferred.fulfill()
+                case .applied:
+                    applied.fulfill()
+                case .discardedStaleContext, .discardedInactive:
+                    break
+                }
+            },
+            nowProvider: { clock.now() }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 900))
+
+        model.refreshTokenActivityIfNeeded()
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+
+        let secondScanStarted = Task.detached {
+            scanner.waitUntilScanStarts(seconds: 2)
+        }
+        scanner.finishScan()
+        await fulfillment(of: [retrying], timeout: 2)
+        let didStartSecondScan = await secondScanStarted.value
+        XCTAssertTrue(didStartSecondScan)
+
+        XCTAssertTrue(model.isTokenActivityLoading)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 900)
+        // Make the scan appear 30 seconds long, then fail it. Backoff must begin
+        // at failure completion, not at the original scan start.
+        clock.advance(by: 30)
+        scanner.finishScan()
+        await fulfillment(of: [deferred], timeout: 2)
+
+        XCTAssertFalse(model.isTokenActivityLoading)
+        XCTAssertEqual(scanner.scanCallCount, 2)
+        XCTAssertTrue(model.tokenActivityDays.isEmpty)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 900)
+
+        // A parser failure must not trigger a full disk scan every two seconds.
+        model.refreshTokenActivityIfNeeded()
+        XCTAssertFalse(scanner.waitUntilScanStarts(seconds: 0.1))
+
+        clock.advance(by: 4.9)
+        model.refreshTokenActivityIfNeeded()
+        XCTAssertFalse(scanner.waitUntilScanStarts(seconds: 0.1))
+
+        clock.advance(by: 0.1)
+        model.refreshTokenActivityIfNeeded()
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+
+        XCTAssertFalse(model.isTokenActivityLoading)
+        XCTAssertEqual(scanner.scanCallCount, 3)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 900)
+        XCTAssertEqual(try XCTUnwrap(model.tokenActivityEstimatedCost(for: .today)), 0.01, accuracy: 0.000_001)
+    }
+
+    @MainActor
+    func testAuthoritativeScanCanCorrectCachedAggregateDownwardWithoutRetryLoop() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let applied = expectation(description: "lower authoritative aggregate applied")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { now in
+                [CodexTokenActivityDay(
+                    day: Calendar.current.startOfDay(for: now),
+                    totalTokens: 1_000
+                )]
+            },
+            scannedDays: { now in
+                [CodexTokenActivityDay(
+                    day: Calendar.current.startOfDay(for: now),
+                    totalTokens: 750
+                )]
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .applied { applied.fulfill() }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        for _ in 0..<100 where model.tokenActivityTotal(for: .today) != 1_000 {
+            await Task.yield()
+        }
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+
+        XCTAssertEqual(scanner.scanCallCount, 1)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 750)
+    }
+
+    @MainActor
+    func testIncompleteScanCannotEraseLastKnownGoodAggregate() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let retrying = expectation(description: "incomplete scan retries once")
+        let deferred = expectation(description: "repeated incomplete scan defers")
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { now in
+                [CodexTokenActivityDay(
+                    day: Calendar.current.startOfDay(for: now),
+                    totalTokens: 1_000
+                )]
+            },
+            scannedResultsByCall: { _, _ in
+                CodexTokenActivityScanResult(
+                    days: [],
+                    watermarks: [],
+                    isComplete: false
+                )
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .retryingAfterUnabsorbedUsage {
+                    retrying.fulfill()
+                } else if disposition == .deferredWithRetryPending {
+                    deferred.fulfill()
+                }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        for _ in 0..<100 where model.tokenActivityTotal(for: .today) != 1_000 {
+            await Task.yield()
+        }
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+        let replacementStarted = Task.detached {
+            scanner.waitUntilScanStarts(seconds: 2)
+        }
+        scanner.finishScan()
+        await fulfillment(of: [retrying], timeout: 2)
+        let didStartReplacement = await replacementStarted.value
+        XCTAssertTrue(didStartReplacement)
+        scanner.finishScan()
+        await fulfillment(of: [deferred], timeout: 2)
+
+        XCTAssertEqual(scanner.scanCallCount, 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+        XCTAssertEqual(model.tokenActivityDays, [
+            CodexTokenActivityDay(
+                day: Calendar.current.startOfDay(for: Date()),
+                totalTokens: 1_000
+            ),
+        ])
+    }
+
+    @MainActor
+    func testTokenRefreshReconcilesCounterResetWithoutDroppingOrDoubleCounting() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let firstApplied = expectation(description: "initial token baseline applied")
+        let retrying = expectation(description: "reset-time stale scan retries")
+        let resetApplied = expectation(description: "reset-aware retry applied")
+        var appliedCount = 0
+
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedDaysByCall: { now, callIndex in
+                let totalTokens: Int
+                switch callIndex {
+                case 1, 2:
+                    totalTokens = 1_000
+                default:
+                    totalTokens = 1_550
+                }
+                return [
+                    CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: now),
+                        totalTokens: totalTokens
+                    )
+                ]
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                switch disposition {
+                case .applied:
+                    appliedCount += 1
+                    if appliedCount == 1 {
+                        firstApplied.fulfill()
+                    } else {
+                        resetApplied.fulfill()
+                    }
+                case .retryingAfterUnabsorbedUsage:
+                    retrying.fulfill()
+                case .deferredWithRetryPending, .discardedStaleContext, .discardedInactive:
+                    break
+                }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 1_000))
+
+        model.refreshTokenActivityIfNeeded()
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        scanner.finishScan()
+        await fulfillment(of: [firstApplied], timeout: 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 250))
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 400))
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_400)
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 100))
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_500)
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 150))
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_550)
+
+        let thirdScanStarted = Task.detached {
+            scanner.waitUntilScanStarts(seconds: 2)
+        }
+        scanner.finishScan()
+        await fulfillment(of: [retrying], timeout: 2)
+        let didStartThirdScan = await thirdScanStarted.value
+        XCTAssertTrue(didStartThirdScan)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_550)
+
+        scanner.finishScan()
+        await fulfillment(of: [resetApplied], timeout: 2)
+        XCTAssertEqual(scanner.scanCallCount, 3)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_550)
+
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 200))
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_600)
+    }
+
+    @MainActor
+    func testForkedLiveCounterDoesNotCountInheritedParentTokensTwice() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager()
+        )
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_000),
+            sessionID: "parent-session",
+            updatedAt: Date().addingTimeInterval(-2)
+        )
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_100),
+            sessionID: "fork-session",
+            updatedAt: Date().addingTimeInterval(-1),
+            initialScannedBaseline: 1_000
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_100)
+
+        model.updateLatestAgentTokenUsage(
+            AgentTokenUsage(totalTokens: 1_200),
+            sessionID: "fork-session",
+            updatedAt: Date()
+        )
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_200)
+    }
+
+    @MainActor
+    func testForkedLivePollUsesChildTurnDeltaWhenParentGrowsAfterFork() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fork-live-poll-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let parentSessionID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
+        let childSessionID = "019c846a-b85e-7bd3-924b-cc33e3f180e0"
+        let now = Date()
+        let parentForkTotalAt = isoTimestamp(now.addingTimeInterval(-4))
+        let forkedAt = isoTimestamp(now.addingTimeInterval(-3))
+        let parentAfterForkAt = isoTimestamp(now.addingTimeInterval(-2))
+        let childTurnAt = isoTimestamp(now.addingTimeInterval(-1))
+        let filenameDay = ISO8601DateFormatter().string(from: now).prefix(10)
+
+        func tokenLine(timestamp: String, total: Int, last: Int) -> String {
+            """
+            {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":\(total),"cached_input_tokens":0,"output_tokens":0,"total_tokens":\(total)},"last_token_usage":{"input_tokens":\(last),"cached_input_tokens":0,"output_tokens":0,"total_tokens":\(last)}}}}
+            """
+        }
+
+        let parentURL = root.appendingPathComponent(
+            "rollout-\(filenameDay)T23-00-00-\(parentSessionID).jsonl"
+        )
+        try [
+            """
+            {"timestamp":"\(parentForkTotalAt)","type":"session_meta","payload":{"id":"\(parentSessionID)","originator":"Codex Desktop"}}
+            """,
+            tokenLine(timestamp: parentForkTotalAt, total: 800, last: 800),
+            tokenLine(timestamp: parentAfterForkAt, total: 1_000, last: 200),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: parentURL, atomically: true, encoding: .utf8)
+
+        let childURL = root.appendingPathComponent(
+            "rollout-\(filenameDay)T23-00-01-\(childSessionID).jsonl"
+        )
+        try [
+            """
+            {"timestamp":"\(forkedAt)","type":"session_meta","payload":{"id":"\(childSessionID)","forked_from_id":"\(parentSessionID)","originator":"Codex Desktop"}}
+            """,
+            tokenLine(timestamp: childTurnAt, total: 900, last: 100),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: childURL, atomically: true, encoding: .utf8)
+
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedDays: { _ in [] }
+        )
+        defer { scanner.finishScan() }
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(
+                sessionsRootURL: root,
+                replaysInitialHistory: true
+            ),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.pollCodexDesktopActivity()
+        for _ in 0..<100 where model.tokenActivityTotal(for: .today) != 1_100 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        // Parent contributed 1,000. The child's 900 cumulative total inherited
+        // only the parent's 800-at-fork value, so its own live contribution is 100.
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_100)
+    }
+
+    @MainActor
+    func testTokenRefreshPreservesPreviousCounterDuringBootstrapReset() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let retrying = expectation(description: "bootstrap reset invalidates old scan")
+        let applied = expectation(description: "bootstrap reset retry applied")
+
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedDaysByCall: { now, callIndex in
+                let totalTokens = callIndex == 1 ? 1_000 : 1_100
+                return [
+                    CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: now),
+                        totalTokens: totalTokens
+                    )
+                ]
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .retryingAfterUnabsorbedUsage {
+                    retrying.fulfill()
+                } else if disposition == .applied {
+                    applied.fulfill()
+                }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 1_000))
+
+        model.refreshTokenActivityIfNeeded()
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 100))
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_100)
+
+        let secondScanStarted = Task.detached {
+            scanner.waitUntilScanStarts(seconds: 2)
+        }
+        scanner.finishScan()
+        await fulfillment(of: [retrying], timeout: 2)
+        let didStartSecondScan = await secondScanStarted.value
+        XCTAssertTrue(didStartSecondScan)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_100)
+
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+        XCTAssertEqual(scanner.scanCallCount, 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_100)
+
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 150))
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_150)
+    }
+
+    @MainActor
+    func testPauseResumeRejectsOldTokenScanWithoutClearingReplacement() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let discarded = expectation(description: "pre-pause scan discarded")
+        let applied = expectation(description: "post-resume scan applied")
+
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedDaysByCall: { now, callIndex in
+                let totalTokens = callIndex == 1 ? 9_999 : 1_000
+                return [
+                    CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: now),
+                        totalTokens: totalTokens
+                    )
+                ]
+            }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .discardedStaleContext {
+                    discarded.fulfill()
+                } else if disposition == .applied {
+                    applied.fulfill()
+                }
+            }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 1_000))
+
+        model.refreshTokenActivityIfNeeded()
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        model.setMonitoringPaused(true)
+        XCTAssertFalse(model.isTokenActivityLoading)
+        model.setMonitoringPaused(false)
+
+        scanner.finishScan()
+        await fulfillment(of: [discarded], timeout: 2)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 2))
+        XCTAssertTrue(model.isTokenActivityLoading)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+
+        scanner.finishScan()
+        await fulfillment(of: [applied], timeout: 2)
+        XCTAssertFalse(model.isTokenActivityLoading)
+        XCTAssertEqual(scanner.scanCallCount, 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+    }
+
+    @MainActor
+    func testAccountSwitchRejectsTokenScanCompletionFromPreviousAccount() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("token-account-switch-\(UUID().uuidString)", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        let accountStoreURL = root.appendingPathComponent("accounts.json")
+        let usageStoreURL = root.appendingPathComponent("usage.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "alpha@example.com",
+            accountID: "acct_alpha",
+            accessToken: "alpha-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: accountStoreURL
+        )
+        let alpha = try manager.saveCurrentAccount()
+        let alphaCurrent = try XCTUnwrap(try manager.loadState().currentAccount)
+
+        try codexOAuthAuthJSON(
+            email: "beta@example.com",
+            accountID: "acct_beta",
+            accessToken: "beta-access"
+        ).write(to: authURL)
+        let beta = try manager.saveCurrentAccount()
+        let betaCurrent = try XCTUnwrap(try manager.loadState().currentAccount)
+
+        let today = Calendar.current.startOfDay(for: Date())
+        let usageStore = CodexAccountUsageSnapshotStore(fileURL: usageStoreURL)
+        usageStore.store(
+            account: alphaCurrent,
+            quota: nil,
+            credits: nil,
+            resetCredits: nil,
+            usageFetchState: nil,
+            resetCreditsFetchState: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 1_000),
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(day: today, totalTokens: 1_000)]
+        )
+        usageStore.store(
+            account: betaCurrent,
+            quota: nil,
+            credits: nil,
+            resetCredits: nil,
+            usageFetchState: nil,
+            resetCreditsFetchState: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 2_000),
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(day: today, totalTokens: 2_000)]
+        )
+        _ = try manager.switchToAccount(id: alpha.id)
+
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedDaysByCall: { now, callIndex in
+                let totalTokens = callIndex == 1 ? 9_999 : 2_000
+                return [
+                    CodexTokenActivityDay(
+                        day: Calendar.current.startOfDay(for: now),
+                        totalTokens: totalTokens
+                    )
+                ]
+            }
+        )
+        defer { scanner.finishScan() }
+        let discarded = expectation(description: "previous account scan discarded")
+        let betaApplied = expectation(description: "new account scan applied")
+        let model = MenuBarStatusModel(
+            store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore,
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .discardedStaleContext {
+                    discarded.fulfill()
+                } else if disposition == .applied {
+                    betaApplied.fulfill()
+                }
+            },
+            performsAccountSwitchBackgroundRefreshes: false
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+        model.refreshTokenActivityIfNeeded()
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+
+        model.switchCodexAccount(beta)
+        XCTAssertEqual(model.codexActiveSavedAccountID, beta.id)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
+
+        let betaScanStarted = Task.detached {
+            scanner.waitUntilScanStarts(seconds: 2)
+        }
+        scanner.finishScan()
+        await fulfillment(of: [discarded], timeout: 2)
+        let didStartBetaScan = await betaScanStarted.value
+        XCTAssertTrue(didStartBetaScan)
+        XCTAssertTrue(model.isTokenActivityLoading)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
+
+        scanner.finishScan()
+        await fulfillment(of: [betaApplied], timeout: 2)
+
+        XCTAssertEqual(model.codexActiveSavedAccountID, beta.id)
+        XCTAssertFalse(model.isTokenActivityLoading)
+        XCTAssertEqual(scanner.scanCallCount, 2)
+        XCTAssertEqual(model.tokenActivityDays, [CodexTokenActivityDay(day: today, totalTokens: 2_000)])
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
+    }
+
+    @MainActor
+    func testStaleDesktopPollCannotPersistIntoReplacementAccount() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("stale-desktop-poll-account-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "alpha-stale-poll@example.com",
+            accountID: "acct_alpha_stale_poll",
+            accessToken: "alpha-stale-poll-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: root.appendingPathComponent("accounts.json")
+        )
+        let alpha = try manager.saveCurrentAccount()
+        let alphaCurrent = try XCTUnwrap(try manager.loadState().currentAccount)
+
+        try codexOAuthAuthJSON(
+            email: "beta-stale-poll@example.com",
+            accountID: "acct_beta_stale_poll",
+            accessToken: "beta-stale-poll-access"
+        ).write(to: authURL)
+        let beta = try manager.saveCurrentAccount()
+        let betaCurrent = try XCTUnwrap(try manager.loadState().currentAccount)
+        _ = try manager.switchToAccount(id: alpha.id)
+
+        let now = Date()
+        let eventAt = now.addingTimeInterval(-10)
+        let today = Calendar.current.startOfDay(for: now)
+        let rawSessionID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
+        let liveSessionID = "codex-desktop:\(rawSessionID)"
+        let usageStore = CodexAccountUsageSnapshotStore(
+            fileURL: root.appendingPathComponent("usage.json")
+        )
+        for (account, total) in [(alphaCurrent, 100), (betaCurrent, 200)] {
+            usageStore.store(
+                account: account,
+                quota: nil,
+                credits: nil,
+                tokenUsage: AgentTokenUsage(totalTokens: total),
+                liveTokenCounters: [CodexLiveTokenCounterSnapshot(
+                    key: liveSessionID,
+                    sessionID: liveSessionID,
+                    totalTokens: total,
+                    scannedBaseline: 0,
+                    day: today,
+                    updatedAt: eventAt
+                )],
+                unscannedLiveTokenCarryByDay: [],
+                tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+                tokenActivityDays: []
+            )
+        }
+
+        let filenameDay = ISO8601DateFormatter().string(from: now).prefix(10)
+        let sessionURL = sessionsRoot.appendingPathComponent(
+            "rollout-\(filenameDay)T12-00-00-\(rawSessionID).jsonl"
+        )
+        try [
+            #"{"timestamp":"\#(isoTimestamp(eventAt))","type":"session_meta","payload":{"id":"\#(rawSessionID)","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"\#(isoTimestamp(eventAt))","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let pollQueue = DispatchQueue(label: "test.stale-desktop-poll")
+        let releasePollQueue = DispatchSemaphore(value: 0)
+        let pollQueueBlocked = DispatchSemaphore(value: 0)
+        pollQueue.async {
+            pollQueueBlocked.signal()
+            releasePollQueue.wait()
+        }
+        XCTAssertEqual(pollQueueBlocked.wait(timeout: .now() + 1), .success)
+
+        let stateStore = SignalStateStore(
+            stateFileURL: root.appendingPathComponent("status.json")
+        )
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedDays: { _ in [] }
+        )
+        defer { scanner.finishScan() }
+        let model = MenuBarStatusModel(
+            store: stateStore,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(
+                sessionsRootURL: sessionsRoot,
+                replaysInitialHistory: true
+            ),
+            codexDesktopPollQueue: pollQueue,
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore,
+            codexTokenActivityScanner: scanner,
+            performsAccountSwitchBackgroundRefreshes: false,
+            nowProvider: { now }
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 100)
+
+        model.pollCodexDesktopActivity()
+        model.switchCodexAccount(beta)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 200)
+
+        let pollFinished = DispatchSemaphore(value: 0)
+        pollQueue.async { pollFinished.signal() }
+        releasePollQueue.signal()
+        let didFinishPoll = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(
+                    returning: pollFinished.wait(timeout: .now() + 2) == .success
+                )
+            }
+        }
+        XCTAssertTrue(didFinishPoll)
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertNil(stateStore.readSnapshot().sessions.first(where: {
+            $0.sessionID == liveSessionID
+        }))
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 200)
+
+        // A quota already present in the process-wide SignalState file is also
+        // untrusted after activation, even when the replacement account has a
+        // counter with the same session key.
+        _ = try stateStore.applySessionQuota(
+            AgentQuotaStatus(
+                remainingPercent: 50,
+                updatedAt: eventAt,
+                tokenUsage: AgentTokenUsage(totalTokens: 100)
+            ),
+            sessionID: liveSessionID,
+            agent: "codex-desktop",
+            updatedAt: eventAt
+        )
+        model.reload()
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 200)
+        let persistedBeta = try XCTUnwrap(usageStore.snapshot(for: betaCurrent))
+        XCTAssertEqual(
+            persistedBeta.liveTokenCounters?.first(where: { $0.sessionID == liveSessionID })?.totalTokens,
+            200
+        )
+    }
+
+    @MainActor
+    func testAccountSwitchAwayAndBackStillRejectsOriginalScanGeneration() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("token-account-switch-aba-\(UUID().uuidString)", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        let accountStoreURL = root.appendingPathComponent("accounts.json")
+        let usageStoreURL = root.appendingPathComponent("usage.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "alpha-aba@example.com",
+            accountID: "acct_alpha_aba",
+            accessToken: "alpha-aba-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: accountStoreURL
+        )
+        let alpha = try manager.saveCurrentAccount()
+        let alphaCurrent = try XCTUnwrap(try manager.loadState().currentAccount)
+
+        try codexOAuthAuthJSON(
+            email: "beta-aba@example.com",
+            accountID: "acct_beta_aba",
+            accessToken: "beta-aba-access"
+        ).write(to: authURL)
+        let beta = try manager.saveCurrentAccount()
+        let betaCurrent = try XCTUnwrap(try manager.loadState().currentAccount)
+        let today = Calendar.current.startOfDay(for: Date())
+        let usageStore = CodexAccountUsageSnapshotStore(fileURL: usageStoreURL)
+        usageStore.store(
+            account: alphaCurrent,
+            quota: nil,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 1_000),
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(day: today, totalTokens: 1_000)]
+        )
+        usageStore.store(
+            account: betaCurrent,
+            quota: nil,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 2_000),
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(day: today, totalTokens: 2_000)]
+        )
+        _ = try manager.switchToAccount(id: alpha.id)
+
+        let scanner = ControlledCodexTokenActivityScanner(
+            cachedDays: { _ in nil },
+            scannedDaysByCall: { now, callIndex in
+                [CodexTokenActivityDay(
+                    day: Calendar.current.startOfDay(for: now),
+                    totalTokens: callIndex == 1 ? 9_999 : 1_000
+                )]
+            }
+        )
+        defer { scanner.finishScan() }
+        let discarded = expectation(description: "original Alpha generation discarded")
+        let replacementApplied = expectation(description: "new Alpha generation applied")
+        let model = MenuBarStatusModel(
+            store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: usageStore,
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .discardedStaleContext {
+                    discarded.fulfill()
+                } else if disposition == .applied {
+                    replacementApplied.fulfill()
+                }
+            },
+            performsAccountSwitchBackgroundRefreshes: false
+        )
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
+        // Keep the original scan blocked while cycling A -> B -> A, but do not
+        // start an unrelated scan for the intermediate account. The stale A
+        // result must still be rejected by generation, not account identity.
+        model.isMonitoringPaused = true
+        model.switchCodexAccount(beta)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
+        model.switchCodexAccount(alpha)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+
+        scanner.finishScan()
+        await fulfillment(of: [discarded], timeout: 2)
+        model.isMonitoringPaused = false
+        model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 2))
+        scanner.finishScan()
+        await fulfillment(of: [replacementApplied], timeout: 2)
+
+        XCTAssertEqual(model.codexActiveSavedAccountID, alpha.id)
+        XCTAssertEqual(scanner.scanCallCount, 2)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
     }
 
     @MainActor
@@ -3513,6 +9913,397 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(completedActivities.count, 1)
         XCTAssertEqual(completedActivities.first?.signal, .working)
         XCTAssertEqual(completedActivities.first?.event, "DesktopToolCall:apply_patch")
+    }
+
+    func testCodexDesktopActivityMonitorReadsReplacementGenerationFromStartWithoutLeakingPathState() throws {
+        let now = Date()
+
+        for replacementExtraBytes in [0, 64] {
+            let fixture = try makeTemporaryCodexSessionsRoot()
+            defer { try? FileManager.default.removeItem(at: fixture.directory) }
+            let sessionID = "019e83ed-3f20-7000-9000-000000000010"
+            let sessionFile = fixture.sessionsRoot
+                .appendingPathComponent("rollout-2026-06-02T00-00-00-\(sessionID).jsonl")
+            let oldMeta = #"{"timestamp":"\#(isoTimestamp(now.addingTimeInterval(-2)))","type":"session_meta","payload":{"id":"\#(sessionID)","forked_from_id":"old-parent-session","originator":"codex-tui","source":"cli"}}"#
+            let oldBase = Data((oldMeta + "\n").utf8)
+
+            let newMeta = #"{"timestamp":"\#(isoTimestamp(now))","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop","source":"vscode"}}"#
+            let tokenLine = #"{"timestamp":"\#(isoTimestamp(now.addingTimeInterval(1)))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":30,"total_tokens":150},"last_token_usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":30,"total_tokens":150}}}}"#
+            let activityLine = #"{"timestamp":"\#(isoTimestamp(now.addingTimeInterval(1)))","type":"response_item","payload":{"type":"function_call","name":"apply_patch"}}"#
+            let replacementBase = Data(([newMeta, tokenLine, activityLine].joined(separator: "\n") + "\n").utf8)
+            let commonSize = max(oldBase.count, replacementBase.count) + 256
+
+            func padded(_ data: Data, to size: Int) -> Data {
+                var result = data
+                let paddingCount = size - result.count
+                if paddingCount > 0 {
+                    if paddingCount > 1 {
+                        result.append(Data(repeating: 0x20, count: paddingCount - 1))
+                    }
+                    result.append(0x0A)
+                }
+                return result
+            }
+
+            let initialData = padded(oldBase, to: commonSize)
+            try initialData.write(to: sessionFile)
+            let oldAttributes = try FileManager.default.attributesOfItem(atPath: sessionFile.path)
+            let oldInode = try XCTUnwrap(oldAttributes[.systemFileNumber] as? NSNumber)
+
+            let monitor = CodexDesktopActivityMonitor(sessionsRootURL: fixture.sessionsRoot)
+            XCTAssertEqual(monitor.poll(now: now), [])
+
+            let replacementData = padded(
+                replacementBase,
+                to: commonSize + replacementExtraBytes
+            )
+            let replacementURL = fixture.sessionsRoot.appendingPathComponent("replacement-\(UUID().uuidString).jsonl")
+            try replacementData.write(to: replacementURL)
+            _ = try FileManager.default.replaceItemAt(sessionFile, withItemAt: replacementURL)
+
+            let newAttributes = try FileManager.default.attributesOfItem(atPath: sessionFile.path)
+            let newDevice = try XCTUnwrap(newAttributes[.systemNumber] as? NSNumber)
+            let newInode = try XCTUnwrap(newAttributes[.systemFileNumber] as? NSNumber)
+            XCTAssertNotEqual(newInode, oldInode)
+
+            let pollResult = monitor.pollResult(now: now.addingTimeInterval(2))
+            XCTAssertEqual(pollResult.activities.map(\.event), ["DesktopToolCall:apply_patch"])
+            XCTAssertEqual(pollResult.activities.map(\.agent), ["codex-desktop"])
+            XCTAssertEqual(pollResult.quotaUpdates.count, 1)
+            XCTAssertEqual(pollResult.quotaUpdates.first?.agent, "codex-desktop")
+            XCTAssertNil(pollResult.quotaUpdates.first?.forkedFromSessionID)
+            XCTAssertEqual(
+                pollResult.quotaUpdates.first?.tokenObservationCursor?.sourceGeneration,
+                "\(newDevice.uint64Value):\(newInode.uint64Value)"
+            )
+            XCTAssertEqual(
+                pollResult.quotaUpdates.first?.tokenObservationCursor?.endOffset,
+                UInt64(Data((newMeta + "\n" + tokenLine).utf8).count)
+            )
+        }
+    }
+
+    func testCodexDesktopActivityMonitorRejectsPathReplacementBetweenSnapshotAndOpen() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let sessionID = "019e83ed-3f20-7000-9000-000000000011"
+        let sessionFile = fixture.sessionsRoot.appendingPathComponent(
+            "rollout-2026-06-02T00-00-00-\(sessionID).jsonl"
+        )
+        let replacementURL = fixture.directory.appendingPathComponent("replacement.jsonl")
+        let meta = #"{"timestamp":"\#(isoTimestamp(now.addingTimeInterval(-2)))","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#
+        let initialToken = #"{"timestamp":"\#(isoTimestamp(now.addingTimeInterval(-2)))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let replacementToken = #"{"timestamp":"\#(isoTimestamp(now))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":900,"cached_input_tokens":0,"output_tokens":0,"total_tokens":900},"last_token_usage":{"input_tokens":900,"cached_input_tokens":0,"output_tokens":0,"total_tokens":900}}}}"#
+        try [meta, initialToken].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+        try [meta, replacementToken].joined(separator: "\n").appending("\n")
+            .write(to: replacementURL, atomically: true, encoding: .utf8)
+
+        var shouldSwap = false
+        var swapError: Error?
+        let normalizedSessionPath = sessionFile.standardizedFileURL
+            .resolvingSymlinksInPath().path
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: fixture.sessionsRoot,
+            beforeFileReadHook: { url in
+                guard shouldSwap,
+                      url.standardizedFileURL.resolvingSymlinksInPath().path
+                        == normalizedSessionPath
+                else { return }
+                shouldSwap = false
+                do {
+                    _ = try FileManager.default.replaceItemAt(
+                        sessionFile,
+                        withItemAt: replacementURL
+                    )
+                } catch {
+                    swapError = error
+                }
+            }
+        )
+        XCTAssertTrue(monitor.pollResult(now: now).quotaUpdates.isEmpty)
+        try FileHandle(forWritingTo: sessionFile).appendString("\n")
+
+        shouldSwap = true
+        let raced = monitor.pollResult(now: now.addingTimeInterval(1))
+        XCTAssertNil(swapError)
+        XCTAssertFalse(shouldSwap)
+        XCTAssertTrue(raced.quotaUpdates.isEmpty)
+        XCTAssertTrue(
+            try String(contentsOf: sessionFile, encoding: .utf8)
+                .contains("\"total_tokens\":900")
+        )
+
+        let replacementMetadata = CostUsageScanner.codexFileMetadata(fileURL: sessionFile)
+        let retried = monitor.pollResult(now: now.addingTimeInterval(2))
+        let update = try XCTUnwrap(retried.quotaUpdates.first)
+        XCTAssertEqual(update.tokenActivityUsage?.effectiveTotalTokens, 900)
+        XCTAssertEqual(
+            update.tokenObservationCursor?.sourceGeneration,
+            replacementMetadata.fileId
+        )
+        XCTAssertEqual(
+            update.tokenObservationCursor?.sourceStatFingerprint,
+            replacementMetadata.statFingerprint
+        )
+        XCTAssertEqual(
+            update.tokenObservationCursor?.sourceChangeTimeNanoseconds,
+            replacementMetadata.changeTimeNanoseconds
+        )
+    }
+
+    func testCodexDesktopActivityMonitorRetainsCachedPathAfterTransientSnapshotChange() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let sessionID = "019e83ed-3f20-7000-9000-000000000013"
+        let sessionFile = fixture.sessionsRoot.appendingPathComponent(
+            "rollout-2026-06-02T00-00-00-\(sessionID).jsonl"
+        )
+        let meta = #"{"timestamp":"\#(isoTimestamp(now.addingTimeInterval(-1)))","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#
+        let token100 = #"{"timestamp":"\#(isoTimestamp(now))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let token200 = #"{"timestamp":"\#(isoTimestamp(now.addingTimeInterval(1)))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        try [meta, token100].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        var shouldMutateSnapshot = false
+        var mutationError: Error?
+        let normalizedSessionPath = sessionFile.standardizedFileURL
+            .resolvingSymlinksInPath().path
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: fixture.sessionsRoot,
+            fullScanInterval: 60,
+            beforeSessionSnapshotReadHook: { url in
+                guard shouldMutateSnapshot,
+                      url.standardizedFileURL.resolvingSymlinksInPath().path
+                        == normalizedSessionPath
+                else { return }
+                shouldMutateSnapshot = false
+                do {
+                    try FileHandle(forWritingTo: sessionFile).appendString("\n")
+                } catch {
+                    mutationError = error
+                }
+            }
+        )
+        XCTAssertTrue(monitor.pollResult(now: now).quotaUpdates.isEmpty)
+        try FileHandle(forWritingTo: sessionFile).appendString(token200 + "\n")
+
+        shouldMutateSnapshot = true
+        let transient = monitor.pollResult(now: now.addingTimeInterval(1))
+        XCTAssertNil(mutationError)
+        XCTAssertFalse(shouldMutateSnapshot)
+        XCTAssertTrue(transient.quotaUpdates.isEmpty)
+
+        let retried = monitor.pollResult(now: now.addingTimeInterval(2))
+        let update = try XCTUnwrap(retried.quotaUpdates.first)
+        XCTAssertEqual(update.tokenActivityUsage?.effectiveTotalTokens, 200)
+    }
+
+    func testCodexDesktopActivityMonitorSkipsIdleReadsBetweenPeriodicSnapshotValidation() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let sessionID = "019e83ed-3f20-7000-9000-000000000014"
+        let sessionFile = fixture.sessionsRoot.appendingPathComponent(
+            "rollout-2026-06-02T00-00-00-\(sessionID).jsonl"
+        )
+        let meta = #"{"timestamp":"\#(isoTimestamp(now))","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#
+        try meta.appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        var stableSnapshotReadCount = 0
+        var fileContentReadCount = 0
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: fixture.sessionsRoot,
+            fullScanInterval: 60,
+            beforeSessionSnapshotReadHook: { _ in
+                stableSnapshotReadCount += 1
+            },
+            beforeFileReadHook: { _ in
+                fileContentReadCount += 1
+            }
+        )
+        _ = monitor.pollResult(now: now)
+        XCTAssertGreaterThan(stableSnapshotReadCount, 0)
+        XCTAssertGreaterThan(fileContentReadCount, 0)
+
+        stableSnapshotReadCount = 0
+        fileContentReadCount = 0
+        _ = monitor.pollResult(now: now.addingTimeInterval(1))
+        XCTAssertEqual(stableSnapshotReadCount, 0)
+        XCTAssertEqual(fileContentReadCount, 0)
+
+        // The short-poll fast path is bounded. Periodic discovery still
+        // revalidates the descriptor/content snapshot to catch rare metadata
+        // collisions without returning to continuous two-second anchor reads.
+        _ = monitor.pollResult(now: now.addingTimeInterval(61))
+        XCTAssertGreaterThan(stableSnapshotReadCount, 0)
+        XCTAssertEqual(fileContentReadCount, 0)
+    }
+
+    func testCodexDesktopActivityMonitorSnapshotsOnlyRecentLimitDuringFullScan() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        for index in 0..<12 {
+            let sessionID = String(format: "019e83ed-3f20-7000-9000-%012d", index)
+            let sessionFile = fixture.sessionsRoot.appendingPathComponent(
+                "rollout-2026-06-02T00-00-00-\(sessionID).jsonl"
+            )
+            let meta = #"{"timestamp":"\#(isoTimestamp(now.addingTimeInterval(Double(index))))","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#
+            try meta.appending("\n").write(
+                to: sessionFile,
+                atomically: true,
+                encoding: .utf8
+            )
+            try FileManager.default.setAttributes(
+                [.modificationDate: now.addingTimeInterval(Double(index))],
+                ofItemAtPath: sessionFile.path
+            )
+        }
+
+        var stableSnapshotReadCount = 0
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: fixture.sessionsRoot,
+            recentFileLimit: 3,
+            beforeSessionSnapshotReadHook: { _ in
+                stableSnapshotReadCount += 1
+            }
+        )
+
+        _ = monitor.pollResult(now: now.addingTimeInterval(20))
+        XCTAssertEqual(stableSnapshotReadCount, 3)
+    }
+
+    func testCodexDesktopActivityMonitorPureAppendKeepsConfirmedIdentity() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let sessionID = "019e83ed-3f20-7000-9000-000000000016"
+        let sessionFile = fixture.sessionsRoot.appendingPathComponent(
+            "rollout-2026-06-02T00-00-00-\(sessionID).jsonl"
+        )
+        let meta = #"{"timestamp":"\#(isoTimestamp(now.addingTimeInterval(-1)))","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"codex-tui","source":"cli"}}"#
+        let token100 = #"{"timestamp":"\#(isoTimestamp(now))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let token200 = #"{"timestamp":"\#(isoTimestamp(now.addingTimeInterval(1)))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        try [meta, token100].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        // The tiny probe cannot rediscover the metadata after it is cleared;
+        // priming still learns it from the complete initial tail. A pure append
+        // must therefore preserve the already-confirmed CLI identity.
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: fixture.sessionsRoot,
+            maxSessionMetadataProbeBytes: 1,
+            replaysInitialHistory: true
+        )
+        let initialUpdate = try XCTUnwrap(monitor.pollResult(now: now).quotaUpdates.first)
+        XCTAssertEqual(initialUpdate.agent, "codex-cli")
+
+        try FileHandle(forWritingTo: sessionFile).appendString(token200 + "\n")
+        let appendedUpdate = try XCTUnwrap(
+            monitor.pollResult(now: now.addingTimeInterval(2)).quotaUpdates.first
+        )
+        XCTAssertEqual(appendedUpdate.agent, "codex-cli")
+        XCTAssertEqual(appendedUpdate.sessionID, "codex-cli:\(sessionID)")
+        XCTAssertEqual(appendedUpdate.tokenActivityUsage?.effectiveTotalTokens, 200)
+    }
+
+    func testCodexDesktopActivityMonitorTreatsSameInodeRewriteAsNewContentSnapshot() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let sessionID = "019e83ed-3f20-7000-9000-000000000012"
+        let sessionFile = fixture.sessionsRoot.appendingPathComponent(
+            "rollout-2026-06-02T00-00-00-\(sessionID).jsonl"
+        )
+        let meta = #"{"timestamp":"\#(isoTimestamp(now.addingTimeInterval(-1)))","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#
+        let token100 = #"{"timestamp":"\#(isoTimestamp(now))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let token900 = token100.replacingOccurrences(of: "100", with: "900")
+        let initialContents = [meta, token100].joined(separator: "\n").appending("\n")
+        let rewrittenContents = [meta, token900].joined(separator: "\n").appending("\n")
+        XCTAssertEqual(initialContents.utf8.count, rewrittenContents.utf8.count)
+        try initialContents.write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: fixture.sessionsRoot,
+            replaysInitialHistory: true
+        )
+        let initialUpdate = try XCTUnwrap(monitor.pollResult(now: now).quotaUpdates.first)
+        let initialCursor = try XCTUnwrap(initialUpdate.tokenObservationCursor)
+
+        let handle = try FileHandle(forWritingTo: sessionFile)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data(rewrittenContents.utf8))
+        try handle.close()
+        let rewrittenMetadata = CostUsageScanner.codexFileMetadata(fileURL: sessionFile)
+
+        let rewrittenUpdate = try XCTUnwrap(
+            monitor.pollResult(now: now.addingTimeInterval(1)).quotaUpdates.first
+        )
+        let rewrittenCursor = try XCTUnwrap(rewrittenUpdate.tokenObservationCursor)
+        XCTAssertEqual(rewrittenUpdate.tokenActivityUsage?.effectiveTotalTokens, 900)
+        XCTAssertEqual(rewrittenCursor.sourceGeneration, initialCursor.sourceGeneration)
+        XCTAssertEqual(rewrittenCursor.sourceGeneration, rewrittenMetadata.fileId)
+        XCTAssertTrue(
+            rewrittenCursor.sourceStatFingerprint != initialCursor.sourceStatFingerprint
+                || rewrittenCursor.sourceChangeTimeNanoseconds
+                    != initialCursor.sourceChangeTimeNanoseconds
+        )
+        XCTAssertEqual(rewrittenCursor.sourceStatFingerprint, rewrittenMetadata.statFingerprint)
+        XCTAssertEqual(
+            rewrittenCursor.sourceChangeTimeNanoseconds,
+            rewrittenMetadata.changeTimeNanoseconds
+        )
+    }
+
+    func testCodexDesktopActivityMonitorDetectsLargeSameInodeMiddleRewrite() throws {
+        let fixture = try makeTemporaryCodexSessionsRoot()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let sessionID = "019e83ed-3f20-7000-9000-000000000015"
+        let sessionFile = fixture.sessionsRoot.appendingPathComponent(
+            "rollout-2026-06-02T00-00-00-\(sessionID).jsonl"
+        )
+        let meta = #"{"timestamp":"\#(isoTimestamp(now.addingTimeInterval(-1)))","type":"session_meta","payload":{"id":"\#(sessionID)","originator":"Codex Desktop"}}"#
+        let token100 = #"{"timestamp":"\#(isoTimestamp(now))","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#
+        let token900 = token100.replacingOccurrences(of: "100", with: "900")
+        let unchangedPrefix = String(repeating: "p", count: 5_000)
+        let unchangedSuffix = String(repeating: "s", count: 5_000)
+        let initialContents = [unchangedPrefix, meta, token100, unchangedSuffix]
+            .joined(separator: "\n").appending("\n")
+        let rewrittenContents = [unchangedPrefix, meta, token900, unchangedSuffix]
+            .joined(separator: "\n").appending("\n")
+        XCTAssertGreaterThan(initialContents.utf8.count, 8 * 1_024)
+        XCTAssertEqual(initialContents.utf8.count, rewrittenContents.utf8.count)
+        try initialContents.write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let initialAttributes = try FileManager.default.attributesOfItem(atPath: sessionFile.path)
+        let initialInode = try XCTUnwrap(initialAttributes[.systemFileNumber] as? NSNumber)
+        let monitor = CodexDesktopActivityMonitor(
+            sessionsRootURL: fixture.sessionsRoot,
+            replaysInitialHistory: true
+        )
+        let initialUpdate = try XCTUnwrap(monitor.pollResult(now: now).quotaUpdates.first)
+        XCTAssertEqual(initialUpdate.tokenActivityUsage?.effectiveTotalTokens, 100)
+
+        let handle = try FileHandle(forWritingTo: sessionFile)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data(rewrittenContents.utf8))
+        try handle.close()
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(5)],
+            ofItemAtPath: sessionFile.path
+        )
+        let rewrittenAttributes = try FileManager.default.attributesOfItem(atPath: sessionFile.path)
+        let rewrittenInode = try XCTUnwrap(rewrittenAttributes[.systemFileNumber] as? NSNumber)
+        XCTAssertEqual(rewrittenInode, initialInode)
+
+        let rewrittenUpdate = try XCTUnwrap(
+            monitor.pollResult(now: now.addingTimeInterval(1)).quotaUpdates.first
+        )
+        XCTAssertEqual(rewrittenUpdate.tokenActivityUsage?.effectiveTotalTokens, 900)
     }
 
     func testCodexDesktopActivityMonitorDoesNotReplayHistoryByDefault() throws {
@@ -8454,6 +15245,174 @@ private func makeMenuBarStatusModel(
         store: store,
         codexAccountManager: EmptyCodexAccountManager()
     )
+}
+
+private final class ExecutablePathFileManager: FileManager, @unchecked Sendable {
+    private let testHomeDirectory: URL
+    private let executablePaths: Set<String>
+
+    init(homeDirectory: URL, executablePaths: Set<String>) {
+        self.testHomeDirectory = homeDirectory
+        self.executablePaths = executablePaths
+        super.init()
+    }
+
+    override var homeDirectoryForCurrentUser: URL {
+        testHomeDirectory
+    }
+
+    override func isExecutableFile(atPath path: String) -> Bool {
+        executablePaths.contains(path)
+    }
+}
+
+private final class TestDateClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+
+    init(_ value: Date) {
+        self.value = value
+    }
+
+    func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        value = value.addingTimeInterval(interval)
+        lock.unlock()
+    }
+}
+
+private func testTokenScanWatermark(
+    sessionID: String,
+    eventAt: Date,
+    totalTokens: Int,
+    ordinal: UInt64 = 1
+) -> CodexTokenActivityScanWatermark {
+    CodexTokenActivityScanWatermark(
+        sessionID: sessionID,
+        sourceID: "/test/\(sessionID).jsonl",
+        sourceGeneration: "test-generation",
+        endOffset: ordinal,
+        lineFingerprint: "test-\(ordinal)",
+        eventTimestamp: eventAt,
+        totalTokens: totalTokens
+    )
+}
+
+private final class ControlledCodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Sendable {
+    typealias DaysProvider = (Date) -> [CodexTokenActivityDay]?
+    typealias IndexedDaysProvider = (Date, Int) -> [CodexTokenActivityDay]?
+    typealias IndexedResultProvider = (Date, Int) -> CodexTokenActivityScanResult?
+
+    private let cachedDaysProvider: DaysProvider
+    private let scannedResultProvider: IndexedResultProvider
+    private let scanStarted = DispatchSemaphore(value: 0)
+    private let scanFinished = DispatchSemaphore(value: 0)
+    private let cacheCleared = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var recordedScanCallCount = 0
+    private var recordedClearCacheCallCount = 0
+
+    init(
+        cachedDays: @escaping DaysProvider,
+        scannedDays: @escaping DaysProvider
+    ) {
+        self.cachedDaysProvider = cachedDays
+        self.scannedResultProvider = { now, _ in
+            scannedDays(now).map { CodexTokenActivityScanResult(days: $0, watermarks: []) }
+        }
+    }
+
+    init(
+        cachedDays: @escaping DaysProvider,
+        scannedDaysByCall: @escaping IndexedDaysProvider
+    ) {
+        self.cachedDaysProvider = cachedDays
+        self.scannedResultProvider = { now, callIndex in
+            scannedDaysByCall(now, callIndex).map {
+                CodexTokenActivityScanResult(days: $0, watermarks: [])
+            }
+        }
+    }
+
+    init(
+        cachedDays: @escaping DaysProvider,
+        scannedResultsByCall: @escaping IndexedResultProvider
+    ) {
+        self.cachedDaysProvider = cachedDays
+        self.scannedResultProvider = scannedResultsByCall
+    }
+
+    var scanCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedScanCallCount
+    }
+
+    var clearCacheCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedClearCacheCallCount
+    }
+
+    func clearCache() {
+        lock.lock()
+        recordedClearCacheCallCount += 1
+        lock.unlock()
+        cacheCleared.signal()
+    }
+
+    func cachedDailyActivity(now: Date, days _: Int) -> [CodexTokenActivityDay]? {
+        cachedDaysProvider(now)
+    }
+
+    func scanDailyActivity(
+        now: Date,
+        days _: Int,
+        progress: (([CodexTokenActivityDay]) -> Void)?
+    ) -> [CodexTokenActivityDay] {
+        let result = performScan(now: now)
+        progress?(result.days)
+        return result.days
+    }
+
+    func scanDailyActivityResult(
+        now: Date,
+        days _: Int,
+        progress: (([CodexTokenActivityDay]) -> Void)?
+    ) -> CodexTokenActivityScanResult {
+        let result = performScan(now: now)
+        progress?(result.days)
+        return result
+    }
+
+    private func performScan(now: Date) -> CodexTokenActivityScanResult {
+        lock.lock()
+        recordedScanCallCount += 1
+        let callIndex = recordedScanCallCount
+        lock.unlock()
+        scanStarted.signal()
+        scanFinished.wait()
+        return scannedResultProvider(now, callIndex)
+            ?? CodexTokenActivityScanResult(days: [], watermarks: [])
+    }
+
+    func waitUntilScanStarts(seconds: TimeInterval) -> Bool {
+        scanStarted.wait(timeout: .now() + seconds) == .success
+    }
+
+    func finishScan() {
+        scanFinished.signal()
+    }
+
+    func waitUntilCacheClears(seconds: TimeInterval) -> Bool {
+        cacheCleared.wait(timeout: .now() + seconds) == .success
+    }
 }
 
 private final class EmptyCodexAccountManager: CodexAccountManaging, @unchecked Sendable {

@@ -1,3 +1,8 @@
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 #if canImport(Musl)
 import Musl
@@ -274,6 +279,17 @@ extension CostUsageScanner {
         lastCodexTurnID: String? = nil,
         sessionId: String? = nil,
         forkedFromId: String? = nil,
+        sourceGeneration: String? = nil,
+        sourceStatFingerprint: Int64? = nil,
+        sourceChangeTimeNanoseconds: Int64? = nil,
+        committedPrefixFingerprint: String? = nil,
+        codexInventoryOnly: Bool? = nil,
+        codexDuplicateQuarantined: Bool? = nil,
+        lastTokenEventEndOffset: Int64? = nil,
+        lastTokenEventFingerprint: String? = nil,
+        lastTokenEventTimestamp: Date? = nil,
+        lastTokenEventTotalTokens: Int? = nil,
+        tokenEventWatermarks: [CostUsageTokenEventWatermark]? = nil,
         codexCostNanos: [String: [String: Int64]]? = nil,
         codexPrioritySurchargeNanos: [String: [String: Int64]]? = nil,
         codexStandardCostNanos: [String: [String: Int64]]? = nil,
@@ -284,7 +300,13 @@ extension CostUsageScanner {
         codexRows: [CodexUsageRow]? = nil,
         claudeRows: [ClaudeUsageRow]? = nil) -> CostUsageFileUsage
     {
-        CostUsageFileUsage(
+        let retainedTokenEventWatermarks: [CostUsageTokenEventWatermark]? = tokenEventWatermarks.map { watermarks in
+            guard let frontier = watermarks.max(by: { $0.endOffset < $1.endOffset }) else {
+                return []
+            }
+            return [frontier]
+        }
+        return CostUsageFileUsage(
             mtimeUnixMs: mtimeUnixMs,
             size: size,
             days: days,
@@ -297,6 +319,17 @@ extension CostUsageScanner {
             lastCodexTurnID: lastCodexTurnID,
             sessionId: sessionId,
             forkedFromId: forkedFromId,
+            sourceGeneration: sourceGeneration,
+            sourceStatFingerprint: sourceStatFingerprint,
+            sourceChangeTimeNanoseconds: sourceChangeTimeNanoseconds,
+            committedPrefixFingerprint: committedPrefixFingerprint,
+            codexInventoryOnly: codexInventoryOnly,
+            codexDuplicateQuarantined: codexDuplicateQuarantined,
+            lastTokenEventEndOffset: lastTokenEventEndOffset,
+            lastTokenEventFingerprint: lastTokenEventFingerprint,
+            lastTokenEventTimestamp: lastTokenEventTimestamp,
+            lastTokenEventTotalTokens: lastTokenEventTotalTokens,
+            tokenEventWatermarks: retainedTokenEventWatermarks,
             codexCostNanos: codexCostNanos,
             codexPrioritySurchargeNanos: codexPrioritySurchargeNanos,
             codexStandardCostNanos: codexStandardCostNanos,
@@ -614,6 +647,8 @@ extension CostUsageScanner {
         let mtimeUnixMs: Int64
         let size: Int64
         let fileId: String?
+        let statFingerprint: Int64?
+        let changeTimeNanoseconds: Int64?
     }
 
     struct CodexFileScanInput {
@@ -626,20 +661,81 @@ extension CostUsageScanner {
         let path = fileURL.path
         var info = stat()
         guard path.withCString({ fstatat(AT_FDCWD, $0, &info, 0) }) == 0 else {
-            return CodexFileMetadata(path: path, mtimeUnixMs: 0, size: 0, fileId: nil)
+            return CodexFileMetadata(
+                path: path,
+                mtimeUnixMs: 0,
+                size: 0,
+                fileId: nil,
+                statFingerprint: nil,
+                changeTimeNanoseconds: nil
+            )
         }
         #if os(Linux)
         let modifiedSeconds = Int64(info.st_mtim.tv_sec)
         let modifiedNanoseconds = Int64(info.st_mtim.tv_nsec)
+        let changedSeconds = Int64(info.st_ctim.tv_sec)
+        let changedNanoseconds = Int64(info.st_ctim.tv_nsec)
         #else
         let modifiedSeconds = Int64(info.st_mtimespec.tv_sec)
         let modifiedNanoseconds = Int64(info.st_mtimespec.tv_nsec)
+        let changedSeconds = Int64(info.st_ctimespec.tv_sec)
+        let changedNanoseconds = Int64(info.st_ctimespec.tv_nsec)
         #endif
         return CodexFileMetadata(
             path: path,
             mtimeUnixMs: modifiedSeconds * 1000 + modifiedNanoseconds / 1_000_000,
             size: Int64(info.st_size),
-            fileId: "\(info.st_dev):\(info.st_ino)")
+            fileId: "\(info.st_dev):\(info.st_ino)",
+            statFingerprint: Self.codexStableStatFingerprint(info),
+            changeTimeNanoseconds: changedSeconds * 1_000_000_000 + changedNanoseconds
+        )
+    }
+
+    static func codexFileMetadata(
+        fileDescriptor: Int32,
+        path: String
+    ) -> CodexFileMetadata {
+        var info = stat()
+        guard fstat(fileDescriptor, &info) == 0 else {
+            return CodexFileMetadata(
+                path: path,
+                mtimeUnixMs: 0,
+                size: 0,
+                fileId: nil,
+                statFingerprint: nil,
+                changeTimeNanoseconds: nil
+            )
+        }
+        #if os(Linux)
+        let modifiedSeconds = Int64(info.st_mtim.tv_sec)
+        let modifiedNanoseconds = Int64(info.st_mtim.tv_nsec)
+        let changedSeconds = Int64(info.st_ctim.tv_sec)
+        let changedNanoseconds = Int64(info.st_ctim.tv_nsec)
+        #else
+        let modifiedSeconds = Int64(info.st_mtimespec.tv_sec)
+        let modifiedNanoseconds = Int64(info.st_mtimespec.tv_nsec)
+        let changedSeconds = Int64(info.st_ctimespec.tv_sec)
+        let changedNanoseconds = Int64(info.st_ctimespec.tv_nsec)
+        #endif
+        return CodexFileMetadata(
+            path: path,
+            mtimeUnixMs: modifiedSeconds * 1000 + modifiedNanoseconds / 1_000_000,
+            size: Int64(info.st_size),
+            fileId: "\(info.st_dev):\(info.st_ino)",
+            statFingerprint: Self.codexStableStatFingerprint(info),
+            changeTimeNanoseconds: changedSeconds * 1_000_000_000 + changedNanoseconds
+        )
+    }
+
+    static func codexFileMetadataIsSameSnapshot(
+        _ lhs: CodexFileMetadata,
+        _ rhs: CodexFileMetadata
+    ) -> Bool {
+        lhs.fileId != nil
+            && lhs.fileId == rhs.fileId
+            && lhs.statFingerprint == rhs.statFingerprint
+            && lhs.mtimeUnixMs == rhs.mtimeUnixMs
+            && lhs.size == rhs.size
     }
 
     static func dropCachedCodexFile(
@@ -651,6 +747,128 @@ extension CostUsageScanner {
             self.applyFileDays(cache: &cache, fileDays: cached.days, sign: -1)
         }
         cache.files.removeValue(forKey: path)
+    }
+
+    static func codexAmbiguousDuplicateSessionError(
+        sessionId: String,
+        path: String
+    ) -> Error {
+        NSError(
+            domain: "AgentSignalCostUsage.CodexConsistency",
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "Multiple changed Codex files claim session \(sessionId)",
+                NSFilePathErrorKey: path,
+            ]
+        )
+    }
+
+    static func codexMissingSessionMetadataError(
+        previousSessionId: String,
+        path: String
+    ) -> Error {
+        NSError(
+            domain: "AgentSignalCostUsage.CodexConsistency",
+            code: 2,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "Codex session metadata disappeared for cached session \(previousSessionId)",
+                NSFilePathErrorKey: path,
+            ]
+        )
+    }
+
+    static func codexChangedDuringScanError(path: String) -> Error {
+        NSError(
+            domain: "AgentSignalCostUsage.CodexConsistency",
+            code: 3,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Codex session changed while its committed prefix was being scanned",
+                NSFilePathErrorKey: path,
+            ]
+        )
+    }
+
+    static func codexCommittedPrefixFingerprint(
+        fileURL: URL,
+        throughOffset: Int64,
+        checkCancellation: CancellationCheck?
+    ) throws -> String? {
+        guard throughOffset > 0 else { return nil }
+        let before = Self.codexFileMetadata(fileURL: fileURL)
+        guard before.fileId != nil, before.size >= throughOffset else { return nil }
+        try checkCancellation?()
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        // The pathname can be atomically replaced after the first stat but
+        // before open(). Bind the proof to the descriptor that was actually
+        // opened, and re-check the path before reading any bytes.
+        try checkCancellation?()
+        let descriptorBefore = Self.codexFileMetadata(
+            fileDescriptor: handle.fileDescriptor,
+            path: fileURL.path
+        )
+        guard Self.codexFileMetadataIsSameSnapshot(descriptorBefore, before),
+              Self.codexFileMetadataIsSameSnapshot(
+                  Self.codexFileMetadata(fileURL: fileURL),
+                  before
+              )
+        else {
+            return nil
+        }
+        var hasher = SHA256()
+        var remaining = throughOffset
+        while remaining > 0 {
+            try checkCancellation?()
+            let count = Int(min(remaining, 256 * 1024))
+            guard let bytes = try handle.read(upToCount: count), bytes.count == count else {
+                return nil
+            }
+            hasher.update(data: bytes)
+            remaining -= Int64(count)
+        }
+        try checkCancellation?()
+        let descriptorAfter = Self.codexFileMetadata(
+            fileDescriptor: handle.fileDescriptor,
+            path: fileURL.path
+        )
+        let after = Self.codexFileMetadata(fileURL: fileURL)
+        guard Self.codexFileMetadataIsSameSnapshot(descriptorAfter, descriptorBefore),
+              Self.codexFileMetadataIsSameSnapshot(after, before)
+        else {
+            return nil
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func codexFileMatchesCommittedFrontier(
+        fileURL: URL,
+        cached: CostUsageFileUsage,
+        checkCancellation: CancellationCheck?
+    ) throws -> Bool {
+        guard let parsedBytes = cached.parsedBytes,
+              let expectedFingerprint = cached.committedPrefixFingerprint
+        else {
+            return false
+        }
+        return try Self.codexCommittedPrefixFingerprint(
+            fileURL: fileURL,
+            throughOffset: parsedBytes,
+            checkCancellation: checkCancellation
+        ) == expectedFingerprint
+    }
+
+    static func hasDifferentCodexSessionOwner(
+        sessionId: String,
+        excludingPath: String,
+        cache: CostUsageCache
+    ) -> Bool {
+        cache.files.contains { path, usage in
+            path != excludingPath
+                && usage.codexInventoryOnly != true
+                && usage.sessionId == sessionId
+        }
     }
 
     static func rememberScannedCodexFile(
@@ -676,10 +894,19 @@ extension CostUsageScanner {
         state: inout CodexScanState) -> Bool
     {
         guard let cached = input.cached else { return false }
+        guard cached.codexInventoryOnly != true else { return false }
         let needsSessionId = cached.sessionId == nil
+        let parsedThroughEnd = (cached.parsedBytes ?? cached.size) >= cached.size
+        let currentGeneration = input.metadata.fileId
+            ?? URL(fileURLWithPath: input.metadata.path).standardizedFileURL.resolvingSymlinksInPath().path
         guard cached.mtimeUnixMs == input.metadata.mtimeUnixMs,
               cached.size == input.metadata.size,
+              parsedThroughEnd,
               !needsSessionId,
+              cached.committedPrefixFingerprint != nil,
+              cached.sourceGeneration == currentGeneration,
+              cached.sourceStatFingerprint == input.metadata.statFingerprint,
+              cached.sourceChangeTimeNanoseconds == input.metadata.changeTimeNanoseconds,
               !context.forceFullScan
         else { return false }
 
@@ -720,15 +947,31 @@ extension CostUsageScanner {
         let startOffset = cached.parsedBytes ?? cached.size
         let initialCountedTotals = cached.lastCountedTotals ?? cached.lastTotals
         let initialRawTotalsBaseline = cached.lastRawTotalsBaseline ?? cached.lastTotals
-        let canIncremental = input.metadata.size > cached.size && startOffset > 0
+        let currentGeneration = input.metadata.fileId
+            ?? URL(fileURLWithPath: input.metadata.path).standardizedFileURL.resolvingSymlinksInPath().path
+        let fileWasNotTruncated = input.metadata.size >= cached.size
+        let hasUnreadCachedBytes = startOffset < cached.size
+        let hasAppendedBytes = input.metadata.size > cached.size
+        let canIncremental = fileWasNotTruncated
+            && (hasUnreadCachedBytes || hasAppendedBytes)
+            && startOffset > 0
             && startOffset <= input.metadata.size
             && initialCountedTotals != nil
             && cached.forkedFromId == nil
+            && cached.sourceGeneration == currentGeneration
         guard canIncremental else { return false }
+        guard try Self.codexFileMatchesCommittedFrontier(
+            fileURL: input.fileURL,
+            cached: cached,
+            checkCancellation: context.checkCancellation
+        ) else {
+            return false
+        }
 
         let delta = try Self.parseCodexFileCancellable(
             fileURL: input.fileURL,
             range: context.range,
+            through: context.through,
             startOffset: startOffset,
             initialModel: cached.lastModel,
             initialTotals: initialCountedTotals,
@@ -739,10 +982,33 @@ extension CostUsageScanner {
         if delta.forkedFromId != nil {
             return false
         }
+        guard let committedPrefixFingerprint = try Self.codexCommittedPrefixFingerprint(
+            fileURL: input.fileURL,
+            throughOffset: delta.parsedBytes,
+            checkCancellation: context.checkCancellation
+        ) else {
+            throw Self.codexChangedDuringScanError(path: input.metadata.path)
+        }
+        let committedMetadata = Self.codexFileMetadata(fileURL: input.fileURL)
+        guard committedMetadata.fileId == input.metadata.fileId,
+              committedMetadata.statFingerprint == input.metadata.statFingerprint,
+              committedMetadata.mtimeUnixMs == input.metadata.mtimeUnixMs,
+              committedMetadata.size == input.metadata.size
+        else {
+            throw Self.codexChangedDuringScanError(path: input.metadata.path)
+        }
         let sessionId = delta.sessionId ?? cached.sessionId
-        if let sessionId, state.seenSessionIds.contains(sessionId) {
-            Self.dropCachedCodexFile(path: input.metadata.path, cached: cached, cache: &cache)
-            return true
+        if let sessionId,
+           state.seenSessionIds.contains(sessionId)
+            || Self.hasDifferentCodexSessionOwner(
+                sessionId: sessionId,
+                excludingPath: input.metadata.path,
+                cache: cache
+            ) {
+            throw Self.codexAmbiguousDuplicateSessionError(
+                sessionId: sessionId,
+                path: input.metadata.path
+            )
         }
 
         let migratedCached = Self.codexFileUsageWithCostCache(cached, context: context)
@@ -771,6 +1037,21 @@ extension CostUsageScanner {
             lastCodexTurnID: delta.lastCodexTurnID,
             sessionId: sessionId,
             forkedFromId: delta.forkedFromId ?? migratedCached.forkedFromId,
+            sourceGeneration: currentGeneration,
+            sourceStatFingerprint: input.metadata.statFingerprint,
+            sourceChangeTimeNanoseconds: input.metadata.changeTimeNanoseconds,
+            committedPrefixFingerprint: committedPrefixFingerprint,
+            lastTokenEventEndOffset: delta.lastTokenEventEndOffset ?? migratedCached.lastTokenEventEndOffset,
+            lastTokenEventFingerprint: delta.lastTokenEventFingerprint ?? migratedCached.lastTokenEventFingerprint,
+            lastTokenEventTimestamp: delta.lastTokenEventTimestamp ?? migratedCached.lastTokenEventTimestamp,
+            lastTokenEventTotalTokens: delta.lastTokenEventTimestamp == nil
+                ? migratedCached.lastTokenEventTotalTokens
+                : delta.lastTokenEventTotalTokens,
+            // A sequential parser's greatest exact offset proves that all
+            // earlier offsets in the same file generation were committed.
+            // `makeFileUsage` compacts this list to that single frontier.
+            tokenEventWatermarks: (migratedCached.tokenEventWatermarks ?? [])
+                + delta.tokenEventWatermarks,
             codexCostNanos: Self.codexMergedCostMap(
                 migratedCached.codexCostNanos,
                 deltaRows: delta.rows,
@@ -820,12 +1101,64 @@ extension CostUsageScanner {
         let parsed = try Self.parseCodexFileCancellable(
             fileURL: input.fileURL,
             range: context.range,
+            through: context.through,
             inheritedTotalsResolver: context.resources.inheritedResolver.inheritedTotals(for:atOrBefore:),
             checkCancellation: context.checkCancellation)
+        let committedPrefixFingerprint = try Self.codexCommittedPrefixFingerprint(
+            fileURL: input.fileURL,
+            throughOffset: parsed.parsedBytes,
+            checkCancellation: context.checkCancellation
+        )
+        let committedMetadata = Self.codexFileMetadata(fileURL: input.fileURL)
+        guard committedMetadata.fileId == input.metadata.fileId,
+              committedMetadata.statFingerprint == input.metadata.statFingerprint,
+              committedMetadata.mtimeUnixMs == input.metadata.mtimeUnixMs,
+              committedMetadata.size == input.metadata.size
+        else {
+            throw Self.codexChangedDuringScanError(path: input.metadata.path)
+        }
+        if parsed.sessionId == nil,
+           let cached = input.cached,
+           cached.codexInventoryOnly != true,
+           let previousSessionId = cached.sessionId,
+           !previousSessionId.isEmpty {
+            throw Self.codexMissingSessionMetadataError(
+                previousSessionId: previousSessionId,
+                path: input.metadata.path
+            )
+        }
         let sessionId = parsed.sessionId ?? input.cached?.sessionId
-        if let sessionId, state.seenSessionIds.contains(sessionId) {
-            cache.files.removeValue(forKey: input.metadata.path)
+        guard let sessionId, !sessionId.isEmpty else {
+            cache.files[input.metadata.path] = Self.makeFileUsage(
+                mtimeUnixMs: input.metadata.mtimeUnixMs,
+                size: input.metadata.size,
+                days: [:],
+                parsedBytes: 0,
+                sourceGeneration: input.metadata.fileId
+                    ?? input.fileURL.standardizedFileURL.resolvingSymlinksInPath().path,
+                sourceStatFingerprint: input.metadata.statFingerprint,
+                sourceChangeTimeNanoseconds: input.metadata.changeTimeNanoseconds,
+                codexInventoryOnly: true
+            )
+            Self.rememberScannedCodexFile(
+                fileURL: input.fileURL,
+                metadata: input.metadata,
+                sessionId: nil,
+                context: context,
+                state: &state
+            )
             return
+        }
+        if state.seenSessionIds.contains(sessionId)
+            || Self.hasDifferentCodexSessionOwner(
+                sessionId: sessionId,
+                excludingPath: input.metadata.path,
+                cache: cache
+            ) {
+            throw Self.codexAmbiguousDuplicateSessionError(
+                sessionId: sessionId,
+                path: input.metadata.path
+            )
         }
         Self.mergeFileDays(existing: &usageDays, delta: parsed.days)
         let splitMaps = Self.codexModeSplitMaps(
@@ -848,6 +1181,16 @@ extension CostUsageScanner {
             lastCodexTurnID: parsed.lastCodexTurnID,
             sessionId: sessionId,
             forkedFromId: parsed.forkedFromId,
+            sourceGeneration: input.metadata.fileId
+                ?? URL(fileURLWithPath: input.metadata.path).standardizedFileURL.resolvingSymlinksInPath().path,
+            sourceStatFingerprint: input.metadata.statFingerprint,
+            sourceChangeTimeNanoseconds: input.metadata.changeTimeNanoseconds,
+            committedPrefixFingerprint: committedPrefixFingerprint,
+            lastTokenEventEndOffset: parsed.lastTokenEventEndOffset,
+            lastTokenEventFingerprint: parsed.lastTokenEventFingerprint,
+            lastTokenEventTimestamp: parsed.lastTokenEventTimestamp,
+            lastTokenEventTotalTokens: parsed.lastTokenEventTotalTokens,
+            tokenEventWatermarks: parsed.tokenEventWatermarks,
             codexCostNanos: Self.mergeCostMaps(
                 context.dropDeferredCodexRows
                     ? nil
@@ -963,10 +1306,11 @@ extension CostUsageScanner {
     static func pruneForceRescanFilesOutsideWindow(
         cache: inout CostUsageCache,
         range: CostUsageDayRange,
-        isForceRescan: Bool)
+        isForceRescan: Bool,
+        preservingPaths: Set<String> = [])
     {
         guard isForceRescan else { return }
-        for key in cache.files.keys {
+        for key in cache.files.keys where !preservingPaths.contains(key) {
             guard let old = cache.files[key] else { continue }
             guard !old.touchesCodexScanWindow(sinceKey: range.scanSinceKey, untilKey: range.scanUntilKey)
             else { continue }

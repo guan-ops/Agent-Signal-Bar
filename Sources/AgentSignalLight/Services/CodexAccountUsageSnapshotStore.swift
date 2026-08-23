@@ -16,6 +16,76 @@ struct CodexResetCreditsFetchState: Codable, Equatable, Sendable {
     var isStale: Bool
 }
 
+struct CodexLiveTokenCounterSnapshot: Codable, Equatable, Sendable {
+    let key: String
+    let sessionID: String?
+    let totalTokens: Int
+    let scannedBaseline: Int
+    let day: Date
+    let updatedAt: Date?
+    let observationCursor: CodexTokenObservationCursor?
+
+    init(
+        key: String,
+        sessionID: String?,
+        totalTokens: Int,
+        scannedBaseline: Int,
+        day: Date,
+        updatedAt: Date?,
+        observationCursor: CodexTokenObservationCursor? = nil
+    ) {
+        self.key = key
+        self.sessionID = sessionID
+        self.totalTokens = totalTokens
+        self.scannedBaseline = scannedBaseline
+        self.day = day
+        self.updatedAt = updatedAt
+        self.observationCursor = observationCursor
+    }
+}
+
+struct CodexLiveTokenCarrySnapshot: Codable, Equatable, Sendable {
+    let key: String?
+    let sessionID: String?
+    let day: Date
+    let totalTokens: Int
+    let updatedAt: Date?
+    let observationCursor: CodexTokenObservationCursor?
+
+    init(
+        key: String? = nil,
+        sessionID: String? = nil,
+        day: Date,
+        totalTokens: Int,
+        updatedAt: Date? = nil,
+        observationCursor: CodexTokenObservationCursor? = nil
+    ) {
+        self.key = key
+        self.sessionID = sessionID
+        self.day = day
+        self.totalTokens = totalTokens
+        self.updatedAt = updatedAt
+        self.observationCursor = observationCursor
+    }
+}
+
+struct CodexLiveTokenScanWatermarkSnapshot: Codable, Equatable, Sendable {
+    let sessionID: String?
+    let sourceID: String
+    let sourceGeneration: String
+    let sourceStatFingerprint: Int64?
+    let sourceChangeTimeNanoseconds: Int64?
+    let endOffset: UInt64
+    let lineFingerprint: String
+    let eventTimestamp: Date?
+    let totalTokens: Int?
+}
+
+struct CodexLegacyUnscopedTokenFloorSnapshot: Codable, Equatable, Sendable {
+    let totalTokens: Int
+    let day: Date
+}
+
 struct CodexAccountUsageSnapshot: Codable, Equatable, Sendable {
     let accountKey: String
     let email: String?
@@ -27,6 +97,13 @@ struct CodexAccountUsageSnapshot: Codable, Equatable, Sendable {
     var usageFetchState: CodexUsageFetchState?
     var resetCreditsFetchState: CodexResetCreditsFetchState?
     var tokenUsage: AgentTokenUsage?
+    var liveTokenUsageScanBaseline: Int?
+    var unscannedLiveTokenCarry: Int?
+    var liveTokenCounters: [CodexLiveTokenCounterSnapshot]?
+    var unscannedLiveTokenCarryByDay: [CodexLiveTokenCarrySnapshot]?
+    var liveTokenUsageScanCutoff: Date?
+    var liveTokenScanWatermarks: [CodexLiveTokenScanWatermarkSnapshot]?
+    var legacyUnscopedTokenFloor: CodexLegacyUnscopedTokenFloorSnapshot?
     var tokenActivityCacheVersion: Int?
     var tokenActivityDays: [CodexTokenActivityDay]
     var updatedAt: Date
@@ -60,6 +137,13 @@ final class CodexAccountUsageSnapshotStore: @unchecked Sendable {
         usageFetchState: CodexUsageFetchState? = nil,
         resetCreditsFetchState: CodexResetCreditsFetchState? = nil,
         tokenUsage: AgentTokenUsage?,
+        liveTokenUsageScanBaseline: Int? = nil,
+        unscannedLiveTokenCarry: Int? = nil,
+        liveTokenCounters: [CodexLiveTokenCounterSnapshot]? = nil,
+        unscannedLiveTokenCarryByDay: [CodexLiveTokenCarrySnapshot]? = nil,
+        liveTokenUsageScanCutoff: Date? = nil,
+        liveTokenScanWatermarks: [CodexLiveTokenScanWatermarkSnapshot]? = nil,
+        legacyUnscopedTokenFloor: CodexLegacyUnscopedTokenFloorSnapshot? = nil,
         tokenActivityCacheVersion: Int?,
         tokenActivityDays: [CodexTokenActivityDay],
         updatedAt: Date = Date()
@@ -76,6 +160,13 @@ final class CodexAccountUsageSnapshotStore: @unchecked Sendable {
             usageFetchState: usageFetchState,
             resetCreditsFetchState: resetCreditsFetchState,
             tokenUsage: tokenUsage,
+            liveTokenUsageScanBaseline: liveTokenUsageScanBaseline,
+            unscannedLiveTokenCarry: unscannedLiveTokenCarry,
+            liveTokenCounters: liveTokenCounters,
+            unscannedLiveTokenCarryByDay: unscannedLiveTokenCarryByDay,
+            liveTokenUsageScanCutoff: liveTokenUsageScanCutoff,
+            liveTokenScanWatermarks: liveTokenScanWatermarks,
+            legacyUnscopedTokenFloor: legacyUnscopedTokenFloor,
             tokenActivityCacheVersion: tokenActivityCacheVersion,
             tokenActivityDays: tokenActivityDays,
             updatedAt: updatedAt

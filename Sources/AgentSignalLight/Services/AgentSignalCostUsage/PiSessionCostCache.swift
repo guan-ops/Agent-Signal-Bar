@@ -1,7 +1,9 @@
 import Foundation
 
 enum PiSessionCostCacheIO {
-    private static let artifactVersion = 3
+    // v4 adds a strict scan-through cursor. v3 may have cached same-day
+    // entries that occurred after the requested cutoff, so it must be rebuilt.
+    private static let artifactVersion = 4
 
     private static func defaultCacheRoot() -> URL {
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
@@ -26,13 +28,13 @@ enum PiSessionCostCacheIO {
         return decoded
     }
 
-    static func save(cache: PiSessionCostCache, cacheRoot: URL? = nil) {
+    static func save(cache: PiSessionCostCache, cacheRoot: URL? = nil) throws {
         let url = self.cacheFileURL(cacheRoot: cacheRoot)
         let dir = url.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         let tmp = dir.appendingPathComponent(".tmp-\(UUID().uuidString).json", isDirectory: false)
-        let data = (try? JSONEncoder().encode(cache)) ?? Data()
+        let data = try JSONEncoder().encode(cache)
         do {
             try data.write(to: tmp, options: [.atomic])
             if FileManager.default.fileExists(atPath: url.path) {
@@ -42,6 +44,7 @@ enum PiSessionCostCacheIO {
             }
         } catch {
             try? FileManager.default.removeItem(at: tmp)
+            throw error
         }
     }
 }
@@ -54,7 +57,7 @@ struct PiSessionCostCache: Codable {
     var daysByProvider: [String: [String: [String: PiPackedUsage]]] = [:]
     var files: [String: PiSessionFileUsage] = [:]
 
-    init(version: Int = 3) {
+    init(version: Int = 4) {
         self.version = version
     }
 }

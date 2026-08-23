@@ -26,11 +26,63 @@ public struct CodexDesktopQuotaUpdate: Equatable, Sendable {
     public let sessionID: String
     public let agent: String
     public let quota: AgentQuotaStatus
+    public let tokenActivityUsage: AgentTokenUsage?
+    public let forkedFromSessionID: String?
+    public let tokenObservationCursor: CodexTokenObservationCursor?
 
-    public init(sessionID: String, agent: String, quota: AgentQuotaStatus) {
+    public init(
+        sessionID: String,
+        agent: String,
+        quota: AgentQuotaStatus,
+        tokenActivityUsage: AgentTokenUsage? = nil,
+        forkedFromSessionID: String? = nil,
+        tokenObservationCursor: CodexTokenObservationCursor? = nil
+    ) {
         self.sessionID = sessionID
         self.agent = agent
         self.quota = quota
+        self.tokenActivityUsage = tokenActivityUsage
+        self.forkedFromSessionID = forkedFromSessionID
+        self.tokenObservationCursor = tokenObservationCursor
+    }
+}
+
+/// Stable evidence that a live token observation came from a specific complete
+/// JSONL line. A usage scan may absorb the observation only after it reports a
+/// watermark at or beyond this cursor for the same file generation.
+public struct CodexTokenObservationCursor: Codable, Equatable, Hashable, Sendable {
+    public let sourceID: String
+    public let sourceGeneration: String
+    public let sourceStatFingerprint: Int64?
+    public let sourceChangeTimeNanoseconds: Int64?
+    public let endOffset: UInt64
+    public let lineFingerprint: String
+
+    public init(
+        sourceID: String,
+        sourceGeneration: String,
+        sourceStatFingerprint: Int64? = nil,
+        sourceChangeTimeNanoseconds: Int64? = nil,
+        endOffset: UInt64,
+        lineFingerprint: String
+    ) {
+        self.sourceID = sourceID
+        self.sourceGeneration = sourceGeneration
+        self.sourceStatFingerprint = sourceStatFingerprint
+        self.sourceChangeTimeNanoseconds = sourceChangeTimeNanoseconds
+        self.endOffset = endOffset
+        self.lineFingerprint = lineFingerprint
+    }
+
+    /// FNV-1a is used as a compact corruption/rewrite guard, not as a security
+    /// primitive. Both the live tailer and the full scanner hash identical raw
+    /// line bytes (without the trailing newline).
+    public static func fingerprint(for data: Data) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in data {
+            hash = (hash ^ UInt64(byte)) &* 0x100000001b3
+        }
+        return String(format: "%016llx", hash)
     }
 }
 
@@ -92,10 +144,51 @@ public enum CodexDesktopSessionParser {
         return agentName(in: payload)
     }
 
+    public static func sessionID(fromSessionMetaLine line: String) -> String? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["type"] as? String) == "session_meta"
+        else {
+            return nil
+        }
+        let payload = object["payload"] as? [String: Any]
+        for value in [
+            payload?["session_id"],
+            payload?["sessionId"],
+            payload?["id"],
+            object["session_id"],
+            object["sessionId"],
+            object["id"],
+        ] {
+            guard let value = value as? String else { continue }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
+    }
+
+    public static func forkedFromSessionID(fromSessionMetaLine line: String) -> String? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["type"] as? String) == "session_meta",
+              let payload = object["payload"] as? [String: Any]
+        else {
+            return nil
+        }
+        for key in ["forked_from_id", "forkedFromId", "parent_session_id", "parentSessionId"] {
+            guard let value = payload[key] as? String else { continue }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
+    }
+
     public static func quotaUpdate(
         from line: String,
         defaultSessionID: String,
-        defaultAgent: String = "codex-desktop"
+        defaultAgent: String = "codex-desktop",
+        forkedFromSessionID: String? = nil,
+        tokenObservationCursor: CodexTokenObservationCursor? = nil
     ) -> CodexDesktopQuotaUpdate? {
         guard let data = line.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -112,8 +205,19 @@ public enum CodexDesktopSessionParser {
         guard let quota = quotaStatus(from: payload, timestamp: timestamp) else {
             return nil
         }
+        let info = payload["info"] as? [String: Any]
+        let contextWindow = info.flatMap { intValue($0["model_context_window"]) }
+        let tokenActivityUsage = (info?["total_token_usage"] as? [String: Any])
+            .flatMap { tokenUsage(from: $0, contextWindow: contextWindow) }
 
-        return CodexDesktopQuotaUpdate(sessionID: sessionID, agent: agent, quota: quota)
+        return CodexDesktopQuotaUpdate(
+            sessionID: sessionID,
+            agent: agent,
+            quota: quota,
+            tokenActivityUsage: tokenActivityUsage,
+            forkedFromSessionID: forkedFromSessionID,
+            tokenObservationCursor: tokenObservationCursor
+        )
     }
 
     public static func tokenActivityPoint(from line: String) -> AgentTokenActivityPoint? {

@@ -2724,7 +2724,7 @@ private struct FloatingSignalTokenPopoverView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
 
-                    Text(model.tokenUsageCostText(cost))
+                    Text(model.tokenUsageCostText(cost, isLoading: model.isTokenActivityLoading))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.white.opacity(0.72))
                         .lineLimit(1)

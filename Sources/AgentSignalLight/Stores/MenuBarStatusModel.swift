@@ -371,6 +371,14 @@ enum DebugLogLevel: String, CaseIterable, Hashable, Identifiable {
     }
 }
 
+enum TokenActivityScanDisposition: Equatable {
+    case applied
+    case retryingAfterUnabsorbedUsage
+    case deferredWithRetryPending
+    case discardedStaleContext
+    case discardedInactive
+}
+
 private struct CLIInstallError: LocalizedError {
     let message: String
 
@@ -457,6 +465,7 @@ final class MenuBarStatusModel: ObservableObject {
     @Published private(set) var floatingSignalSoundTestTick = 0
     @Published private(set) var floatingSignalWaitingSoundTestTick = 0
     @Published private(set) var tokenActivityDays: [CodexTokenActivityDay] = []
+    @Published private(set) var tokenUsageReconciliationRevision = 0
     @Published private(set) var isTokenActivityLoading = false
     @Published private(set) var isCodexRateLimitFetchInFlight = false
     @Published private(set) var codexCurrentAccount: CodexCurrentAccount?
@@ -489,12 +498,15 @@ final class MenuBarStatusModel: ObservableObject {
     private let codexRPCStatusProbe: CodexRPCStatusProbe
     private let codexServiceStatusFetcher: CodexServiceStatusFetcher
     private let codexRateLimitFetcher: CodexRateLimitFetcher
-    private let codexTokenActivityScanner: CodexTokenActivityScanner
+    private let codexTokenActivityScanner: any CodexTokenActivityScanning
+    private let tokenActivityScanObserver: ((TokenActivityScanDisposition) -> Void)?
+    private let performsAccountSwitchBackgroundRefreshes: Bool
+    private let nowProvider: @Sendable () -> Date
     private let codexPlatformPresenceMonitor: CodexPlatformPresenceMonitor
     private let openAICookieStore: KeychainSecretStore
     private let updateChecker: GitHubReleaseUpdateChecker
     private let stateReloadQueue = DispatchQueue(label: "com.agentsignallight.state-reload")
-    private let codexDesktopPollQueue = DispatchQueue(label: "com.agentsignallight.codex-desktop-poll")
+    private let codexDesktopPollQueue: DispatchQueue
     private let tokenActivityQueue = DispatchQueue(label: "com.agentsignallight.token-activity")
     private let platformPresencePollQueue = DispatchQueue(label: "com.agentsignallight.platform-presence-poll")
     private var pollTimer: Timer?
@@ -520,14 +532,26 @@ final class MenuBarStatusModel: ObservableObject {
     private var activeCodexUsageRefreshGeneration: Int?
     private var codexUsageRefreshPending = false
     private var codexUsageRefreshTask: Task<Void, Never>?
+    private var codexLiveObservationGeneration = 0
+    private var codexAccountObservationStartedAt: Date?
     private var tokenActivityScanGeneration = 0
+    private var tokenActivityScanRetryPending = false
+    private var tokenActivityScanRetryAttempt = 0
     private var isPlatformPresencePollInFlight = false
     private var isAutomaticUpdateCheckInFlight = false
     private var lastNotifiedUpdateVersion: String?
     private var lastCodexRateLimitFetchAt: Date?
     private var lastTokenActivityScanAt: Date?
-    private var liveTokenUsageScanBaseline: Int?
-    private var lastObservedLiveTokenUsageTotal: Int?
+    private var liveTokenCounters: [String: LiveTokenCounterState] = [:]
+    private var unscannedLiveTokenCarries: [String: LiveTokenCarryState] = [:]
+    private var liveTokenUsageScanCutoff: Date?
+    private var liveTokenScanWatermarks: [CodexTokenActivityScanWatermark] = []
+    private var recentExactLiveTokenObservationSignatures:
+        [String: [ExactLiveTokenObservationSignature]] = [:]
+    private var legacyUnscopedTokenFloor: LegacyUnscopedTokenFloor?
+    private var latestAgentTokenUsageSessionID: String?
+    private var latestAgentTokenUsageUpdatedAt: Date?
+    private var liveTokenUsageRevision = 0
 
     private static let defaultDisplayLayout: TrafficSignalLayout = .horizontal
     private static let defaultStatusBarStyle: TrafficSignalStyle = .macOS
@@ -540,6 +564,8 @@ final class MenuBarStatusModel: ObservableObject {
     private static let codexRateLimitRefreshInterval: TimeInterval = 60
     private static let codexProviderDetailsRefreshInterval: TimeInterval = 60
     private static let tokenActivityRefreshInterval: TimeInterval = 60
+    private static let tokenActivityRetryBaseInterval: TimeInterval = 5
+    private static let unknownLiveTokenSessionKey = "__unknown__"
     private static let cachedLatestAgentQuotaKey = "cachedLatestAgentQuota"
     private static let cachedLatestAgentTokenUsageKey = "cachedLatestAgentTokenUsage"
     private static let manualOpenAICookieKey = "manualOpenAICookieHeader"
@@ -550,6 +576,58 @@ final class MenuBarStatusModel: ObservableObject {
     private struct LaunchAtLoginUpdateResult: Sendable {
         let isEnabled: Bool
         let errorMessage: String?
+    }
+
+    private struct CodexUsageAccountIdentity: Equatable, Sendable {
+        let usageSnapshotKey: String
+        let authFingerprint: String
+    }
+
+    private struct LiveTokenCounterState: Equatable, Sendable {
+        let sessionID: String?
+        var totalTokens: Int
+        var scannedBaseline: Int
+        var day: Date
+        var updatedAt: Date?
+        var observationCursor: CodexTokenObservationCursor? = nil
+    }
+
+    private struct LiveTokenCarryState: Equatable, Sendable {
+        let sessionID: String?
+        let totalTokens: Int
+        let day: Date
+        let updatedAt: Date?
+        let observationCursor: CodexTokenObservationCursor?
+    }
+
+    private struct ExactLiveTokenObservationSignature: Equatable, Sendable {
+        let usage: AgentTokenUsage
+        let stateFileTimestampSecond: Int64
+    }
+
+    private enum TokenObservationDisposition {
+        case unmatched
+        case covered
+        case rejected
+    }
+
+    private enum SourceSnapshotRelation: Equatable {
+        case same
+        case lhsNewer
+        case lhsOlder
+        case legacy
+        case incomparable
+    }
+
+    private struct LegacyUnscopedTokenFloor: Equatable, Sendable {
+        let totalTokens: Int
+        let day: Date
+    }
+
+    private struct LiveTokenUsageObservation: Equatable, Sendable {
+        let usage: AgentTokenUsage
+        let sessionID: String?
+        let updatedAt: Date?
     }
 
     private struct AnimationTickCadence {
@@ -565,13 +643,19 @@ final class MenuBarStatusModel: ObservableObject {
         hookInstallManager: HookInstallManager = HookInstallManager(),
         diagnosticsExportManager: DiagnosticsExportManager = DiagnosticsExportManager(),
         codexDesktopActivityMonitor: CodexDesktopActivityMonitor = CodexDesktopActivityMonitor(replaysInitialHistory: true),
+        codexDesktopPollQueue: DispatchQueue = DispatchQueue(
+            label: "com.agentsignallight.codex-desktop-poll"
+        ),
         codexAccountManager: any CodexAccountManaging = CodexAccountManager(),
         codexUsageSnapshotStore: CodexAccountUsageSnapshotStore = CodexAccountUsageSnapshotStore(),
         codexCLIStatusProbe: CodexCLIStatusProbe = CodexCLIStatusProbe(),
         codexRPCStatusProbe: CodexRPCStatusProbe = CodexRPCStatusProbe(),
         codexServiceStatusFetcher: CodexServiceStatusFetcher = CodexServiceStatusFetcher(),
         codexRateLimitFetcher: CodexRateLimitFetcher? = nil,
-        codexTokenActivityScanner: CodexTokenActivityScanner = CodexTokenActivityScanner(),
+        codexTokenActivityScanner: any CodexTokenActivityScanning = CodexTokenActivityScanner(),
+        tokenActivityScanObserver: ((TokenActivityScanDisposition) -> Void)? = nil,
+        performsAccountSwitchBackgroundRefreshes: Bool = true,
+        nowProvider: @escaping @Sendable () -> Date = { Date() },
         codexPlatformPresenceMonitor: CodexPlatformPresenceMonitor = CodexPlatformPresenceMonitor(),
         updateChecker: GitHubReleaseUpdateChecker = GitHubReleaseUpdateChecker()
     ) {
@@ -580,6 +664,7 @@ final class MenuBarStatusModel: ObservableObject {
         self.hookInstallManager = hookInstallManager
         self.diagnosticsExportManager = diagnosticsExportManager
         self.codexDesktopActivityMonitor = codexDesktopActivityMonitor
+        self.codexDesktopPollQueue = codexDesktopPollQueue
         self.codexAccountManager = codexAccountManager
         self.codexUsageSnapshotStore = codexUsageSnapshotStore
         self.codexCLIStatusProbe = codexCLIStatusProbe
@@ -589,6 +674,9 @@ final class MenuBarStatusModel: ObservableObject {
             credentialPersistence: codexAccountManager as? any CodexRefreshedCredentialPersisting
         )
         self.codexTokenActivityScanner = codexTokenActivityScanner
+        self.tokenActivityScanObserver = tokenActivityScanObserver
+        self.performsAccountSwitchBackgroundRefreshes = performsAccountSwitchBackgroundRefreshes
+        self.nowProvider = nowProvider
         self.codexPlatformPresenceMonitor = codexPlatformPresenceMonitor
         let openAICookieStore = KeychainSecretStore(service: "com.agentsignallight.openai-cookie")
         self.openAICookieStore = openAICookieStore
@@ -881,13 +969,31 @@ final class MenuBarStatusModel: ObservableObject {
         lastNotifiedUpdateVersion = UserDefaults.standard.string(forKey: "lastNotifiedUpdateVersion")
         snapshot = store.readSnapshot()
         let snapshotQuota = Self.latestQuota(in: snapshot)
+        let snapshotTokenObservation = Self.latestTokenUsageObservation(in: snapshot)
         let cachedQuota = Self.cachedLatestAgentQuota()
         latestAgentQuota = Self.latestQuota(snapshotQuota, isNewerThan: cachedQuota) ? snapshotQuota : cachedQuota
-        latestAgentTokenUsage = Self.latestTokenUsage(in: snapshot)
+        latestAgentTokenUsage = snapshotTokenObservation?.usage
             ?? latestAgentQuota?.tokenUsage
             ?? Self.cachedLatestAgentTokenUsage()
-        liveTokenUsageScanBaseline = latestAgentTokenUsage?.effectiveTotalTokens
-        lastObservedLiveTokenUsageTotal = latestAgentTokenUsage?.effectiveTotalTokens
+        latestAgentTokenUsageSessionID = snapshotTokenObservation?.sessionID
+        latestAgentTokenUsageUpdatedAt = snapshotTokenObservation?.updatedAt
+            ?? latestAgentQuota?.updatedAt
+        // The process-global UserDefaults value has no account or session
+        // identity. It may populate the UI briefly, but must never become a
+        // pending counter. Only the state snapshot can prove ownership here.
+        if let observation = snapshotTokenObservation,
+           let totalTokens = observation.usage.effectiveTotalTokens {
+            let key = Self.liveTokenSessionKey(observation.sessionID)
+            liveTokenCounters[key] = LiveTokenCounterState(
+                sessionID: observation.sessionID,
+                totalTokens: totalTokens,
+                scannedBaseline: 0,
+                day: Calendar.current.startOfDay(
+                    for: observation.updatedAt ?? snapshot.updatedAt ?? nowProvider()
+                ),
+                updatedAt: observation.updatedAt
+            )
+        }
         isLaunchAtLoginEnabled = launchAtLoginManager.isEnabled
         refreshCodexAccounts()
         hydrateCodexUsageSnapshotForCurrentAccount()
@@ -920,7 +1026,9 @@ final class MenuBarStatusModel: ObservableObject {
     func refreshCodexAccounts() {
         do {
             let state = try codexAccountManager.loadMetadataState()
-            applyCodexAccountState(state)
+            if applyCodexAccountState(state) {
+                prepareCodexUsageAfterAccountChange()
+            }
             codexAccountMessage = nil
             isCodexAccountMessageError = false
         } catch {
@@ -975,8 +1083,11 @@ final class MenuBarStatusModel: ObservableObject {
         isCodexAccountActionRunning = true
         do {
             let account = try codexAccountManager.saveCurrentAccount()
-            applyCodexAccountState(try codexAccountManager.loadState())
-            persistCodexUsageSnapshotForCurrentAccount()
+            if applyCodexAccountState(try codexAccountManager.loadState()) {
+                prepareCodexUsageAfterAccountChange()
+            } else {
+                persistCodexUsageSnapshotForCurrentAccount()
+            }
             codexAccountMessage = text("已保存 \(account.displayName)。", "Saved \(account.displayName).")
             isCodexAccountMessageError = false
             lastError = nil
@@ -1036,14 +1147,18 @@ final class MenuBarStatusModel: ObservableObject {
             let switchedAccount = try codexAccountManager.switchToAccount(id: account.id)
             applyCodexAccountState(try codexAccountManager.loadState())
             prepareCodexUsageAfterAccountChange()
-            refreshCodexProviderDetails(force: true)
+            if performsAccountSwitchBackgroundRefreshes {
+                refreshCodexProviderDetails(force: true)
+            }
             codexAccountMessage = text(
                 "已切换到 \(switchedAccount.displayName)。",
                 "Switched to \(switchedAccount.displayName)."
             )
             isCodexAccountMessageError = false
             lastError = nil
-            pollCodexRateLimitsIfNeeded(force: true)
+            if performsAccountSwitchBackgroundRefreshes {
+                pollCodexRateLimitsIfNeeded(force: true)
+            }
             refreshTokenActivityIfNeeded()
         } catch {
             let message = codexAccountActionFailureMessage(error)
@@ -1132,15 +1247,18 @@ final class MenuBarStatusModel: ObservableObject {
     func setMonitoringPaused(_ paused: Bool) {
         guard paused != isMonitoringPaused else { return }
         isMonitoringPaused = paused
+        invalidateCodexLiveObservationContext()
 
         if paused {
             invalidateCodexUsageRefresh()
             codexUsageRefreshPending = false
+            invalidateTokenActivityScan()
             startMonitoringPauseLightSequence()
             pollDesktopAppPresence()
         } else {
             reload()
             pollCodexRateLimitsIfNeeded(force: true)
+            refreshTokenActivityIfNeeded(force: true)
             pollDesktopAppPresence()
             startMonitoringResumeLightSequence()
         }
@@ -1447,13 +1565,28 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     func tokenActivityTotal(for window: FloatingSignalTokenBadgeWindow, now: Date = Date()) -> Int {
-        let scannedTotal = tokenActivityDays(for: window, now: now)
+        let scannedTotal = scannedTokenActivityTotal(
+            in: tokenActivityDays,
+            for: window,
+            now: now
+        )
+        let pendingTotal = pendingLiveTokenUsageTotal(for: window, now: now)
+        let accountedTotal = scannedTotal + pendingTotal
+        guard let floor = legacyUnscopedTokenFloor,
+              tokenActivityDayIsIncluded(floor.day, in: window, now: now)
+        else {
+            return accountedTotal
+        }
+
+        let scannedOnFloorDay = tokenActivityDays
+            .filter { Calendar.current.isDate($0.day, inSameDayAs: floor.day) }
             .map(\.totalTokens)
             .reduce(0, +)
-        guard tokenWindowIncludesToday(window, now: now) else {
-            return scannedTotal
-        }
-        return scannedTotal + liveTokenUsageSupplement
+        let pendingOnFloorDay = pendingLiveTokenUsageByDay(now: now)[
+            Calendar.current.startOfDay(for: floor.day),
+            default: 0
+        ]
+        return accountedTotal + max(0, floor.totalTokens - scannedOnFloorDay - pendingOnFloorDay)
     }
 
     func tokenActivityEstimatedCost(for window: FloatingSignalTokenBadgeWindow, now: Date = Date()) -> Double? {
@@ -1463,34 +1596,68 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private func tokenActivityDays(for window: FloatingSignalTokenBadgeWindow, now: Date) -> [CodexTokenActivityDay] {
+        tokenActivityDays(in: tokenActivityDays, for: window, now: now)
+    }
+
+    private func tokenActivityDays(
+        in days: [CodexTokenActivityDay],
+        for window: FloatingSignalTokenBadgeWindow,
+        now: Date
+    ) -> [CodexTokenActivityDay] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
 
         switch window {
         case .today:
-            return tokenActivityDays.filter { calendar.isDate($0.day, inSameDayAs: today) }
+            return days.filter { calendar.isDate($0.day, inSameDayAs: today) }
         case .last30Days:
             let startDay = calendar.date(byAdding: .day, value: -29, to: today) ?? today
-            return tokenActivityDays.filter {
+            return days.filter {
                 let day = calendar.startOfDay(for: $0.day)
                 return day >= startDay && day <= today
             }
         }
     }
 
-    private var liveTokenUsageSupplement: Int {
-        guard let latestTotal = latestAgentTokenUsage?.effectiveTotalTokens else {
-            return 0
-        }
-
-        let baseline = liveTokenUsageScanBaseline ?? 0
-        return max(0, latestTotal - baseline)
+    private func scannedTokenActivityTotal(
+        in days: [CodexTokenActivityDay],
+        for window: FloatingSignalTokenBadgeWindow,
+        now: Date
+    ) -> Int {
+        tokenActivityDays(in: days, for: window, now: now)
+            .map(\.totalTokens)
+            .reduce(0, +)
     }
 
-    private func tokenWindowIncludesToday(_ window: FloatingSignalTokenBadgeWindow, now: Date) -> Bool {
+    private func pendingLiveTokenUsageTotal(
+        for window: FloatingSignalTokenBadgeWindow,
+        now: Date
+    ) -> Int {
+        let counterTotal = liveTokenCounters.values.reduce(into: 0) { total, state in
+            guard tokenActivityDayIsIncluded(state.day, in: window, now: now) else { return }
+            total += max(0, state.totalTokens - state.scannedBaseline)
+        }
+        let carryTotal = unscannedLiveTokenCarries.values.reduce(into: 0) { total, carry in
+            guard tokenActivityDayIsIncluded(carry.day, in: window, now: now) else { return }
+            total += max(0, carry.totalTokens)
+        }
+        return counterTotal + carryTotal
+    }
+
+    private func tokenActivityDayIsIncluded(
+        _ date: Date,
+        in window: FloatingSignalTokenBadgeWindow,
+        now: Date
+    ) -> Bool {
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: date)
+        let today = calendar.startOfDay(for: now)
         switch window {
-        case .today, .last30Days:
-            return true
+        case .today:
+            return day == today
+        case .last30Days:
+            let startDay = calendar.date(byAdding: .day, value: -29, to: today) ?? today
+            return day >= startDay && day <= today
         }
     }
 
@@ -1597,12 +1764,15 @@ final class MenuBarStatusModel: ObservableObject {
     func setCodexDesktopMonitoringEnabled(_ enabled: Bool) {
         isCodexDesktopMonitoringEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isCodexDesktopMonitoringEnabled")
+        invalidateCodexLiveObservationContext()
         if enabled {
             codexDesktopActivityMonitor.reset()
             pollCodexDesktopActivity()
+            refreshTokenActivityIfNeeded(force: true)
         } else {
             invalidateCodexUsageRefresh()
             codexUsageRefreshPending = false
+            invalidateTokenActivityScan()
         }
         pollDesktopAppPresence()
     }
@@ -1751,10 +1921,20 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     func clearDebugUsageCache() {
+        invalidateCodexUsageRefresh()
+        codexUsageRefreshPending = false
+        invalidateCodexLiveObservationContext()
+        invalidateTokenActivityScan()
         clearLatestAgentQuotaCache()
         clearLatestAgentTokenUsageCache()
         clearTokenActivityCache()
         codexUsageSnapshotStore.removeAll()
+        let scanner = codexTokenActivityScanner
+        tokenActivityQueue.async {
+            // Serialize behind any in-flight scan so an old completion cannot
+            // recreate the files after the user cleared them.
+            scanner.clearCache()
+        }
         debugCacheMessage = text("已清除费用/用量缓存。", "Usage cache cleared.")
         appendDebugLog("usage cache cleared")
     }
@@ -2556,6 +2736,8 @@ final class MenuBarStatusModel: ObservableObject {
 
         isStateReloadInFlight = true
         let store = store
+        let observationGeneration = codexLiveObservationGeneration
+        let expectedAccountIdentity = codexUsageAccountIdentity(for: codexCurrentAccount)
 
         stateReloadQueue.async { [weak self] in
             let latestSnapshot = store.readSnapshot()
@@ -2565,14 +2747,27 @@ final class MenuBarStatusModel: ObservableObject {
                     guard let self else { return }
                     self.isStateReloadInFlight = false
 
+                    let mayApplyCodexObservations =
+                        self.codexLiveObservationGeneration == observationGeneration
+                        && self.codexUsageAccountIdentity(for: self.codexCurrentAccount) == expectedAccountIdentity
+                        && self.isCodexDesktopMonitoringEnabled
+                        && !self.isMonitoringPaused
+
                     if latestSnapshot != self.snapshot {
                         self.snapshot = latestSnapshot
-                        self.updateLatestAgentQuota(from: latestSnapshot)
+                        if mayApplyCodexObservations {
+                            self.updateLatestAgentQuota(from: latestSnapshot)
+                        }
                     }
 
                     if self.isStateReloadQueued {
                         self.isStateReloadQueued = false
                         self.enqueueStateReload()
+                    } else {
+                        // No background snapshot can still replay an older
+                        // exact observation. Retain only the current signature
+                        // for active state so the guard remains bounded.
+                        self.pruneExactLiveTokenObservationSignaturesAfterReload()
                     }
                 }
             }
@@ -2859,7 +3054,7 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
-    private func pollCodexDesktopActivity() {
+    func pollCodexDesktopActivity() {
         guard isCodexDesktopMonitoringEnabled, !isMonitoringPaused else { return }
         pollCodexRateLimitsIfNeeded()
         guard !isCodexDesktopPollInFlight else { return }
@@ -2867,66 +3062,101 @@ final class MenuBarStatusModel: ObservableObject {
         isCodexDesktopPollInFlight = true
         let monitor = codexDesktopActivityMonitor
         let store = store
+        let observationGeneration = codexLiveObservationGeneration
+        let expectedAccountIdentity = codexUsageAccountIdentity(for: codexCurrentAccount)
 
         codexDesktopPollQueue.async { [weak self] in
             let pollResult = monitor.pollResult()
-            var latestSnapshot: SignalSnapshot?
-            var latestQuota: AgentQuotaStatus?
-            var errorMessage: String?
-
-            if !pollResult.quotaUpdates.isEmpty {
-                do {
-                    for quotaUpdate in pollResult.quotaUpdates {
-                        if let currentLatestQuota = latestQuota {
-                            if quotaUpdate.quota.updatedAt > currentLatestQuota.updatedAt {
-                                latestQuota = quotaUpdate.quota
-                            }
-                        } else {
-                            latestQuota = quotaUpdate.quota
-                        }
-                        latestSnapshot = try store.applySessionQuota(
-                            quotaUpdate.quota,
-                            sessionID: quotaUpdate.sessionID,
-                            agent: quotaUpdate.agent,
-                            updatedAt: quotaUpdate.quota.updatedAt
-                        )
-                    }
-                } catch {
-                    errorMessage = error.localizedDescription
-                }
+            let quotaUpdates = pollResult.quotaUpdates.sorted {
+                $0.quota.updatedAt < $1.quota.updatedAt
             }
-
-            if !pollResult.activities.isEmpty {
-                do {
-                    for activity in pollResult.activities {
-                        latestSnapshot = try store.applySessionSignal(
-                            activity.signal,
-                            sessionID: activity.sessionID,
-                            agent: activity.agent,
-                            lastEvent: activity.event,
-                            updatedAt: activity.timestamp ?? Date()
-                        )
-                    }
-                } catch {
-                    errorMessage = error.localizedDescription
+            var activitySnapshot: SignalSnapshot?
+            var activityErrorMessage: String?
+            do {
+                for activity in pollResult.activities {
+                    activitySnapshot = try store.applySessionSignal(
+                        activity.signal,
+                        sessionID: activity.sessionID,
+                        agent: activity.agent,
+                        lastEvent: activity.event,
+                        updatedAt: activity.timestamp ?? Date()
+                    )
                 }
+            } catch {
+                activityErrorMessage = error.localizedDescription
             }
 
             DispatchQueue.main.async { [weak self] in
                 Task { @MainActor in
                     guard let self else { return }
                     self.isCodexDesktopPollInFlight = false
-                    guard self.isCodexDesktopMonitoringEnabled, !self.isMonitoringPaused else { return }
-                    if let latestQuota, self.shouldApplyLocalCodexQuotaUpdates {
-                        self.updateLatestAgentQuota(latestQuota)
-                        if let tokenUsage = latestQuota.tokenUsage {
-                            self.updateLatestAgentTokenUsage(tokenUsage)
-                            self.refreshTokenActivityIfNeeded()
+                    guard self.codexLiveObservationGeneration == observationGeneration,
+                          self.codexUsageAccountIdentity(for: self.codexCurrentAccount) == expectedAccountIdentity,
+                          self.isCodexDesktopMonitoringEnabled,
+                          !self.isMonitoringPaused
+                    else {
+                        return
+                    }
+                    // The monitor advances file cursors off-main, but account
+                    // ownership can change before that poll returns. Persist
+                    // only after validating its captured context; otherwise a
+                    // discarded old-account quota can re-enter via the shared
+                    // SignalState watcher and contaminate the new ledger.
+                    var latestSnapshot = activitySnapshot
+                    var errorMessage = activityErrorMessage
+                    do {
+                        for quotaUpdate in quotaUpdates {
+                            latestSnapshot = try store.applySessionQuota(
+                                quotaUpdate.quota,
+                                sessionID: quotaUpdate.sessionID,
+                                agent: quotaUpdate.agent,
+                                updatedAt: quotaUpdate.quota.updatedAt
+                            )
                         }
+                    } catch {
+                        errorMessage = error.localizedDescription
+                    }
+                    let applicableQuotaUpdates = quotaUpdates.filter {
+                        self.shouldApplyReplayedTokenObservation(
+                            sessionID: $0.sessionID,
+                            updatedAt: $0.quota.updatedAt,
+                            observationCursor: $0.tokenObservationCursor
+                        )
+                    }
+                    if let latestQuotaUpdate = applicableQuotaUpdates.max(by: {
+                        $0.quota.updatedAt < $1.quota.updatedAt
+                    }) {
+                        if self.shouldApplyLocalCodexQuotaUpdates {
+                            self.updateLatestAgentQuota(latestQuotaUpdate.quota)
+                        }
+                        for quotaUpdate in applicableQuotaUpdates {
+                            guard let tokenUsage = quotaUpdate.tokenActivityUsage ?? quotaUpdate.quota.tokenUsage else {
+                                continue
+                            }
+                            self.updateLatestAgentTokenUsage(
+                                tokenUsage,
+                                sessionID: quotaUpdate.sessionID,
+                                updatedAt: quotaUpdate.quota.updatedAt,
+                                observationCursor: quotaUpdate.tokenObservationCursor,
+                                stateShadowUsage: quotaUpdate.quota.tokenUsage,
+                                initialScannedBaseline: self.initialLiveTokenBaseline(
+                                    forForkedFromSessionID: quotaUpdate.forkedFromSessionID,
+                                    observedTotal: tokenUsage.effectiveTotalTokens,
+                                    lastTurnTotal: quotaUpdate.quota.tokenUsage?.effectiveTotalTokens
+                                )
+                            )
+                        }
+                        self.refreshTokenActivityIfNeeded()
                     }
                     if let latestSnapshot {
                         self.snapshot = latestSnapshot
-                        self.updateLatestAgentQuota(from: latestSnapshot)
+                        self.updateLatestAgentQuota(
+                            from: latestSnapshot,
+                            appliesTokenUsage: applicableQuotaUpdates.isEmpty
+                        )
+                    }
+                    if self.tokenActivityScanRetryPending {
+                        self.refreshTokenActivityIfNeeded()
                     }
                     self.lastError = errorMessage
                 }
@@ -2941,21 +3171,49 @@ final class MenuBarStatusModel: ObservableObject {
             return
         }
 
-        let now = Date()
-        if !force,
-           let lastTokenActivityScanAt,
-           now.timeIntervalSince(lastTokenActivityScanAt) < Self.tokenActivityRefreshInterval {
-            return
+        let now = nowProvider()
+        let wasRetryPending = tokenActivityScanRetryPending
+        if !force, let lastTokenActivityScanAt {
+            let refreshInterval = wasRetryPending
+                ? tokenActivityPendingRetryInterval
+                : Self.tokenActivityRefreshInterval
+            if now.timeIntervalSince(lastTokenActivityScanAt) < refreshInterval {
+                return
+            }
         }
         guard !isTokenActivityScanInFlight else { return }
 
+        tokenActivityScanRetryPending = false
+        if force || !wasRetryPending {
+            tokenActivityScanRetryAttempt = 0
+        }
+        startTokenActivityScan(
+            now: now,
+            allowsImmediateRetry: force || !wasRetryPending
+        )
+    }
+
+    private var tokenActivityPendingRetryInterval: TimeInterval {
+        let exponent = min(max(tokenActivityScanRetryAttempt - 1, 0), 4)
+        let multiplier = 1 << exponent
+        return min(
+            Self.tokenActivityRefreshInterval,
+            Self.tokenActivityRetryBaseInterval * Double(multiplier)
+        )
+    }
+
+    private func startTokenActivityScan(
+        now: Date,
+        allowsImmediateRetry: Bool
+    ) {
         isTokenActivityScanInFlight = true
         isTokenActivityLoading = true
         lastTokenActivityScanAt = now
         tokenActivityScanGeneration += 1
         let scanGeneration = tokenActivityScanGeneration
-        let expectedAccountFingerprint = codexCurrentAccount?.authFingerprint
+        let expectedAccountIdentity = codexUsageAccountIdentity(for: codexCurrentAccount)
         let scanner = codexTokenActivityScannerForCurrentAccount()
+        let liveTokenUsageRevisionAtStart = liveTokenUsageRevision
 
         tokenActivityQueue.async { [weak self] in
             let cachedDays = scanner.cachedDailyActivity(now: now, days: 30)
@@ -2965,61 +3223,574 @@ final class MenuBarStatusModel: ObservableObject {
                         guard let self,
                               self.isTokenActivityScanInFlight,
                               self.tokenActivityScanGeneration == scanGeneration,
-                              self.codexCurrentAccount?.authFingerprint == expectedAccountFingerprint,
+                              self.codexUsageAccountIdentity(for: self.codexCurrentAccount) == expectedAccountIdentity,
                               self.isCodexDesktopMonitoringEnabled,
                               !self.isMonitoringPaused
                         else {
                             return
                         }
 
+                        // A disk cache is only a bootstrap. Do not guess that a
+                        // cached aggregate contains a pending per-session counter:
+                        // without an event watermark that would double-count it.
+                        guard self.tokenActivityDays.isEmpty else { return }
+                        let cachedByDay = self.tokenActivityTotalsByDay(
+                            cachedDays,
+                            now: now
+                        )
+                        let pendingByDay = self.pendingLiveTokenUsageByDay(now: now)
+                        let hasAmbiguousOverlap = cachedByDay.contains { day, cachedTotal in
+                            cachedTotal > 0 && pendingByDay[day, default: 0] > 0
+                        }
+                        guard !hasAmbiguousOverlap else { return }
                         self.tokenActivityDays = cachedDays
                         self.persistCodexUsageSnapshotForCurrentAccount()
                     }
                 }
-
-                if !force {
-                    DispatchQueue.main.async { [weak self] in
-                        Task { @MainActor in
-                            guard let self else { return }
-                            guard self.tokenActivityScanGeneration == scanGeneration,
-                                  self.codexCurrentAccount?.authFingerprint == expectedAccountFingerprint
-                            else {
-                                return
-                            }
-                            self.isTokenActivityScanInFlight = false
-                            self.isTokenActivityLoading = false
-                            self.liveTokenUsageScanBaseline = self.latestAgentTokenUsage?.effectiveTotalTokens
-                            self.lastObservedLiveTokenUsageTotal = self.latestAgentTokenUsage?.effectiveTotalTokens
-                        }
-                    }
-                    return
-                }
             }
 
-            let days = scanner.scanDailyActivity(now: now, days: 30)
+            // Cached days are only a fast UI bootstrap. Every admitted refresh must
+            // continue into the incremental scan so today's appended events are found.
+            let scanResult = scanner.scanDailyActivityResult(now: now, days: 30, progress: nil)
 
             DispatchQueue.main.async { [weak self] in
                 Task { @MainActor in
                     guard let self else { return }
-                    guard self.tokenActivityScanGeneration == scanGeneration,
-                          self.codexCurrentAccount?.authFingerprint == expectedAccountFingerprint
-                    else {
+                    guard self.tokenActivityScanGeneration == scanGeneration else {
+                        self.tokenActivityScanObserver?(.discardedStaleContext)
                         return
                     }
-                    self.isTokenActivityScanInFlight = false
-                    self.isTokenActivityLoading = false
-                    self.liveTokenUsageScanBaseline = self.latestAgentTokenUsage?.effectiveTotalTokens
+                    guard self.codexUsageAccountIdentity(for: self.codexCurrentAccount) == expectedAccountIdentity else {
+                        self.isTokenActivityScanInFlight = false
+                        self.isTokenActivityLoading = false
+                        self.tokenActivityScanRetryPending = false
+                        self.tokenActivityScanRetryAttempt = 0
+                        self.tokenActivityScanObserver?(.discardedStaleContext)
+                        return
+                    }
                     guard self.isCodexDesktopMonitoringEnabled,
                           !self.isMonitoringPaused
                     else {
+                        self.isTokenActivityScanInFlight = false
+                        self.isTokenActivityLoading = false
+                        self.tokenActivityScanRetryPending = false
+                        self.tokenActivityScanRetryAttempt = 0
+                        self.tokenActivityScanObserver?(.discardedInactive)
                         return
                     }
 
-                    self.tokenActivityDays = days
+                    guard self.liveTokenUsageRevision == liveTokenUsageRevisionAtStart else {
+                        self.finishUnabsorbedTokenActivityScan(
+                            allowsImmediateRetry: allowsImmediateRetry
+                        )
+                        return
+                    }
+
+                    guard Calendar.current.isDate(now, inSameDayAs: self.nowProvider()) else {
+                        self.finishUnabsorbedTokenActivityScan(
+                            allowsImmediateRetry: allowsImmediateRetry
+                        )
+                        return
+                    }
+
+                    guard self.tokenActivityScanCanAbsorbCurrentUsage(scanResult, now: now) else {
+                        // Compare every day in the scan window. A today-only guard
+                        // would move yesterday's pending usage across midnight.
+                        self.finishUnabsorbedTokenActivityScan(
+                            allowsImmediateRetry: allowsImmediateRetry
+                        )
+                        return
+                    }
+
+                    self.reconcileLiveTokenUsage(
+                        afterScanStartedAt: now,
+                        watermarks: scanResult.watermarks
+                    )
+                    self.tokenActivityDays = scanResult.days
+                    self.isTokenActivityScanInFlight = false
+                    self.isTokenActivityLoading = false
+                    self.tokenActivityScanRetryPending = false
+                    self.tokenActivityScanRetryAttempt = 0
                     self.persistCodexUsageSnapshotForCurrentAccount()
+                    self.tokenActivityScanObserver?(.applied)
                 }
             }
         }
+    }
+
+    private func finishUnabsorbedTokenActivityScan(allowsImmediateRetry: Bool) {
+        isTokenActivityScanInFlight = false
+        if allowsImmediateRetry {
+            tokenActivityScanRetryPending = false
+            tokenActivityScanObserver?(.retryingAfterUnabsorbedUsage)
+            startTokenActivityScan(now: nowProvider(), allowsImmediateRetry: false)
+        } else {
+            isTokenActivityLoading = false
+            tokenActivityScanRetryPending = true
+            tokenActivityScanRetryAttempt += 1
+            // Backoff begins when the failed scan finishes. Long scans must not
+            // immediately start another full disk walk.
+            lastTokenActivityScanAt = nowProvider()
+            tokenActivityScanObserver?(.deferredWithRetryPending)
+        }
+    }
+
+    private func tokenActivityScanCanAbsorbCurrentUsage(
+        _ result: CodexTokenActivityScanResult,
+        now: Date
+    ) -> Bool {
+        guard result.isComplete else { return false }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let startDay = calendar.date(byAdding: .day, value: -29, to: today) ?? today
+        guard liveTokenCounters.values.allSatisfy({ state in
+            let disposition = tokenObservationDisposition(
+                sessionID: state.sessionID,
+                totalTokens: state.totalTokens,
+                updatedAt: state.updatedAt,
+                cursor: state.observationCursor,
+                watermarks: result.watermarks
+            )
+            // A quarantine tombstone rejects the entire source generation,
+            // including observations with a future or malformed timestamp.
+            if disposition == .rejected { return true }
+            let day = calendar.startOfDay(for: state.day)
+            let pending = max(0, state.totalTokens - state.scannedBaseline)
+            if pending == 0 || day < startDay { return true }
+            guard day <= today,
+                  state.updatedAt.map({ $0 <= now }) ?? true
+            else {
+                return false
+            }
+            return state.sessionID == nil || disposition == .covered
+        }) else {
+            return false
+        }
+        guard unscannedLiveTokenCarries.values.allSatisfy({ carry in
+            let disposition = tokenObservationDisposition(
+                sessionID: carry.sessionID,
+                totalTokens: nil,
+                updatedAt: carry.updatedAt,
+                cursor: carry.observationCursor,
+                watermarks: result.watermarks
+            )
+            if disposition == .rejected { return true }
+            let day = calendar.startOfDay(for: carry.day)
+            if carry.totalTokens == 0 || day < startDay { return true }
+            guard day <= today,
+                  carry.updatedAt.map({ $0 <= now }) ?? true
+            else {
+                return false
+            }
+            return carry.sessionID == nil || disposition == .covered
+        }) else {
+            return false
+        }
+        // Once every identified live observation is proven present in the
+        // authoritative scan, the historical aggregate may legitimately move
+        // down (deleted/truncated JSONL, pricing/parser correction). Preserve a
+        // lower bound only for legacy observations that have no session identity
+        // and therefore cannot be matched to a scanner watermark.
+        let existingTotals = tokenActivityTotalsByDay(tokenActivityDays, now: now)
+        var unidentifiedPendingByDay: [Date: Int] = [:]
+        for state in liveTokenCounters.values where state.sessionID == nil {
+            let day = calendar.startOfDay(for: state.day)
+            guard tokenActivityDayIsIncluded(day, in: .last30Days, now: now) else { continue }
+            unidentifiedPendingByDay[day, default: 0] += max(
+                0,
+                state.totalTokens - state.scannedBaseline
+            )
+        }
+        for carry in unscannedLiveTokenCarries.values where carry.sessionID == nil {
+            let day = calendar.startOfDay(for: carry.day)
+            guard tokenActivityDayIsIncluded(day, in: .last30Days, now: now) else { continue }
+            unidentifiedPendingByDay[day, default: 0] += max(0, carry.totalTokens)
+        }
+        var lowerBounds: [Date: Int] = [:]
+        for (day, pendingTotal) in unidentifiedPendingByDay {
+            lowerBounds[day] = existingTotals[day, default: 0] + pendingTotal
+        }
+        if let floor = legacyUnscopedTokenFloor,
+           tokenActivityDayIsIncluded(floor.day, in: .last30Days, now: now) {
+            let day = calendar.startOfDay(for: floor.day)
+            lowerBounds[day] = max(lowerBounds[day, default: 0], floor.totalTokens)
+        }
+        let candidateTotals = tokenActivityTotalsByDay(result.days, now: now)
+        return lowerBounds.allSatisfy { day, lowerBound in
+            candidateTotals[day, default: 0] >= lowerBound
+        }
+    }
+
+    private func tokenActivityTotalsByDay(
+        _ days: [CodexTokenActivityDay],
+        now: Date
+    ) -> [Date: Int] {
+        let calendar = Calendar.current
+        return days.reduce(into: [:]) { totals, activity in
+            let day = calendar.startOfDay(for: activity.day)
+            guard tokenActivityDayIsIncluded(day, in: .last30Days, now: now) else { return }
+            totals[day, default: 0] += max(0, activity.totalTokens)
+        }
+    }
+
+    private func pendingLiveTokenUsageByDay(now: Date) -> [Date: Int] {
+        let calendar = Calendar.current
+        var totals: [Date: Int] = [:]
+        for state in liveTokenCounters.values {
+            let day = calendar.startOfDay(for: state.day)
+            guard tokenActivityDayIsIncluded(day, in: .last30Days, now: now) else { continue }
+            totals[day, default: 0] += max(0, state.totalTokens - state.scannedBaseline)
+        }
+        for carry in unscannedLiveTokenCarries.values {
+            let day = calendar.startOfDay(for: carry.day)
+            guard tokenActivityDayIsIncluded(day, in: .last30Days, now: now) else { continue }
+            totals[day, default: 0] += max(0, carry.totalTokens)
+        }
+        return totals
+    }
+
+    private func reconcileLiveTokenUsage(
+        afterScanStartedAt scanStartedAt: Date,
+        watermarks: [CodexTokenActivityScanWatermark]
+    ) {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: scanStartedAt)
+        let startDay = calendar.date(byAdding: .day, value: -29, to: today) ?? today
+
+        for key in Array(liveTokenCounters.keys) {
+            guard var state = liveTokenCounters[key] else { continue }
+            let disposition = tokenObservationDisposition(
+                sessionID: state.sessionID,
+                totalTokens: state.totalTokens,
+                updatedAt: state.updatedAt,
+                cursor: state.observationCursor,
+                watermarks: watermarks
+            )
+            if disposition == .rejected {
+                if let frontier = authoritativeLiveTokenFrontier(
+                    sessionID: state.sessionID,
+                    cursor: state.observationCursor,
+                    watermarks: watermarks
+                ) {
+                    liveTokenCounters[key] = liveTokenCounterState(
+                        sessionID: state.sessionID,
+                        frontier: frontier,
+                        fallbackDate: scanStartedAt
+                    )
+                } else {
+                    liveTokenCounters.removeValue(forKey: key)
+                }
+                continue
+            }
+            let day = calendar.startOfDay(for: state.day)
+            if day < startDay {
+                liveTokenCounters.removeValue(forKey: key)
+            } else if day <= today,
+                      state.updatedAt.map({ $0 <= scanStartedAt }) ?? true,
+                      state.sessionID == nil || disposition == .covered {
+                if let frontier = authoritativeLiveTokenFrontier(
+                    sessionID: state.sessionID,
+                    cursor: state.observationCursor,
+                    watermarks: watermarks
+                ) {
+                    liveTokenCounters[key] = liveTokenCounterState(
+                        sessionID: state.sessionID,
+                        frontier: frontier,
+                        fallbackDate: scanStartedAt
+                    )
+                } else {
+                    state.scannedBaseline = state.totalTokens
+                    liveTokenCounters[key] = state
+                }
+            }
+        }
+        unscannedLiveTokenCarries = unscannedLiveTokenCarries.filter { _, carry in
+            let disposition = tokenObservationDisposition(
+                sessionID: carry.sessionID,
+                totalTokens: nil,
+                updatedAt: carry.updatedAt,
+                cursor: carry.observationCursor,
+                watermarks: watermarks
+            )
+            if disposition == .rejected { return false }
+            let normalizedDay = calendar.startOfDay(for: carry.day)
+            if normalizedDay < startDay { return false }
+            if normalizedDay > today { return true }
+            guard carry.sessionID != nil else { return false }
+            return disposition != .covered
+        }
+        legacyUnscopedTokenFloor = nil
+        liveTokenScanWatermarks = retainedLiveTokenScanWatermarks(from: watermarks)
+        liveTokenUsageScanCutoff = scanStartedAt
+    }
+
+    private func retainedLiveTokenScanWatermarks(
+        from watermarks: [CodexTokenActivityScanWatermark]
+    ) -> [CodexTokenActivityScanWatermark] {
+        // Keep one scanned frontier per file generation and session. A disk scan
+        // can run ahead of the desktop poll by several token lines; retaining
+        // only the poll's current exact cursor loses that lead and double-counts
+        // each delayed line. Do not filter a newly discovered generation by the
+        // previous scan cutoff: a delayed poll may legitimately replay its older
+        // timestamp after this scan has already committed it.
+        var frontierByGenerationAndSession: [String: CodexTokenActivityScanWatermark] = [:]
+        for watermark in watermarks {
+            let normalizedSessionID = watermark.sessionID
+                .map(Self.normalizedLiveTokenSessionID) ?? ""
+            let frontierKey = "\(watermark.sourceGeneration)\u{0}\(normalizedSessionID)"
+            if let existing = frontierByGenerationAndSession[frontierKey],
+               existing.endOffset >= watermark.endOffset {
+                continue
+            }
+            frontierByGenerationAndSession[frontierKey] = watermark
+        }
+        return Array(frontierByGenerationAndSession.values)
+    }
+
+    private func tokenObservationDisposition(
+        sessionID: String?,
+        totalTokens: Int?,
+        updatedAt: Date?,
+        cursor: CodexTokenObservationCursor?,
+        watermarks: [CodexTokenActivityScanWatermark]
+    ) -> TokenObservationDisposition {
+        if let cursor {
+            let matchingWatermarks = watermarks.filter { watermark in
+                guard watermark.sourceGeneration == cursor.sourceGeneration
+                else {
+                    return false
+                }
+                if let sessionID {
+                    guard watermark.sessionID.map(Self.normalizedLiveTokenSessionID)
+                        == Self.normalizedLiveTokenSessionID(sessionID)
+                    else {
+                        return false
+                    }
+                }
+                return true
+            }
+            if sessionID != nil,
+               matchingWatermarks.contains(where: { watermark in
+                   guard watermark.endOffset == .max else { return false }
+                   switch sourceSnapshotRelation(watermark: watermark, cursor: cursor) {
+                   case .same, .lhsNewer, .legacy:
+                       return true
+                   case .lhsOlder, .incomparable:
+                       return false
+                   }
+               }) {
+                return .rejected
+            }
+            let isCovered = matchingWatermarks.contains { watermark in
+                guard watermark.endOffset != .max else { return false }
+                let isExactLine = watermark.endOffset == cursor.endOffset
+                    && watermark.lineFingerprint == cursor.lineFingerprint
+                switch sourceSnapshotRelation(watermark: watermark, cursor: cursor) {
+                case .lhsNewer:
+                    // A complete scan of a later ctime snapshot supersedes any
+                    // observation from the older content epoch.
+                    return true
+                case .lhsOlder, .incomparable:
+                    // Do not let an old scan's greater byte offset cross a
+                    // same-inode rewrite. An exact line remains valid evidence.
+                    return isExactLine
+                case .same, .legacy:
+                    break
+                }
+                // Codex moves completed rollouts from `sessions` to
+                // `archived_sessions`. The stable device/inode generation and
+                // exact line fingerprint survive that rename; the path does not.
+                if watermark.endOffset > cursor.endOffset {
+                    return true
+                }
+                return isExactLine
+            }
+            return isCovered ? .covered : .unmatched
+        }
+
+        guard let sessionID, let updatedAt else { return .unmatched }
+        let normalizedSessionID = Self.normalizedLiveTokenSessionID(sessionID)
+        let isCovered = watermarks.contains { watermark in
+            guard watermark.endOffset != .max else { return false }
+            guard watermark.sessionID.map(Self.normalizedLiveTokenSessionID) == normalizedSessionID,
+                  let watermarkTimestamp = watermark.eventTimestamp
+            else {
+                return false
+            }
+            if watermarkTimestamp > updatedAt { return true }
+            return watermarkTimestamp == updatedAt
+                && totalTokens != nil
+                && watermark.totalTokens == totalTokens
+        }
+        return isCovered ? .covered : .unmatched
+    }
+
+    private func sourceSnapshotRelation(
+        watermark: CodexTokenActivityScanWatermark,
+        cursor: CodexTokenObservationCursor
+    ) -> SourceSnapshotRelation {
+        Self.sourceSnapshotRelation(
+            lhsChangeTimeNanoseconds: watermark.sourceChangeTimeNanoseconds,
+            lhsStatFingerprint: watermark.sourceStatFingerprint,
+            rhsChangeTimeNanoseconds: cursor.sourceChangeTimeNanoseconds,
+            rhsStatFingerprint: cursor.sourceStatFingerprint
+        )
+    }
+
+    private static func sourceSnapshotRelation(
+        lhsChangeTimeNanoseconds: Int64?,
+        lhsStatFingerprint: Int64?,
+        rhsChangeTimeNanoseconds: Int64?,
+        rhsStatFingerprint: Int64?
+    ) -> SourceSnapshotRelation {
+        if let lhsChangeTimeNanoseconds, let rhsChangeTimeNanoseconds {
+            if lhsChangeTimeNanoseconds > rhsChangeTimeNanoseconds { return .lhsNewer }
+            if lhsChangeTimeNanoseconds < rhsChangeTimeNanoseconds { return .lhsOlder }
+            if let lhsStatFingerprint, let rhsStatFingerprint,
+               lhsStatFingerprint != rhsStatFingerprint {
+                return .incomparable
+            }
+            return .same
+        }
+        if let lhsStatFingerprint, let rhsStatFingerprint {
+            return lhsStatFingerprint == rhsStatFingerprint ? .same : .incomparable
+        }
+        if lhsChangeTimeNanoseconds == nil,
+           rhsChangeTimeNanoseconds == nil,
+           lhsStatFingerprint == nil,
+           rhsStatFingerprint == nil {
+            return .legacy
+        }
+        return .incomparable
+    }
+
+    private static func liveTokenCursorIsStaleOrConflicting(
+        _ cursor: CodexTokenObservationCursor,
+        totalTokens: Int,
+        comparedWith previousCursor: CodexTokenObservationCursor,
+        previousTotalTokens: Int
+    ) -> Bool {
+        let relation = sourceSnapshotRelation(
+            lhsChangeTimeNanoseconds: cursor.sourceChangeTimeNanoseconds,
+            lhsStatFingerprint: cursor.sourceStatFingerprint,
+            rhsChangeTimeNanoseconds: previousCursor.sourceChangeTimeNanoseconds,
+            rhsStatFingerprint: previousCursor.sourceStatFingerprint
+        )
+        switch relation {
+        case .lhsOlder:
+            return true
+        case .lhsNewer:
+            return false
+        case .same, .legacy:
+            return cursor.endOffset < previousCursor.endOffset
+                || (cursor.endOffset == previousCursor.endOffset
+                    && (cursor.lineFingerprint != previousCursor.lineFingerprint
+                        || totalTokens != previousTotalTokens))
+        case .incomparable:
+            // A lower offset may be the first complete line of a rewritten
+            // content epoch. Only an exact-offset conflict is certainly stale.
+            return cursor.endOffset == previousCursor.endOffset
+                && (cursor.lineFingerprint != previousCursor.lineFingerprint
+                    || totalTokens != previousTotalTokens)
+        }
+    }
+
+    private func authoritativeLiveTokenFrontier(
+        sessionID: String?,
+        cursor: CodexTokenObservationCursor?,
+        watermarks: [CodexTokenActivityScanWatermark]
+    ) -> CodexTokenActivityScanWatermark? {
+        guard let sessionID else { return nil }
+        let normalizedSessionID = Self.normalizedLiveTokenSessionID(sessionID)
+        let numeric = watermarks.filter { watermark in
+            watermark.endOffset != .max
+                && watermark.totalTokens != nil
+                && watermark.sessionID.map(Self.normalizedLiveTokenSessionID) == normalizedSessionID
+        }
+        let sameGeneration = cursor.map { cursor in
+            numeric.filter { $0.sourceGeneration == cursor.sourceGeneration }
+        } ?? []
+        let candidates = sameGeneration.isEmpty ? numeric : sameGeneration
+        return candidates.max { lhs, rhs in
+            if lhs.sourceGeneration == rhs.sourceGeneration {
+                switch Self.sourceSnapshotRelation(
+                    lhsChangeTimeNanoseconds: lhs.sourceChangeTimeNanoseconds,
+                    lhsStatFingerprint: lhs.sourceStatFingerprint,
+                    rhsChangeTimeNanoseconds: rhs.sourceChangeTimeNanoseconds,
+                    rhsStatFingerprint: rhs.sourceStatFingerprint
+                ) {
+                case .lhsOlder:
+                    return true
+                case .lhsNewer:
+                    return false
+                case .same, .legacy:
+                    if lhs.endOffset != rhs.endOffset {
+                        return lhs.endOffset < rhs.endOffset
+                    }
+                case .incomparable:
+                    break
+                }
+            }
+            let lhsDate = lhs.eventTimestamp ?? .distantPast
+            let rhsDate = rhs.eventTimestamp ?? .distantPast
+            if lhsDate != rhsDate { return lhsDate < rhsDate }
+            if lhs.sourceGeneration == rhs.sourceGeneration,
+               lhs.endOffset != rhs.endOffset {
+                return lhs.endOffset < rhs.endOffset
+            }
+            return lhs.sourceID < rhs.sourceID
+        }
+    }
+
+    private func liveTokenCounterState(
+        sessionID: String?,
+        frontier: CodexTokenActivityScanWatermark,
+        fallbackDate: Date
+    ) -> LiveTokenCounterState {
+        let totalTokens = max(0, frontier.totalTokens ?? 0)
+        let observedAt = frontier.eventTimestamp ?? fallbackDate
+        return LiveTokenCounterState(
+            sessionID: sessionID,
+            totalTokens: totalTokens,
+            scannedBaseline: totalTokens,
+            day: Calendar.current.startOfDay(for: observedAt),
+            updatedAt: frontier.eventTimestamp,
+            observationCursor: CodexTokenObservationCursor(
+                sourceID: frontier.sourceID,
+                sourceGeneration: frontier.sourceGeneration,
+                sourceStatFingerprint: frontier.sourceStatFingerprint,
+                sourceChangeTimeNanoseconds: frontier.sourceChangeTimeNanoseconds,
+                endOffset: frontier.endOffset,
+                lineFingerprint: frontier.lineFingerprint
+            )
+        )
+    }
+
+    private func scannedNumericBaselineForUncoveredObservation(
+        sessionID: String?,
+        totalTokens: Int,
+        cursor: CodexTokenObservationCursor?,
+        watermarks: [CodexTokenActivityScanWatermark]
+    ) -> Int? {
+        guard let cursor,
+              let frontier = authoritativeLiveTokenFrontier(
+                  sessionID: sessionID,
+                  cursor: cursor,
+                  watermarks: watermarks
+              ),
+              let frontierTotal = frontier.totalTokens,
+              totalTokens >= frontierTotal
+        else { return nil }
+        let normalizedSessionID = sessionID.map(Self.normalizedLiveTokenSessionID)
+        let generationHasScannedPrefix = watermarks.contains { watermark in
+            guard watermark.endOffset != .max,
+                  watermark.sourceGeneration == cursor.sourceGeneration,
+                  watermark.endOffset < cursor.endOffset
+            else { return false }
+            guard let normalizedSessionID else { return true }
+            return watermark.sessionID.map(Self.normalizedLiveTokenSessionID) == normalizedSessionID
+        }
+        return generationHasScannedPrefix ? max(0, frontierTotal) : nil
     }
 
     func refreshCodexUsageForCurrentAccount(force: Bool = false) {
@@ -4154,16 +4925,63 @@ final class MenuBarStatusModel: ObservableObject {
         )
     }
 
-    private func updateLatestAgentQuota(from snapshot: SignalSnapshot) {
+    private func updateLatestAgentQuota(
+        from snapshot: SignalSnapshot,
+        appliesTokenUsage: Bool = true
+    ) {
         if shouldApplyLocalCodexQuotaUpdates,
            let quota = Self.latestQuota(in: snapshot),
            Self.latestQuota(quota, isNewerThan: latestAgentQuota) {
             updateLatestAgentQuota(quota)
         }
 
-        if let tokenUsage = Self.latestTokenUsage(in: snapshot) ?? latestAgentQuota?.tokenUsage {
-            updateLatestAgentTokenUsage(tokenUsage)
+        guard appliesTokenUsage else { return }
+        let observations = Self.tokenUsageObservations(in: snapshot)
+        if observations.isEmpty,
+           let tokenUsage = latestAgentQuota?.tokenUsage,
+           shouldApplyReplayedTokenObservation(
+               sessionID: nil,
+               updatedAt: latestAgentQuota?.updatedAt
+           ) {
+            updateLatestAgentTokenUsage(
+                tokenUsage,
+                sessionID: nil,
+                updatedAt: latestAgentQuota?.updatedAt
+            )
+        } else {
+            for observation in observations where shouldApplyReplayedTokenObservation(
+                sessionID: observation.sessionID,
+                updatedAt: observation.updatedAt
+            ) {
+                updateLatestAgentTokenUsage(
+                    observation.usage,
+                    sessionID: observation.sessionID,
+                    updatedAt: observation.updatedAt
+                )
+            }
         }
+    }
+
+    private func shouldApplyReplayedTokenObservation(
+        sessionID: String?,
+        updatedAt: Date?,
+        observationCursor: CodexTokenObservationCursor? = nil
+    ) -> Bool {
+        // Without a managed account there is no cross-account activation
+        // boundary to enforce. Existing state or an exact local cursor is
+        // enough; cursor-less replay still needs a known freshness date.
+        if codexCurrentAccount == nil {
+            if liveTokenCounters[Self.liveTokenSessionKey(sessionID)] != nil
+                || observationCursor != nil {
+                return true
+            }
+        }
+        guard let startedAt = codexAccountObservationStartedAt,
+              let updatedAt
+        else {
+            return false
+        }
+        return updatedAt >= startedAt
     }
 
     private func updateLatestAgentQuota(_ quota: AgentQuotaStatus) {
@@ -4187,8 +5005,15 @@ final class MenuBarStatusModel: ObservableObject {
 
     private func clearLatestAgentTokenUsageCache() {
         latestAgentTokenUsage = nil
-        liveTokenUsageScanBaseline = nil
-        lastObservedLiveTokenUsageTotal = nil
+        latestAgentTokenUsageSessionID = nil
+        latestAgentTokenUsageUpdatedAt = nil
+        liveTokenCounters.removeAll()
+        unscannedLiveTokenCarries.removeAll()
+        legacyUnscopedTokenFloor = nil
+        liveTokenUsageScanCutoff = nil
+        liveTokenScanWatermarks.removeAll()
+        recentExactLiveTokenObservationSignatures.removeAll()
+        liveTokenUsageRevision &+= 1
         UserDefaults.standard.removeObject(forKey: Self.cachedLatestAgentTokenUsageKey)
     }
 
@@ -4196,6 +5021,15 @@ final class MenuBarStatusModel: ObservableObject {
         tokenActivityDays = []
         lastTokenActivityScanAt = nil
         isTokenActivityLoading = false
+    }
+
+    private func invalidateTokenActivityScan() {
+        tokenActivityScanGeneration &+= 1
+        isTokenActivityScanInFlight = false
+        isTokenActivityLoading = false
+        tokenActivityScanRetryPending = false
+        tokenActivityScanRetryAttempt = 0
+        lastTokenActivityScanAt = nil
     }
 
     private func ensureDebugLogFileExists() {
@@ -4227,15 +5061,20 @@ final class MenuBarStatusModel: ObservableObject {
     private func prepareCodexUsageAfterAccountChange() {
         invalidateCodexUsageRefresh()
         codexUsageRefreshPending = false
-        tokenActivityScanGeneration += 1
-        isTokenActivityScanInFlight = false
+        invalidateCodexLiveObservationContext()
+        invalidateTokenActivityScan()
         clearLatestAgentQuotaCache()
         clearLatestAgentTokenUsageCache()
         clearTokenActivityCache()
         hydrateCodexUsageSnapshotForCurrentAccount()
     }
 
-    private func codexTokenActivityScannerForCurrentAccount() -> CodexTokenActivityScanner {
+    private func invalidateCodexLiveObservationContext() {
+        codexLiveObservationGeneration &+= 1
+        codexAccountObservationStartedAt = nowProvider()
+    }
+
+    private func codexTokenActivityScannerForCurrentAccount() -> any CodexTokenActivityScanning {
         codexTokenActivityScanner
     }
 
@@ -4251,7 +5090,7 @@ final class MenuBarStatusModel: ObservableObject {
         latestCodexResetCredits = snapshot.resetCredits
         codexUsageFetchState = snapshot.usageFetchState
         codexResetCreditsFetchState = snapshot.resetCreditsFetchState
-        let now = Date()
+        let now = nowProvider()
         if latestAgentQuota != nil,
            let lastSuccessfulAt = codexUsageFetchState?.lastSuccessfulAt,
            now.timeIntervalSince(lastSuccessfulAt) >= Self.codexRateLimitRefreshInterval {
@@ -4262,15 +5101,151 @@ final class MenuBarStatusModel: ObservableObject {
            now.timeIntervalSince(lastSuccessfulAt) >= Self.codexRateLimitRefreshInterval {
             codexResetCreditsFetchState?.isStale = true
         }
-        if snapshot.tokenActivityCacheVersion == CodexTokenActivityScanner.currentCacheVersion {
-            latestAgentTokenUsage = snapshot.tokenUsage ?? snapshot.quota?.tokenUsage
-            tokenActivityDays = snapshot.tokenActivityDays
+        let hasCompatibleActivityCache =
+            snapshot.tokenActivityCacheVersion == CodexTokenActivityScanner.currentCacheVersion
+        latestAgentTokenUsage = snapshot.tokenUsage ?? snapshot.quota?.tokenUsage
+        tokenActivityDays = hasCompatibleActivityCache ? snapshot.tokenActivityDays : []
+        liveTokenCounters.removeAll()
+        unscannedLiveTokenCarries.removeAll()
+        recentExactLiveTokenObservationSignatures.removeAll()
+        legacyUnscopedTokenFloor = hasCompatibleActivityCache
+            ? snapshot.legacyUnscopedTokenFloor.map {
+                LegacyUnscopedTokenFloor(
+                    totalTokens: max(0, $0.totalTokens),
+                    day: Calendar.current.startOfDay(for: $0.day)
+                )
+            }
+            : nil
+        liveTokenUsageScanCutoff = if hasCompatibleActivityCache,
+                                      let cutoff = snapshot.liveTokenUsageScanCutoff,
+                                      cutoff <= now {
+            cutoff
         } else {
-            latestAgentTokenUsage = nil
-            tokenActivityDays = []
+            nil
         }
-        liveTokenUsageScanBaseline = latestAgentTokenUsage?.effectiveTotalTokens
-        lastObservedLiveTokenUsageTotal = latestAgentTokenUsage?.effectiveTotalTokens
+        liveTokenScanWatermarks = hasCompatibleActivityCache
+            ? (snapshot.liveTokenScanWatermarks ?? []).map {
+                CodexTokenActivityScanWatermark(
+                    sessionID: $0.sessionID,
+                    sourceID: $0.sourceID,
+                    sourceGeneration: $0.sourceGeneration,
+                    endOffset: $0.endOffset,
+                    lineFingerprint: $0.lineFingerprint,
+                    eventTimestamp: $0.eventTimestamp,
+                    totalTokens: $0.totalTokens,
+                    sourceStatFingerprint: $0.sourceStatFingerprint,
+                    sourceChangeTimeNanoseconds: $0.sourceChangeTimeNanoseconds
+                )
+            }
+            : []
+        let today = Calendar.current.startOfDay(for: now)
+        let startDay = Calendar.current.date(byAdding: .day, value: -29, to: today) ?? today
+
+        if let persistedCounters = snapshot.liveTokenCounters {
+            for persisted in persistedCounters {
+                let persistedDay = Calendar.current.startOfDay(for: persisted.day)
+                guard persistedDay >= startDay, persistedDay <= today else { continue }
+                let totalTokens = max(0, persisted.totalTokens)
+                let persistedObservationCursor = hasCompatibleActivityCache
+                    ? persisted.observationCursor
+                    : nil
+                let baseline = hasCompatibleActivityCache
+                    ? min(max(0, persisted.scannedBaseline), totalTokens)
+                    : 0
+                // Snapshot keys are an encoding detail, not identity. Rebuild
+                // the canonical key so older ledger schemas cannot coexist with
+                // the current session counter and double-count it.
+                let key = Self.liveTokenSessionKey(persisted.sessionID)
+                let candidate = LiveTokenCounterState(
+                    sessionID: persisted.sessionID,
+                    totalTokens: totalTokens,
+                    scannedBaseline: baseline,
+                    day: persistedDay,
+                    updatedAt: persisted.updatedAt,
+                    observationCursor: persistedObservationCursor
+                )
+                if let existing = liveTokenCounters[key],
+                   Self.isNewerLiveTokenCounter(existing, than: candidate) {
+                    continue
+                }
+                liveTokenCounters[key] = candidate
+            }
+            for persisted in snapshot.unscannedLiveTokenCarryByDay ?? [] {
+                let day = Calendar.current.startOfDay(for: persisted.day)
+                guard day >= startDay, day <= today else { continue }
+                let persistedObservationCursor = hasCompatibleActivityCache
+                    ? persisted.observationCursor
+                    : nil
+                let key = persisted.key ?? Self.liveTokenCarryKey(
+                    sessionID: persisted.sessionID,
+                    day: day,
+                    updatedAt: persisted.updatedAt,
+                    cursor: persistedObservationCursor
+                )
+                let candidate = LiveTokenCarryState(
+                    sessionID: persisted.sessionID,
+                    totalTokens: max(0, persisted.totalTokens),
+                    day: day,
+                    updatedAt: persisted.updatedAt,
+                    observationCursor: persistedObservationCursor
+                )
+                if let existing = unscannedLiveTokenCarries[key] {
+                    unscannedLiveTokenCarries[key] = LiveTokenCarryState(
+                        sessionID: existing.sessionID ?? candidate.sessionID,
+                        totalTokens: existing.totalTokens + candidate.totalTokens,
+                        day: day,
+                        updatedAt: existing.updatedAt ?? candidate.updatedAt,
+                        observationCursor: existing.observationCursor ?? candidate.observationCursor
+                    )
+                } else {
+                    unscannedLiveTokenCarries[key] = candidate
+                }
+            }
+        } else if hasCompatibleActivityCache,
+                  legacyUnscopedTokenFloor == nil,
+                  let liveTotal = latestAgentTokenUsage?.effectiveTotalTokens,
+                  let legacyObservationAt = Self.trustedLegacyTokenObservationDate(
+                      snapshot: snapshot,
+                      tokenUsage: latestAgentTokenUsage,
+                      now: now
+                  ) {
+            // A v1 snapshot stored quota.last_token_usage without a session ID.
+            // Preserve it only as a per-day display floor. It cannot be added to
+            // an aggregate cache or assigned to whichever session replays first.
+            let day = Calendar.current.startOfDay(for: legacyObservationAt)
+            let cachedTotalForDay = tokenActivityDays
+                .filter { Calendar.current.isDate($0.day, inSameDayAs: day) }
+                .map { max(0, $0.totalTokens) }
+                .reduce(0, +)
+            let legacyCarry = max(0, snapshot.unscannedLiveTokenCarry ?? 0)
+            let floorTotal: Int
+            if let persistedBaseline = snapshot.liveTokenUsageScanBaseline {
+                // v2 snapshots recorded exactly how much of the scalar had
+                // already reached the daily cache, so only preserve its delta.
+                floorTotal = cachedTotalForDay
+                    + max(0, liveTotal - max(0, persistedBaseline))
+                    + legacyCarry
+            } else {
+                // Older snapshots did not distinguish a cached scalar from a
+                // live supplement. Treat it as a lower bound, while the
+                // separately persisted carry remains explicitly additive.
+                floorTotal = max(cachedTotalForDay, max(0, liveTotal)) + legacyCarry
+            }
+            legacyUnscopedTokenFloor = LegacyUnscopedTokenFloor(
+                totalTokens: floorTotal,
+                day: day
+            )
+        }
+
+        if let newestCounter = liveTokenCounters.values.max(by: {
+            ($0.updatedAt ?? .distantPast) < ($1.updatedAt ?? .distantPast)
+        }) {
+            latestAgentTokenUsageSessionID = newestCounter.sessionID
+            latestAgentTokenUsageUpdatedAt = newestCounter.updatedAt
+        } else {
+            latestAgentTokenUsageSessionID = nil
+            latestAgentTokenUsageUpdatedAt = snapshot.updatedAt
+        }
         if let quota = snapshot.quota {
             Self.cacheLatestAgentQuota(quota)
         }
@@ -4281,6 +5256,45 @@ final class MenuBarStatusModel: ObservableObject {
 
     private func persistCodexUsageSnapshotForCurrentAccount() {
         guard let account = codexCurrentAccount else { return }
+        let counterSnapshots = liveTokenCounters.map { key, state in
+            CodexLiveTokenCounterSnapshot(
+                key: key,
+                sessionID: state.sessionID,
+                totalTokens: state.totalTokens,
+                scannedBaseline: state.scannedBaseline,
+                day: state.day,
+                updatedAt: state.updatedAt,
+                observationCursor: state.observationCursor
+            )
+        }
+        .sorted { $0.key < $1.key }
+        let carrySnapshots = unscannedLiveTokenCarries.map { key, carry in
+            CodexLiveTokenCarrySnapshot(
+                key: key,
+                sessionID: carry.sessionID,
+                day: carry.day,
+                totalTokens: carry.totalTokens,
+                updatedAt: carry.updatedAt,
+                observationCursor: carry.observationCursor
+            )
+        }
+        .sorted { ($0.key ?? "") < ($1.key ?? "") }
+        let watermarkSnapshots = liveTokenScanWatermarks.map {
+            CodexLiveTokenScanWatermarkSnapshot(
+                sessionID: $0.sessionID,
+                sourceID: $0.sourceID,
+                sourceGeneration: $0.sourceGeneration,
+                sourceStatFingerprint: $0.sourceStatFingerprint,
+                sourceChangeTimeNanoseconds: $0.sourceChangeTimeNanoseconds,
+                endOffset: $0.endOffset,
+                lineFingerprint: $0.lineFingerprint,
+                eventTimestamp: $0.eventTimestamp,
+                totalTokens: $0.totalTokens
+            )
+        }
+        let latestCounter = liveTokenCounters[
+            Self.liveTokenSessionKey(latestAgentTokenUsageSessionID)
+        ]
         codexUsageSnapshotStore.store(
             account: account,
             quota: latestAgentQuota,
@@ -4289,27 +5303,533 @@ final class MenuBarStatusModel: ObservableObject {
             usageFetchState: codexUsageFetchState,
             resetCreditsFetchState: codexResetCreditsFetchState,
             tokenUsage: latestAgentTokenUsage,
+            liveTokenUsageScanBaseline: latestCounter?.scannedBaseline,
+            unscannedLiveTokenCarry: unscannedLiveTokenCarries.values
+                .filter { Calendar.current.isDate($0.day, inSameDayAs: nowProvider()) }
+                .map(\.totalTokens)
+                .reduce(0, +),
+            liveTokenCounters: counterSnapshots,
+            unscannedLiveTokenCarryByDay: carrySnapshots,
+            liveTokenUsageScanCutoff: liveTokenUsageScanCutoff,
+            liveTokenScanWatermarks: watermarkSnapshots,
+            legacyUnscopedTokenFloor: legacyUnscopedTokenFloor.map {
+                CodexLegacyUnscopedTokenFloorSnapshot(
+                    totalTokens: $0.totalTokens,
+                    day: $0.day
+                )
+            },
             tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
             tokenActivityDays: tokenActivityDays
         )
     }
 
-    private func applyCodexAccountState(_ state: CodexAccountState) {
+    @discardableResult
+    private func applyCodexAccountState(_ state: CodexAccountState) -> Bool {
+        let previousIdentity = codexUsageAccountIdentity(for: codexCurrentAccount)
         codexCurrentAccount = state.currentAccount
         codexSavedAccounts = state.savedAccounts
         codexActiveSavedAccountID = state.activeSavedAccountID
+        return previousIdentity != codexUsageAccountIdentity(for: state.currentAccount)
     }
 
-    private func updateLatestAgentTokenUsage(_ usage: AgentTokenUsage) {
-        if let total = usage.effectiveTotalTokens {
-            if let previous = lastObservedLiveTokenUsageTotal,
-               total < previous {
-                liveTokenUsageScanBaseline = 0
-            }
-            lastObservedLiveTokenUsageTotal = total
+    private func codexUsageAccountIdentity(
+        for account: CodexCurrentAccount?
+    ) -> CodexUsageAccountIdentity? {
+        account.map {
+            CodexUsageAccountIdentity(
+                usageSnapshotKey: $0.usageSnapshotKey,
+                authFingerprint: $0.authFingerprint
+            )
         }
-        latestAgentTokenUsage = usage
-        Self.cacheLatestAgentTokenUsage(usage)
+    }
+
+    private static func liveTokenSessionKey(_ sessionID: String?) -> String {
+        let normalized = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return normalized.isEmpty ? unknownLiveTokenSessionKey : normalized
+    }
+
+    private static func normalizedLiveTokenSessionID(_ sessionID: String) -> String {
+        let normalized = sessionID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let separator = normalized.lastIndex(of: ":") {
+            let suffix = normalized[normalized.index(after: separator)...]
+            if !suffix.isEmpty { return String(suffix) }
+        }
+        return normalized
+    }
+
+    private func initialLiveTokenBaseline(
+        forForkedFromSessionID parentSessionID: String?,
+        observedTotal: Int?,
+        lastTurnTotal: Int?
+    ) -> Int? {
+        guard parentSessionID != nil, let observedTotal else { return nil }
+        let normalizedTotal = max(0, observedTotal)
+        if let lastTurnTotal {
+            let normalizedLastTurn = max(0, lastTurnTotal)
+            if normalizedLastTurn <= normalizedTotal {
+                // A fork's cumulative total includes the parent's state at the
+                // instant of the fork. The parent may continue growing before
+                // this child line is polled, so its current live total is not a
+                // safe inherited baseline. Subtract the child line's own turn
+                // delta instead; the remainder is the exact inherited prefix.
+                return normalizedTotal - normalizedLastTurn
+            }
+        }
+        // Without a valid last-turn delta, remain conservative and let the
+        // authoritative scanner account for the child's first contribution.
+        return normalizedTotal
+    }
+
+    private static func liveTokenCarryKey(
+        sessionID: String?,
+        day: Date,
+        updatedAt: Date?,
+        cursor: CodexTokenObservationCursor?
+    ) -> String {
+        if let cursor {
+            return [
+                cursor.sourceID,
+                cursor.sourceGeneration,
+                String(cursor.endOffset),
+                cursor.lineFingerprint,
+            ].joined(separator: "|")
+        }
+        return [
+            liveTokenSessionKey(sessionID),
+            String(Int64(day.timeIntervalSince1970)),
+            String(Int64((updatedAt ?? day).timeIntervalSince1970 * 1_000)),
+        ].joined(separator: "|")
+    }
+
+    private func preserveUnscannedLiveTokenCarry(
+        from state: LiveTokenCounterState,
+        totalTokens: Int
+    ) {
+        let normalizedTotal = max(0, totalTokens)
+        guard normalizedTotal > 0 else { return }
+        let key = Self.liveTokenCarryKey(
+            sessionID: state.sessionID,
+            day: state.day,
+            updatedAt: state.updatedAt,
+            cursor: state.observationCursor
+        )
+        let candidate = LiveTokenCarryState(
+            sessionID: state.sessionID,
+            totalTokens: normalizedTotal,
+            day: state.day,
+            updatedAt: state.updatedAt,
+            observationCursor: state.observationCursor
+        )
+        if let existing = unscannedLiveTokenCarries[key] {
+            unscannedLiveTokenCarries[key] = LiveTokenCarryState(
+                sessionID: existing.sessionID ?? candidate.sessionID,
+                totalTokens: max(existing.totalTokens, candidate.totalTokens),
+                day: existing.day,
+                updatedAt: existing.updatedAt ?? candidate.updatedAt,
+                observationCursor: existing.observationCursor ?? candidate.observationCursor
+            )
+        } else {
+            unscannedLiveTokenCarries[key] = candidate
+        }
+    }
+
+    private static func isNewerLiveTokenCounter(
+        _ existing: LiveTokenCounterState,
+        than candidate: LiveTokenCounterState
+    ) -> Bool {
+        if let existingCursor = existing.observationCursor,
+           let candidateCursor = candidate.observationCursor,
+           existingCursor.sourceGeneration == candidateCursor.sourceGeneration {
+            switch sourceSnapshotRelation(
+                lhsChangeTimeNanoseconds: existingCursor.sourceChangeTimeNanoseconds,
+                lhsStatFingerprint: existingCursor.sourceStatFingerprint,
+                rhsChangeTimeNanoseconds: candidateCursor.sourceChangeTimeNanoseconds,
+                rhsStatFingerprint: candidateCursor.sourceStatFingerprint
+            ) {
+            case .lhsNewer:
+                return true
+            case .lhsOlder:
+                return false
+            case .same, .legacy:
+                if existingCursor.endOffset != candidateCursor.endOffset {
+                    return existingCursor.endOffset > candidateCursor.endOffset
+                }
+            case .incomparable:
+                break
+            }
+        }
+        return (existing.updatedAt ?? .distantPast) > (candidate.updatedAt ?? .distantPast)
+    }
+
+    private func rememberExactLiveTokenObservation(
+        key: String,
+        usage: AgentTokenUsage,
+        updatedAt: Date?
+    ) {
+        guard let updatedAt else { return }
+        let signature = ExactLiveTokenObservationSignature(
+            usage: usage,
+            stateFileTimestampSecond: Self.stateFileTimestampSecond(updatedAt)
+        )
+        var signatures = recentExactLiveTokenObservationSignatures[key] ?? []
+        signatures.removeAll { $0 == signature }
+        signatures.append(signature)
+        recentExactLiveTokenObservationSignatures[key] = signatures
+    }
+
+    private func isKnownCursorlessShadow(
+        key: String,
+        usage: AgentTokenUsage,
+        updatedAt: Date?
+    ) -> Bool {
+        guard let updatedAt else { return false }
+        return recentExactLiveTokenObservationSignatures[key]?.contains(
+            ExactLiveTokenObservationSignature(
+                usage: usage,
+                stateFileTimestampSecond: Self.stateFileTimestampSecond(updatedAt)
+            )
+        ) == true
+    }
+
+    private static func stateFileTimestampSecond(_ date: Date) -> Int64 {
+        // SignalStateStore encodes Date with JSONEncoder's `.iso8601`
+        // strategy, which omits fractional seconds. Compare shadows at the
+        // same precision they have after the state-file round trip.
+        Int64(date.timeIntervalSince1970.rounded(.down))
+    }
+
+    private func pruneExactLiveTokenObservationSignaturesAfterReload() {
+        var retainedKeys = Set(liveTokenCounters.keys)
+        retainedKeys.formUnion(
+            unscannedLiveTokenCarries.values.map {
+                Self.liveTokenSessionKey($0.sessionID)
+            }
+        )
+        retainedKeys.formUnion(
+            Self.tokenUsageObservations(in: snapshot).map {
+                Self.liveTokenSessionKey($0.sessionID)
+            }
+        )
+        recentExactLiveTokenObservationSignatures =
+            recentExactLiveTokenObservationSignatures.reduce(into: [:]) { result, entry in
+                guard retainedKeys.contains(entry.key), let latest = entry.value.last else { return }
+                result[entry.key] = [latest]
+            }
+    }
+
+    private static func trustedLegacyTokenObservationDate(
+        snapshot: CodexAccountUsageSnapshot,
+        tokenUsage: AgentTokenUsage?,
+        now: Date
+    ) -> Date? {
+        if snapshot.quota?.tokenUsage == tokenUsage,
+           let quotaUpdatedAt = snapshot.quota?.updatedAt,
+           quotaUpdatedAt <= now.addingTimeInterval(60) {
+            return quotaUpdatedAt
+        }
+
+        // `snapshot.updatedAt` is normally just the file write time and can be
+        // changed by an unrelated credits refresh. Use it only as a narrowly
+        // scoped same-session migration hint while it is still fresh.
+        let age = now.timeIntervalSince(snapshot.updatedAt)
+        guard age >= -60,
+              age <= 10 * 60,
+              Calendar.current.isDate(snapshot.updatedAt, inSameDayAs: now)
+        else {
+            return nil
+        }
+        return snapshot.updatedAt
+    }
+
+    func updateLatestAgentTokenUsage(
+        _ usage: AgentTokenUsage,
+        sessionID: String? = nil,
+        updatedAt: Date? = nil,
+        observationCursor: CodexTokenObservationCursor? = nil,
+        stateShadowUsage: AgentTokenUsage? = nil,
+        initialScannedBaseline: Int? = nil
+    ) {
+        let key = Self.liveTokenSessionKey(sessionID)
+        let observationDate = updatedAt ?? nowProvider()
+        let observationDay = Calendar.current.startOfDay(for: observationDate)
+        var didChangeTokenAccounting = false
+        var rejectedStaleObservation = false
+        var acceptedSourceOrderIsNewer = false
+        var acceptedObservationMatchesCounter = false
+
+        if let totalTokens = usage.effectiveTotalTokens {
+            let normalizedTotal = max(0, totalTokens)
+            let observationDisposition = tokenObservationDisposition(
+                sessionID: sessionID,
+                totalTokens: normalizedTotal,
+                updatedAt: updatedAt,
+                cursor: observationCursor,
+                watermarks: liveTokenScanWatermarks
+            )
+            if observationCursor != nil, let stateShadowUsage {
+                // The state-file watcher can replay the cursor-less copy of an
+                // exact desktop observation after a newer file snapshot. Record
+                // the copy even when a quarantine watermark rejects its cursor:
+                // the poll has already written the cursor-less value to disk.
+                rememberExactLiveTokenObservation(
+                    key: key,
+                    usage: stateShadowUsage,
+                    updatedAt: updatedAt
+                )
+            }
+            // A persisted quarantine tombstone is a rejection, not proof that
+            // the divergent counter belongs in the scanned baseline.
+            if observationDisposition == .rejected { return }
+            if observationCursor == nil,
+               isKnownCursorlessShadow(
+                   key: key,
+                   usage: usage,
+                   updatedAt: updatedAt
+               ) {
+                // Reject only a cursor-less SignalState value already observed
+                // with exact source evidence. Genuinely new cursor-less growth
+                // and counter resets remain usable.
+                return
+            }
+            let authoritativeFrontier = authoritativeLiveTokenFrontier(
+                sessionID: sessionID,
+                cursor: observationCursor,
+                watermarks: liveTokenScanWatermarks
+            )
+
+            // Old scalar snapshots used quota.last_token_usage and had no
+            // session identity. They are suitable only as a temporary display
+            // value: assigning one to the first file replayed can attach a newer
+            // session's scalar to an older session and permanently double-count
+            // the real owner. Replace the provisional value with the first
+            // identified cumulative counter instead of migrating it.
+            if key != Self.unknownLiveTokenSessionKey,
+               liveTokenCounters[key] == nil,
+               liveTokenCounters.keys.allSatisfy({ $0 == Self.unknownLiveTokenSessionKey }) {
+                liveTokenCounters.removeValue(forKey: Self.unknownLiveTokenSessionKey)
+                unscannedLiveTokenCarries = unscannedLiveTokenCarries.filter { _, carry in
+                    carry.sessionID != nil
+                }
+            }
+
+            let isCoveredByCommittedScan = observationDisposition == .covered
+            if var state = liveTokenCounters[key] {
+                let sameGenerationSnapshotRelation: SourceSnapshotRelation? = {
+                    guard let previousCursor = state.observationCursor,
+                          let observationCursor,
+                          previousCursor.sourceGeneration == observationCursor.sourceGeneration
+                    else { return nil }
+                    return Self.sourceSnapshotRelation(
+                        lhsChangeTimeNanoseconds: observationCursor.sourceChangeTimeNanoseconds,
+                        lhsStatFingerprint: observationCursor.sourceStatFingerprint,
+                        rhsChangeTimeNanoseconds: previousCursor.sourceChangeTimeNanoseconds,
+                        rhsStatFingerprint: previousCursor.sourceStatFingerprint
+                    )
+                }()
+                let sameGenerationCursorIsStaleOrConflicting: Bool = {
+                    guard let previousCursor = state.observationCursor,
+                          let observationCursor,
+                          previousCursor.sourceGeneration == observationCursor.sourceGeneration
+                    else { return false }
+                    return Self.liveTokenCursorIsStaleOrConflicting(
+                        observationCursor,
+                        totalTokens: normalizedTotal,
+                        comparedWith: previousCursor,
+                        previousTotalTokens: state.totalTokens
+                    )
+                }()
+                let sameSnapshotCursorMovedForward: Bool = {
+                    guard sameGenerationSnapshotRelation == .same
+                            || sameGenerationSnapshotRelation == .legacy,
+                          let previousCursor = state.observationCursor,
+                          let observationCursor
+                    else { return false }
+                    return observationCursor.endOffset > previousCursor.endOffset
+                }()
+                let sourceOrderIsNewer = sameGenerationSnapshotRelation == .lhsNewer
+                    || sameSnapshotCursorMovedForward
+                let sourceOrderIsOlder = sameGenerationSnapshotRelation == .lhsOlder
+                    || ((sameGenerationSnapshotRelation == .same
+                            || sameGenerationSnapshotRelation == .legacy)
+                        && sameGenerationCursorIsStaleOrConflicting)
+
+                if sourceOrderIsOlder {
+                    // Within one device/inode generation, content-snapshot order
+                    // comes first; within one snapshot, JSONL byte order comes
+                    // next. Event timestamps cannot reverse either ordering.
+                    rejectedStaleObservation = true
+                } else if !sourceOrderIsNewer,
+                          let previousUpdatedAt = state.updatedAt,
+                          let updatedAt,
+                          updatedAt < previousUpdatedAt {
+                    rejectedStaleObservation = true
+                } else if !sourceOrderIsNewer,
+                          let previousUpdatedAt = state.updatedAt,
+                          let updatedAt,
+                          updatedAt == previousUpdatedAt,
+                          sameGenerationCursorIsStaleOrConflicting {
+                    // Several token events can share the same JSON timestamp.
+                    // Within one file generation, byte order is authoritative:
+                    // accepting an older cursor as a counter reset would turn
+                    // the newer pending value into carry and double-count it.
+                    rejectedStaleObservation = true
+                } else if observationDay < state.day {
+                    // Source ordering resolves rewrites and delivery races within
+                    // an accounting day. It must not reassign today's live counter
+                    // to an earlier local day because an old event was replayed.
+                    rejectedStaleObservation = true
+                } else if isCoveredByCommittedScan {
+                    let previous = state
+                    if let authoritativeFrontier {
+                        let candidate = liveTokenCounterState(
+                            sessionID: sessionID,
+                            frontier: authoritativeFrontier,
+                            fallbackDate: observationDate
+                        )
+                        if !Self.isNewerLiveTokenCounter(state, than: candidate) {
+                            state = candidate
+                        }
+                    } else {
+                        state.totalTokens = normalizedTotal
+                        state.scannedBaseline = normalizedTotal
+                        state.day = observationDay
+                        state.updatedAt = updatedAt ?? state.updatedAt
+                        state.observationCursor = observationCursor ?? state.observationCursor
+                    }
+                    liveTokenCounters[key] = state
+                    didChangeTokenAccounting = previous != state
+                } else if observationDay > state.day {
+                    let previousPending = max(0, state.totalTokens - state.scannedBaseline)
+                    if previousPending > 0 {
+                        preserveUnscannedLiveTokenCarry(from: state, totalTokens: previousPending)
+                    }
+                    let baseline: Int
+                    if isCoveredByCommittedScan {
+                        baseline = normalizedTotal
+                    } else if normalizedTotal >= state.totalTokens {
+                        // A cumulative counter crossing midnight contributes only
+                        // the increment to the new local day.
+                        baseline = min(normalizedTotal, state.totalTokens)
+                    } else {
+                        baseline = 0
+                    }
+                    liveTokenCounters[key] = LiveTokenCounterState(
+                        sessionID: sessionID,
+                        totalTokens: normalizedTotal,
+                        scannedBaseline: baseline,
+                        day: observationDay,
+                        updatedAt: updatedAt,
+                        observationCursor: observationCursor
+                    )
+                    didChangeTokenAccounting = previousPending > 0
+                        || normalizedTotal != baseline
+                        || state.day != observationDay
+                } else {
+                    let previousTotal = state.totalTokens
+                    let previousBaseline = state.scannedBaseline
+                    let previousCursor = state.observationCursor
+                    if isCoveredByCommittedScan {
+                        state.totalTokens = normalizedTotal
+                        state.scannedBaseline = normalizedTotal
+                    } else if normalizedTotal < state.totalTokens {
+                        let previousPending = max(0, state.totalTokens - state.scannedBaseline)
+                        if previousPending > 0 {
+                            preserveUnscannedLiveTokenCarry(from: state, totalTokens: previousPending)
+                        }
+                        state.totalTokens = normalizedTotal
+                        state.scannedBaseline = 0
+                    } else {
+                        state.totalTokens = normalizedTotal
+                    }
+                    state.updatedAt = updatedAt ?? state.updatedAt
+                    state.observationCursor = observationCursor ?? state.observationCursor
+                    liveTokenCounters[key] = state
+                    didChangeTokenAccounting = previousTotal != state.totalTokens
+                        || previousBaseline != state.scannedBaseline
+                        || previousCursor != state.observationCursor
+                }
+                acceptedSourceOrderIsNewer = sourceOrderIsNewer
+                    && liveTokenCounters[key]?.observationCursor == observationCursor
+                if let acceptedState = liveTokenCounters[key],
+                   acceptedState.totalTokens == normalizedTotal,
+                   let acceptedCursor = acceptedState.observationCursor,
+                   let observationCursor,
+                   acceptedCursor.sourceGeneration == observationCursor.sourceGeneration,
+                   acceptedCursor.endOffset == observationCursor.endOffset,
+                   acceptedCursor.lineFingerprint == observationCursor.lineFingerprint {
+                    let relation = Self.sourceSnapshotRelation(
+                        lhsChangeTimeNanoseconds: observationCursor.sourceChangeTimeNanoseconds,
+                        lhsStatFingerprint: observationCursor.sourceStatFingerprint,
+                        rhsChangeTimeNanoseconds: acceptedCursor.sourceChangeTimeNanoseconds,
+                        rhsStatFingerprint: acceptedCursor.sourceStatFingerprint
+                    )
+                    acceptedObservationMatchesCounter = relation == .same || relation == .legacy
+                }
+            } else {
+                if isCoveredByCommittedScan, let authoritativeFrontier {
+                    liveTokenCounters[key] = liveTokenCounterState(
+                        sessionID: sessionID,
+                        frontier: authoritativeFrontier,
+                        fallbackDate: observationDate
+                    )
+                } else {
+                    let scannedFrontierBaseline = scannedNumericBaselineForUncoveredObservation(
+                        sessionID: sessionID,
+                        totalTokens: normalizedTotal,
+                        cursor: observationCursor,
+                        watermarks: liveTokenScanWatermarks
+                    ) ?? 0
+                    let baseline = isCoveredByCommittedScan
+                        ? normalizedTotal
+                        : min(
+                            normalizedTotal,
+                            max(scannedFrontierBaseline, max(0, initialScannedBaseline ?? 0))
+                        )
+                    liveTokenCounters[key] = LiveTokenCounterState(
+                        sessionID: sessionID,
+                        totalTokens: normalizedTotal,
+                        scannedBaseline: baseline,
+                        day: observationDay,
+                        updatedAt: updatedAt,
+                        observationCursor: observationCursor
+                    )
+                    didChangeTokenAccounting = !isCoveredByCommittedScan
+                        && normalizedTotal > baseline
+                }
+            }
+        }
+
+        guard !rejectedStaleObservation else { return }
+
+        if didChangeTokenAccounting {
+            liveTokenUsageRevision &+= 1
+            tokenUsageReconciliationRevision &+= 1
+            if (liveTokenUsageScanCutoff != nil
+                || isTokenActivityScanInFlight
+                || tokenActivityScanRetryPending),
+               pendingLiveTokenUsageByDay(now: observationDate).values.contains(where: { $0 > 0 }) {
+                tokenActivityScanRetryPending = true
+            }
+        }
+
+        let shouldReplaceLatestUsage: Bool
+        if (acceptedSourceOrderIsNewer || acceptedObservationMatchesCounter),
+           Self.liveTokenSessionKey(latestAgentTokenUsageSessionID) == key {
+            // Keep the persisted/displayed usage aligned with the accepted
+            // counter when a newer source snapshot or later JSONL byte carries
+            // an earlier event timestamp.
+            shouldReplaceLatestUsage = true
+        } else if let updatedAt, let latestAgentTokenUsageUpdatedAt {
+            shouldReplaceLatestUsage = updatedAt >= latestAgentTokenUsageUpdatedAt
+        } else {
+            shouldReplaceLatestUsage = true
+        }
+        if shouldReplaceLatestUsage {
+            latestAgentTokenUsage = usage
+            latestAgentTokenUsageSessionID = sessionID
+            latestAgentTokenUsageUpdatedAt = updatedAt
+            Self.cacheLatestAgentTokenUsage(usage)
+        }
         persistCodexUsageSnapshotForCurrentAccount()
     }
 
@@ -4393,11 +5913,36 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private static func latestTokenUsage(in snapshot: SignalSnapshot) -> AgentTokenUsage? {
-        snapshot.sessions
-            .compactMap(\.quota)
-            .filter { $0.tokenUsage != nil }
-            .max { lhs, rhs in lhs.updatedAt < rhs.updatedAt }?
-            .tokenUsage
+        latestTokenUsageObservation(in: snapshot)?.usage
+    }
+
+    private static func latestTokenUsageObservation(
+        in snapshot: SignalSnapshot
+    ) -> LiveTokenUsageObservation? {
+        tokenUsageObservations(in: snapshot).last
+    }
+
+    private static func tokenUsageObservations(
+        in snapshot: SignalSnapshot
+    ) -> [LiveTokenUsageObservation] {
+        snapshot.sessions.compactMap { session in
+            guard let quota = session.quota,
+                  let usage = quota.tokenUsage
+            else {
+                return nil
+            }
+            return LiveTokenUsageObservation(
+                usage: usage,
+                sessionID: session.sessionID,
+                updatedAt: quota.updatedAt
+            )
+        }
+        .sorted {
+            if $0.updatedAt == $1.updatedAt {
+                return Self.liveTokenSessionKey($0.sessionID) < Self.liveTokenSessionKey($1.sessionID)
+            }
+            return ($0.updatedAt ?? .distantPast) < ($1.updatedAt ?? .distantPast)
+        }
     }
 
     private static func shouldIncludeStoredSessionInDisplay(_ session: SessionStatus, now: Date) -> Bool {

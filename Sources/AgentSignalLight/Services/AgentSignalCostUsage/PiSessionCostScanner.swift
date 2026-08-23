@@ -53,6 +53,7 @@ enum PiSessionCostScanner {
 
     private struct ScanContext {
         let range: CostUsageScanner.CostUsageDayRange
+        let through: Date
         let forceRescan: Bool
         let pricingContext: ModelsDevPricingContext
         let checkCancellation: CostUsageScanner.CancellationCheck?
@@ -112,7 +113,7 @@ enum PiSessionCostScanner {
             try checkCancellation?()
             let root = self.defaultPiSessionsRoot(options: options)
             let startCutoff = self.dateFromDayKey(range.scanSinceKey) ?? since
-            let files = self.listPiSessionFiles(root: root, startCutoffLocal: startCutoff)
+            let files = try self.listPiSessionFiles(root: root, startCutoffLocal: startCutoff)
             let filePathsInScan = Set(files.map(\.path))
 
             for fileURL in files {
@@ -121,6 +122,7 @@ enum PiSessionCostScanner {
                     cache: &cache,
                     context: ScanContext(
                         range: range,
+                        through: now,
                         forceRescan: options.forceRescan || windowExpanded,
                         pricingContext: pricingContext,
                         checkCancellation: checkCancellation))
@@ -141,7 +143,7 @@ enum PiSessionCostScanner {
             cache.scanUntilKey = range.scanUntilKey
             cache.lastScanUnixMs = nowMs
             try checkCancellation?()
-            PiSessionCostCacheIO.save(cache: cache, cacheRoot: options.cacheRoot)
+            try PiSessionCostCacheIO.save(cache: cache, cacheRoot: options.cacheRoot)
         }
 
         return self.buildReport(
@@ -203,32 +205,52 @@ enum PiSessionCostScanner {
             .appendingPathComponent("sessions", isDirectory: true)
     }
 
-    private static func listPiSessionFiles(root: URL, startCutoffLocal: Date) -> [URL] {
+    private static func listPiSessionFiles(root: URL, startCutoffLocal: Date) throws -> [URL] {
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
 
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey]
+        var enumerationError: Error?
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles])
+            options: [.skipsHiddenFiles],
+            errorHandler: { _, error in
+                enumerationError = error
+                return false
+            })
         else {
-            return []
+            throw NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileReadUnknownError,
+                userInfo: [NSFilePathErrorKey: root.path]
+            )
         }
 
         var output: [URL] = []
         while let item = enumerator.nextObject() as? URL {
             guard item.pathExtension.lowercased() == "jsonl" else { continue }
-            let values = try? item.resourceValues(forKeys: keys)
-            guard values?.isRegularFile == true else { continue }
+            let values: URLResourceValues
+            do {
+                values = try item.resourceValues(forKeys: keys)
+            } catch {
+                let nsError = error as NSError
+                if nsError.domain == NSCocoaErrorDomain,
+                   nsError.code == NSFileNoSuchFileError {
+                    continue
+                }
+                throw error
+            }
+            guard values.isRegularFile == true else { continue }
 
             let startedAt = self.parseSessionStartFromFilename(item.lastPathComponent)
-            let modifiedAt = values?.contentModificationDate
+            let modifiedAt = values.contentModificationDate
             if self
                 .shouldIncludeFile(startedAt: startedAt, modifiedAt: modifiedAt, startCutoffLocal: startCutoffLocal)
             {
                 output.append(item)
             }
         }
+        if let enumerationError { throw enumerationError }
 
         return output.sorted(by: { $0.path < $1.path })
     }
@@ -255,7 +277,7 @@ enum PiSessionCostScanner {
     {
         try context.checkCancellation?()
         let path = fileURL.path
-        let attrs = (try? FileManager.default.attributesOfItem(atPath: path)) ?? [:]
+        let attrs = try FileManager.default.attributesOfItem(atPath: path)
         let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
         let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
         let mtimeMs = Int64(mtime * 1000)
@@ -268,20 +290,23 @@ enum PiSessionCostScanner {
         if !context.forceRescan,
            let cached,
            cached.mtimeUnixMs == mtimeMs,
-           cached.size == size
+           cached.size == size,
+           cached.parsedBytes >= size
         {
             return
         }
 
         if !context.forceRescan,
            let cached,
-           size > cached.size,
+           size >= cached.size,
            cached.parsedBytes > 0,
-           cached.parsedBytes <= size
+           cached.parsedBytes <= cached.size,
+           cached.parsedBytes < size
         {
             let delta = try self.parsePiSessionFile(
                 fileURL: fileURL,
                 range: context.range,
+                through: context.through,
                 startOffset: cached.parsedBytes,
                 initialModelContext: cached.lastModelContext,
                 pricingContext: context.pricingContext,
@@ -312,6 +337,7 @@ enum PiSessionCostScanner {
         let parsed = try self.parsePiSessionFile(
             fileURL: fileURL,
             range: context.range,
+            through: context.through,
             pricingContext: context.pricingContext,
             checkCancellation: context.checkCancellation)
         if !parsed.contributions.isEmpty {
@@ -329,6 +355,7 @@ enum PiSessionCostScanner {
     private static func parsePiSessionFile(
         fileURL: URL,
         range: CostUsageScanner.CostUsageDayRange,
+        through: Date,
         startOffset: Int64 = 0,
         initialModelContext: PiModelContext? = nil,
         pricingContext: ModelsDevPricingContext? = nil,
@@ -376,6 +403,19 @@ enum PiSessionCostScanner {
                 maxLineBytes: Self.maxLineBytes,
                 prefixBytes: Self.maxLineBytes,
                 checkCancellation: checkCancellation,
+                stopBeforeLine: { line in
+                    guard !line.bytes.isEmpty,
+                          !line.wasTruncated,
+                          let object = (try? JSONSerialization.jsonObject(with: line.bytes)) as? [String: Any],
+                          let timestamp = self.timestampDate(
+                              entry: object,
+                              message: object["message"] as? [String: Any]
+                          )
+                    else {
+                        return false
+                    }
+                    return timestamp > through
+                },
                 onLine: { line in
                     guard !line.bytes.isEmpty, !line.wasTruncated else { return }
                     autoreleasepool {
@@ -410,7 +450,7 @@ enum PiSessionCostScanner {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            parsedBytes = startOffset
+            throw error
         }
 
         return ParseResult(
@@ -511,8 +551,8 @@ enum PiSessionCostScanner {
         }
     }
 
-    private static func timestampDate(entry: [String: Any], message: [String: Any]) -> Date? {
-        self.parseTimestampValue(message["timestamp"])
+    private static func timestampDate(entry: [String: Any], message: [String: Any]?) -> Date? {
+        self.parseTimestampValue(message?["timestamp"])
             ?? self.parseTimestampValue(entry["timestamp"])
     }
 

@@ -3,6 +3,7 @@ import CryptoKit
 #else
 import Crypto
 #endif
+import AgentSignalLightCore
 import Foundation
 
 // swiftlint:disable type_body_length file_length
@@ -21,6 +22,7 @@ enum CostUsageScanner {
 
     struct Options {
         var codexSessionsRoot: URL?
+        var codexSessionsRoots: [URL]?
         var claudeProjectsRoots: [URL]?
         var cacheRoot: URL?
         var codexTraceDatabaseURL: URL?
@@ -28,9 +30,16 @@ enum CostUsageScanner {
         var claudeLogProviderFilter: ClaudeLogProviderFilter = .all
         /// Force a full rescan, ignoring per-file cache and incremental offsets.
         var forceRescan: Bool = false
+        /// Test seam used to mutate a sessions tree between inventory capture
+        /// and its final consistency validation.
+        var codexInventoryBeforeCommitHook: (() -> Void)?
+        /// Test seam used to mutate an existing file after inventory metadata
+        /// has been captured but before the inventory is validated.
+        var codexInventoryAfterMetadataHook: (() -> Void)?
 
         init(
             codexSessionsRoot: URL? = nil,
+            codexSessionsRoots: [URL]? = nil,
             claudeProjectsRoots: [URL]? = nil,
             cacheRoot: URL? = nil,
             codexTraceDatabaseURL: URL? = nil,
@@ -38,6 +47,7 @@ enum CostUsageScanner {
             forceRescan: Bool = false)
         {
             self.codexSessionsRoot = codexSessionsRoot
+            self.codexSessionsRoots = codexSessionsRoots
             self.claudeProjectsRoots = claudeProjectsRoots
             self.cacheRoot = cacheRoot
             self.codexTraceDatabaseURL = codexTraceDatabaseURL
@@ -57,6 +67,11 @@ enum CostUsageScanner {
         let lastCodexTurnID: String?
         let sessionId: String?
         let forkedFromId: String?
+        let lastTokenEventEndOffset: Int64?
+        let lastTokenEventFingerprint: String?
+        let lastTokenEventTimestamp: Date?
+        let lastTokenEventTotalTokens: Int?
+        let tokenEventWatermarks: [CostUsageTokenEventWatermark]
         let rows: [CodexUsageRow]
     }
 
@@ -171,6 +186,7 @@ enum CostUsageScanner {
 
     struct CodexFileScanContext {
         let range: CostUsageDayRange
+        let through: Date
         let forceFullScan: Bool
         let dropDeferredCodexRows: Bool
         let requiresTurnIDCache: Bool
@@ -184,6 +200,7 @@ enum CostUsageScanner {
         let roots: [URL]
         let rootsFingerprint: [String: Int64]
         let rootsChanged: Bool
+        let needsSessionInventory: Bool
         let windowExpanded: Bool
         let needsCostCacheMigration: Bool
         let modelsDevCatalog: ModelsDevCatalog?
@@ -502,11 +519,26 @@ enum CostUsageScanner {
     }
 
     private static func codexSessionsRoots(options: Options) -> [URL] {
-        let root = self.defaultCodexSessionsRoot(options: options)
-        if let archived = self.codexArchivedSessionsRoot(sessionsRoot: root) {
-            return [root, archived]
+        let candidateRoots: [URL]
+        if let explicitRoots = options.codexSessionsRoots, !explicitRoots.isEmpty {
+            candidateRoots = explicitRoots
+        } else {
+            let root = self.defaultCodexSessionsRoot(options: options)
+            if let archived = self.codexArchivedSessionsRoot(sessionsRoot: root) {
+                candidateRoots = [root, archived]
+            } else {
+                candidateRoots = [root]
+            }
         }
-        return [root]
+
+        // Cache keys, containment checks and token cursors all use canonical
+        // paths. Re-resolving here on every refresh also turns a symlink
+        // retarget into a roots fingerprint change.
+        var seen = Set<String>()
+        return candidateRoots.compactMap { root in
+            let canonical = root.standardizedFileURL.resolvingSymlinksInPath()
+            return seen.insert(canonical.path).inserted ? canonical : nil
+        }
     }
 
     private static func codexArchivedSessionsRoot(sessionsRoot: URL) -> URL? {
@@ -520,14 +552,18 @@ enum CostUsageScanner {
         root: URL,
         scanSinceKey: String,
         scanUntilKey: String,
-        includeRecursive: Bool) -> [URL]
+        includeRecursive: Bool) throws -> [URL]
     {
-        let partitioned = self.listCodexSessionFilesByDatePartition(
+        let partitioned = try self.listCodexSessionFilesByDatePartition(
             root: root,
             scanSinceKey: scanSinceKey,
             scanUntilKey: scanUntilKey)
-        let flat = self.listCodexSessionFilesFlat(root: root, scanSinceKey: scanSinceKey, scanUntilKey: scanUntilKey)
-        let recursive = includeRecursive ? self.listCodexLegacySessionFilesRecursive(root: root) : []
+        let flat = try self.listCodexSessionFilesFlat(
+            root: root,
+            scanSinceKey: scanSinceKey,
+            scanUntilKey: scanUntilKey
+        )
+        let recursive = includeRecursive ? try self.listCodexLegacySessionFilesRecursive(root: root) : []
         var seen: Set<String> = []
         var out: [URL] = []
         for item in partitioned + flat + recursive where !seen.contains(item.path) {
@@ -545,13 +581,27 @@ enum CostUsageScanner {
     {
         cache.files.compactMap { path, usage in
             guard !excludingPaths.contains(path) else { return nil }
-            let hasRelevantDay = usage.days.keys.contains {
-                CostUsageDayRange.isInRange(dayKey: $0, since: range.scanSinceKey, until: range.scanUntilKey)
-            }
-            guard hasRelevantDay else { return nil }
             guard FileManager.default.fileExists(atPath: path) else { return nil }
             let fileURL = URL(fileURLWithPath: path)
             guard Self.isWithinCodexRoots(fileURL: fileURL, roots: roots) else { return nil }
+
+            let hasRelevantDay = usage.days.keys.contains {
+                CostUsageDayRange.isInRange(dayKey: $0, since: range.scanSinceKey, until: range.scanUntilKey)
+            }
+            let metadata = Self.codexFileMetadata(fileURL: fileURL)
+            let currentGeneration = metadata.fileId
+                ?? fileURL.standardizedFileURL.resolvingSymlinksInPath().path
+            let cachedParsedBytes = usage.parsedBytes ?? usage.size
+            let changedOrDeferred = usage.sourceGeneration != currentGeneration
+                || usage.sourceStatFingerprint != metadata.statFingerprint
+                || usage.sourceChangeTimeNanoseconds != metadata.changeTimeNanoseconds
+                || usage.mtimeUnixMs != metadata.mtimeUnixMs
+                || usage.size != metadata.size
+                || cachedParsedBytes < metadata.size
+            // A rollout can remain open for months. If an old cached file is
+            // appended today, its historical contribution may be outside the
+            // current window, but the new bytes still have to be scanned.
+            guard hasRelevantDay || changedOrDeferred else { return nil }
             return fileURL
         }
     }
@@ -563,6 +613,7 @@ enum CostUsageScanner {
     {
         var out: [String: URL] = [:]
         for (path, usage) in cache.files {
+            guard usage.codexInventoryOnly != true else { continue }
             guard let sessionId = usage.sessionId, !sessionId.isEmpty else { continue }
             if knownExistingPaths.contains(path) {
                 out[sessionId] = URL(fileURLWithPath: path)
@@ -579,7 +630,11 @@ enum CostUsageScanner {
     private static func codexRootsFingerprint(_ roots: [URL]) -> [String: Int64] {
         var out: [String: Int64] = [:]
         for root in roots {
-            out[root.standardizedFileURL.path] = 0
+            let canonical = root.standardizedFileURL.resolvingSymlinksInPath()
+            let metadata = Self.codexFileMetadata(fileURL: canonical)
+            let identity = metadata.fileId ?? "missing"
+            out["\(canonical.path)|\(identity)"] =
+                (try? Self.codexDirectoryFingerprint(at: canonical)) ?? -1
         }
         return out
     }
@@ -751,21 +806,835 @@ enum CostUsageScanner {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    private struct CodexSessionInventoryFile {
+        let url: URL
+        let metadata: CodexFileMetadata
+        let sessionId: String?
+        let forkedFromId: String?
+    }
+
+    private struct CodexSessionInventory {
+        let files: [CodexSessionInventoryFile]
+        let directoryFingerprints: [String: Int64]
+    }
+
+    private struct CodexDuplicateCurrentCopy {
+        let path: String
+        let url: URL
+        let cached: CostUsageFileUsage
+        let metadata: CodexFileMetadata
+        let currentSessionId: String
+        let currentForkedFromId: String?
+        let changed: Bool
+    }
+
+    private struct CodexDuplicateReconciliation {
+        let scanURLs: [URL]
+        let quarantinedPaths: Set<String>
+    }
+
+    enum CodexInventoryError: Error {
+        case changedDuringEnumeration
+        case ambiguousDuplicateSession(String)
+    }
+
+    enum CodexFilePrefixRelationship {
+        case identical
+        case lhsIsPrefix
+        case rhsIsPrefix
+        case divergent
+    }
+
+    static func codexStableStatFingerprint(_ info: stat) -> Int64 {
+        #if os(Linux)
+        let modifiedSeconds = Int64(info.st_mtim.tv_sec)
+        let modifiedNanoseconds = Int64(info.st_mtim.tv_nsec)
+        let changedSeconds = Int64(info.st_ctim.tv_sec)
+        let changedNanoseconds = Int64(info.st_ctim.tv_nsec)
+        let createdSeconds: Int64 = 0
+        let createdNanoseconds: Int64 = 0
+        #else
+        let modifiedSeconds = Int64(info.st_mtimespec.tv_sec)
+        let modifiedNanoseconds = Int64(info.st_mtimespec.tv_nsec)
+        let changedSeconds = Int64(info.st_ctimespec.tv_sec)
+        let changedNanoseconds = Int64(info.st_ctimespec.tv_nsec)
+        let createdSeconds = Int64(info.st_birthtimespec.tv_sec)
+        let createdNanoseconds = Int64(info.st_birthtimespec.tv_nsec)
+        #endif
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        func mix(_ value: Int64) {
+            hash ^= UInt64(bitPattern: value)
+            hash &*= 1_099_511_628_211
+        }
+        mix(Int64(info.st_dev))
+        mix(Int64(info.st_ino))
+        mix(Int64(info.st_mode))
+        mix(modifiedSeconds)
+        mix(modifiedNanoseconds)
+        mix(changedSeconds)
+        mix(changedNanoseconds)
+        mix(createdSeconds)
+        mix(createdNanoseconds)
+        return Int64(bitPattern: hash)
+    }
+
+    private static func codexDirectoryFingerprint(at url: URL) throws -> Int64 {
+        var info = stat()
+        let result = url.path.withCString { lstat($0, &info) }
+        if result != 0 {
+            if errno == ENOENT { return -1 }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return Self.codexStableStatFingerprint(info)
+    }
+
+    private static func currentCodexDirectoryFingerprints(
+        paths: Dictionary<String, Int64>.Keys
+    ) throws -> [String: Int64] {
+        var result: [String: Int64] = [:]
+        for path in paths {
+            result[path] = try self.codexDirectoryFingerprint(at: URL(fileURLWithPath: path))
+        }
+        return result
+    }
+
+    private static func inventoryCodexSessionFiles(
+        roots: [URL],
+        afterMetadataHook: (() -> Void)?,
+        checkCancellation: CancellationCheck?
+    ) throws -> CodexSessionInventory {
+        var rawFiles: [(url: URL, metadata: CodexFileMetadata)] = []
+        var directoryFingerprints: [String: Int64] = [:]
+        var seenPaths = Set<String>()
+
+        for root in roots {
+            try checkCancellation?()
+            let normalizedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+            directoryFingerprints[normalizedRoot.path] = try self.codexDirectoryFingerprint(at: normalizedRoot)
+            guard FileManager.default.fileExists(atPath: normalizedRoot.path) else { continue }
+
+            var enumerationError: Error?
+            guard let enumerator = FileManager.default.enumerator(
+                at: normalizedRoot,
+                includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants],
+                errorHandler: { _, error in
+                    enumerationError = error
+                    return false
+                }
+            ) else {
+                throw NSError(
+                    domain: NSCocoaErrorDomain,
+                    code: NSFileReadUnknownError,
+                    userInfo: [NSFilePathErrorKey: normalizedRoot.path]
+                )
+            }
+
+            while let item = enumerator.nextObject() as? URL {
+                try checkCancellation?()
+                let values = try item.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+                if values.isDirectory == true {
+                    let normalizedDirectory = item.standardizedFileURL.resolvingSymlinksInPath()
+                    directoryFingerprints[normalizedDirectory.path] = try self.codexDirectoryFingerprint(
+                        at: normalizedDirectory
+                    )
+                    continue
+                }
+                guard values.isRegularFile == true,
+                      item.pathExtension.lowercased() == "jsonl"
+                else { continue }
+
+                let metadata = Self.codexFileMetadata(fileURL: item)
+                guard metadata.fileId != nil else {
+                    throw NSError(
+                        domain: NSCocoaErrorDomain,
+                        code: NSFileReadUnknownError,
+                        userInfo: [NSFilePathErrorKey: item.path]
+                    )
+                }
+                guard seenPaths.insert(metadata.path).inserted else { continue }
+                rawFiles.append((url: item, metadata: metadata))
+            }
+            if let enumerationError { throw enumerationError }
+        }
+
+        var files: [CodexSessionInventoryFile] = []
+        files.reserveCapacity(rawFiles.count)
+        for rawFile in rawFiles {
+            try checkCancellation?()
+            let sessionMetadata = try Self.parseCodexSessionMetadata(
+                fileURL: rawFile.url,
+                checkCancellation: checkCancellation
+            )
+            files.append(CodexSessionInventoryFile(
+                url: rawFile.url,
+                metadata: rawFile.metadata,
+                sessionId: sessionMetadata?.sessionId,
+                forkedFromId: sessionMetadata?.forkedFromId
+            ))
+        }
+
+        afterMetadataHook?()
+
+        // Do not commit a mixed inventory if a directory changed while it was
+        // being walked. An append to an existing generation is allowed: its
+        // captured size remains a safe lower frontier and the normal scan path
+        // will consume the appended bytes now or on the next refresh.
+        guard try Self.currentCodexDirectoryFingerprints(paths: directoryFingerprints.keys)
+            == directoryFingerprints
+        else {
+            throw CodexInventoryError.changedDuringEnumeration
+        }
+        for file in files {
+            let current = Self.codexFileMetadata(fileURL: file.url)
+            guard current.fileId == file.metadata.fileId else {
+                throw CodexInventoryError.changedDuringEnumeration
+            }
+        }
+
+        return CodexSessionInventory(
+            files: files,
+            directoryFingerprints: directoryFingerprints
+        )
+    }
+
+    static func codexFilePrefixRelationship(
+        lhsURL: URL,
+        rhsURL: URL,
+        checkCancellation: CancellationCheck?
+    ) throws -> CodexFilePrefixRelationship {
+        let lhsStart = Self.codexFileMetadata(fileURL: lhsURL)
+        let rhsStart = Self.codexFileMetadata(fileURL: rhsURL)
+        guard lhsStart.fileId != nil, rhsStart.fileId != nil else {
+            throw CodexInventoryError.changedDuringEnumeration
+        }
+        let lhsFingerprint = try Self.codexDirectoryFingerprint(at: lhsURL)
+        let rhsFingerprint = try Self.codexDirectoryFingerprint(at: rhsURL)
+
+        try checkCancellation?()
+        let lhsHandle = try FileHandle(forReadingFrom: lhsURL)
+        defer { try? lhsHandle.close() }
+        let rhsHandle = try FileHandle(forReadingFrom: rhsURL)
+        defer { try? rhsHandle.close() }
+        try checkCancellation?()
+
+        let lhsDescriptorStart = Self.codexFileMetadata(
+            fileDescriptor: lhsHandle.fileDescriptor,
+            path: lhsURL.path
+        )
+        let rhsDescriptorStart = Self.codexFileMetadata(
+            fileDescriptor: rhsHandle.fileDescriptor,
+            path: rhsURL.path
+        )
+        guard Self.codexFileMetadataIsSameSnapshot(lhsDescriptorStart, lhsStart),
+              Self.codexFileMetadataIsSameSnapshot(rhsDescriptorStart, rhsStart),
+              Self.codexFileMetadataIsSameSnapshot(
+                  Self.codexFileMetadata(fileURL: lhsURL),
+                  lhsStart
+              ),
+              Self.codexFileMetadataIsSameSnapshot(
+                  Self.codexFileMetadata(fileURL: rhsURL),
+                  rhsStart
+              )
+        else {
+            throw CodexInventoryError.changedDuringEnumeration
+        }
+
+        var remaining = min(lhsStart.size, rhsStart.size)
+        var matched = true
+        while remaining > 0 {
+            try checkCancellation?()
+            let count = Int(min(remaining, 64 * 1024))
+            guard let lhsChunk = try lhsHandle.read(upToCount: count), lhsChunk.count == count,
+                  let rhsChunk = try rhsHandle.read(upToCount: count), rhsChunk.count == count
+            else {
+                throw CodexInventoryError.changedDuringEnumeration
+            }
+            if lhsChunk != rhsChunk {
+                matched = false
+                break
+            }
+            remaining -= Int64(count)
+        }
+
+        let lhsDescriptorEnd = Self.codexFileMetadata(
+            fileDescriptor: lhsHandle.fileDescriptor,
+            path: lhsURL.path
+        )
+        let rhsDescriptorEnd = Self.codexFileMetadata(
+            fileDescriptor: rhsHandle.fileDescriptor,
+            path: rhsURL.path
+        )
+        let lhsEnd = Self.codexFileMetadata(fileURL: lhsURL)
+        let rhsEnd = Self.codexFileMetadata(fileURL: rhsURL)
+        guard Self.codexFileMetadataIsSameSnapshot(lhsDescriptorEnd, lhsDescriptorStart),
+              Self.codexFileMetadataIsSameSnapshot(rhsDescriptorEnd, rhsDescriptorStart),
+              Self.codexFileMetadataIsSameSnapshot(lhsEnd, lhsStart),
+              Self.codexFileMetadataIsSameSnapshot(rhsEnd, rhsStart),
+              try Self.codexDirectoryFingerprint(at: lhsURL) == lhsFingerprint,
+              try Self.codexDirectoryFingerprint(at: rhsURL) == rhsFingerprint
+        else {
+            throw CodexInventoryError.changedDuringEnumeration
+        }
+
+        guard matched else { return .divergent }
+        if lhsStart.size == rhsStart.size { return .identical }
+        return lhsStart.size < rhsStart.size ? .lhsIsPrefix : .rhsIsPrefix
+    }
+
+    private static func codexInventoryOwnerPaths(
+        files: [CodexSessionInventoryFile],
+        cache: CostUsageCache,
+        previousOwnerUsageBySessionId: [String: CostUsageFileUsage],
+        quarantinedPaths: inout Set<String>,
+        checkCancellation: CancellationCheck?
+    ) throws -> [String: String] {
+        let grouped = Dictionary(grouping: files) { entry in
+            entry.sessionId.flatMap { $0.isEmpty ? nil : $0 }
+        }
+        var result: [String: String] = [:]
+
+        for (sessionID, entries) in grouped {
+            guard let sessionID else { continue }
+            let eligibleEntries = entries.filter { entry in
+                guard let cached = cache.files[entry.metadata.path],
+                      cached.codexDuplicateQuarantined == true
+                else { return true }
+                let generation = entry.metadata.fileId
+                    ?? entry.url.standardizedFileURL.resolvingSymlinksInPath().path
+                let quarantineIsStillCurrent = cached.sessionId == sessionID
+                    && cached.sourceGeneration == generation
+                    && cached.sourceStatFingerprint == entry.metadata.statFingerprint
+                    && cached.sourceChangeTimeNanoseconds == entry.metadata.changeTimeNanoseconds
+                    && cached.mtimeUnixMs == entry.metadata.mtimeUnixMs
+                    && cached.size == entry.metadata.size
+                return !quarantineIsStillCurrent
+            }
+            guard !eligibleEntries.isEmpty else {
+                throw CodexInventoryError.ambiguousDuplicateSession(sessionID)
+            }
+            if eligibleEntries.count == 1 {
+                result[sessionID] = eligibleEntries[0].metadata.path
+                continue
+            }
+
+            let cachedOwnerPaths = Set(cache.files.compactMap { path, usage in
+                usage.codexInventoryOnly != true && usage.sessionId == sessionID ? path : nil
+            })
+            let candidates = eligibleEntries.sorted { lhs, rhs in
+                let lhsWasOwner = cachedOwnerPaths.contains(lhs.metadata.path)
+                let rhsWasOwner = cachedOwnerPaths.contains(rhs.metadata.path)
+                if lhsWasOwner != rhsWasOwner { return lhsWasOwner }
+                if lhs.metadata.size != rhs.metadata.size { return lhs.metadata.size > rhs.metadata.size }
+                return lhs.metadata.path < rhs.metadata.path
+            }
+
+            var selected: CodexSessionInventoryFile?
+            for candidate in candidates {
+                var coversEveryCopy = true
+                for other in eligibleEntries where other.metadata.path != candidate.metadata.path {
+                    let relationship = try Self.codexFilePrefixRelationship(
+                        lhsURL: candidate.url,
+                        rhsURL: other.url,
+                        checkCancellation: checkCancellation
+                    )
+                    guard relationship == .identical || relationship == .rhsIsPrefix else {
+                        coversEveryCopy = false
+                        break
+                    }
+                }
+                if coversEveryCopy {
+                    selected = candidate
+                    break
+                }
+            }
+
+            if selected == nil {
+                // Inventory runs before the global duplicate reconciler. Apply
+                // the same committed-frontier fallback here so an atomic owner
+                // replacement cannot block recovery from a stable full copy.
+                let cachedOwners = cache.files.filter { _, usage in
+                    usage.codexInventoryOnly != true && usage.sessionId == sessionID
+                }.sorted(by: { $0.key < $1.key })
+                guard cachedOwners.count <= 1 else {
+                    throw CodexInventoryError.ambiguousDuplicateSession(sessionID)
+                }
+                guard let cachedOwnerUsage = cachedOwners.first?.value
+                    ?? previousOwnerUsageBySessionId[sessionID]
+                else { throw CodexInventoryError.ambiguousDuplicateSession(sessionID) }
+                var frontierCandidates: [CodexSessionInventoryFile] = []
+                for candidate in eligibleEntries {
+                    if try Self.codexFileMatchesCommittedFrontier(
+                        fileURL: candidate.url,
+                        cached: cachedOwnerUsage,
+                        checkCancellation: checkCancellation
+                    ) {
+                        frontierCandidates.append(candidate)
+                    }
+                }
+                let orderedTrusted = frontierCandidates.sorted { lhs, rhs in
+                    if lhs.metadata.size != rhs.metadata.size {
+                        return lhs.metadata.size > rhs.metadata.size
+                    }
+                    return lhs.metadata.path < rhs.metadata.path
+                }
+                for candidate in orderedTrusted {
+                    var coversEveryTrustedCopy = true
+                    for other in frontierCandidates
+                        where other.metadata.path != candidate.metadata.path
+                    {
+                        let relationship = try Self.codexFilePrefixRelationship(
+                            lhsURL: candidate.url,
+                            rhsURL: other.url,
+                            checkCancellation: checkCancellation
+                        )
+                        guard relationship == .identical || relationship == .rhsIsPrefix else {
+                            coversEveryTrustedCopy = false
+                            break
+                        }
+                    }
+                    if coversEveryTrustedCopy {
+                        selected = candidate
+                        break
+                    }
+                }
+                guard let trusted = selected else {
+                    throw CodexInventoryError.ambiguousDuplicateSession(sessionID)
+                }
+                for candidate in eligibleEntries where candidate.metadata.path != trusted.metadata.path {
+                    let relationship = try Self.codexFilePrefixRelationship(
+                        lhsURL: trusted.url,
+                        rhsURL: candidate.url,
+                        checkCancellation: checkCancellation
+                    )
+                    if relationship != .identical && relationship != .rhsIsPrefix {
+                        quarantinedPaths.insert(candidate.metadata.path)
+                    }
+                }
+            }
+            guard let selected else { throw CodexInventoryError.ambiguousDuplicateSession(sessionID) }
+            result[sessionID] = selected.metadata.path
+        }
+
+        return result
+    }
+
+    private static func reconcileCodexDuplicateRolesBeforeScan(
+        cache: inout CostUsageCache,
+        checkCancellation: CancellationCheck?
+    ) throws -> CodexDuplicateReconciliation {
+        var pathsNeedingScan: [URL] = []
+        var quarantinedPaths = Set<String>()
+
+        func coveringCopy(
+            in candidates: [CodexDuplicateCurrentCopy],
+            preferExistingOwner: Bool
+        ) throws -> CodexDuplicateCurrentCopy? {
+            let ordered = candidates.sorted { lhs, rhs in
+                if preferExistingOwner {
+                    let lhsWasOwner = lhs.cached.codexInventoryOnly != true
+                        && lhs.cached.sessionId == lhs.currentSessionId
+                    let rhsWasOwner = rhs.cached.codexInventoryOnly != true
+                        && rhs.cached.sessionId == rhs.currentSessionId
+                    if lhsWasOwner != rhsWasOwner { return lhsWasOwner }
+                }
+                if lhs.metadata.size != rhs.metadata.size { return lhs.metadata.size > rhs.metadata.size }
+                return lhs.path < rhs.path
+            }
+            for candidate in ordered {
+                var coversEveryCopy = true
+                for other in candidates where other.path != candidate.path {
+                    let relationship = try Self.codexFilePrefixRelationship(
+                        lhsURL: candidate.url,
+                        rhsURL: other.url,
+                        checkCancellation: checkCancellation
+                    )
+                    guard relationship == .identical || relationship == .rhsIsPrefix else {
+                        coversEveryCopy = false
+                        break
+                    }
+                }
+                if coversEveryCopy { return candidate }
+            }
+            return nil
+        }
+
+        // Reconcile every duplicate component from one immutable filesystem/cache
+        // snapshot. Mutating one cached session group before inspecting another
+        // makes simultaneous A -> B / B -> C moves depend on dictionary order.
+        let cachedFilesSnapshot = cache.files
+        let originalEntries: [(path: String, usage: CostUsageFileUsage, sessionId: String)] =
+            cachedFilesSnapshot.compactMap { path, usage in
+                guard let sessionId = usage.sessionId, !sessionId.isEmpty else { return nil }
+                return (path: path, usage: usage, sessionId: sessionId)
+            }
+        let originalGroups = Dictionary(grouping: originalEntries, by: { $0.sessionId })
+
+        var copiesByPath: [String: CodexDuplicateCurrentCopy] = [:]
+        var snapshotErrorsByPath: [String: Error] = [:]
+        var missingMetadataPaths = Set<String>()
+        var repairedNoMetadataSessionIds = Set<String>()
+        copiesByPath.reserveCapacity(originalEntries.count)
+
+        for entry in originalEntries.sorted(by: { $0.path < $1.path }) {
+            try checkCancellation?()
+            let url = URL(fileURLWithPath: entry.path)
+            let metadata = Self.codexFileMetadata(fileURL: url)
+            guard metadata.fileId != nil else {
+                missingMetadataPaths.insert(entry.path)
+                continue
+            }
+            let currentGeneration = metadata.fileId
+                ?? url.standardizedFileURL.resolvingSymlinksInPath().path
+            let changed = entry.usage.sourceGeneration != currentGeneration
+                || entry.usage.sourceStatFingerprint != metadata.statFingerprint
+                || entry.usage.sourceChangeTimeNanoseconds != metadata.changeTimeNanoseconds
+                || entry.usage.mtimeUnixMs != metadata.mtimeUnixMs
+                || entry.usage.size != metadata.size
+
+            var parsedMetadata: CodexSessionMetadata?
+            if changed {
+                do {
+                    parsedMetadata = try Self.parseCodexSessionMetadata(
+                        fileURL: url,
+                        checkCancellation: checkCancellation
+                    )
+                } catch {
+                    snapshotErrorsByPath[entry.path] = error
+                    continue
+                }
+            }
+            let currentSessionId = parsedMetadata?.sessionId ?? (changed ? nil : entry.sessionId)
+            guard let currentSessionId, !currentSessionId.isEmpty else {
+                missingMetadataPaths.insert(entry.path)
+                continue
+            }
+            copiesByPath[entry.path] = CodexDuplicateCurrentCopy(
+                path: entry.path,
+                url: url,
+                cached: entry.usage,
+                metadata: metadata,
+                currentSessionId: currentSessionId,
+                currentForkedFromId: parsedMetadata?.forkedFromId ?? entry.usage.forkedFromId,
+                changed: changed
+            )
+        }
+
+        // A metadata-less inventory sentinel may be repaired or replaced later.
+        // Parse all such paths into the same immutable plan so two repairs to the
+        // same session cannot manufacture an owner stub in path order.
+        let deferredNoMetadataEntries = cachedFilesSnapshot.filter { _, usage in
+            usage.codexInventoryOnly == true && usage.sessionId == nil
+        }.sorted(by: { $0.key < $1.key })
+        for (path, usage) in deferredNoMetadataEntries {
+            try checkCancellation?()
+            let url = URL(fileURLWithPath: path)
+            let metadata = Self.codexFileMetadata(fileURL: url)
+            guard metadata.fileId != nil else { continue }
+            guard let parsedMetadata = try Self.parseCodexSessionMetadata(
+                fileURL: url,
+                checkCancellation: checkCancellation
+            ), let sessionId = parsedMetadata.sessionId, !sessionId.isEmpty else {
+                continue
+            }
+            copiesByPath[path] = CodexDuplicateCurrentCopy(
+                path: path,
+                url: url,
+                cached: usage,
+                metadata: metadata,
+                currentSessionId: sessionId,
+                currentForkedFromId: parsedMetadata.forkedFromId,
+                changed: true
+            )
+            repairedNoMetadataSessionIds.insert(sessionId)
+        }
+
+        let currentGroups = Dictionary(grouping: copiesByPath.values, by: { $0.currentSessionId })
+        var affectedSessionIds = Set(
+            originalGroups.compactMap { sessionId, entries in entries.count > 1 ? sessionId : nil }
+        )
+        affectedSessionIds.formUnion(
+            currentGroups.compactMap { sessionId, entries in entries.count > 1 ? sessionId : nil }
+        )
+        affectedSessionIds.formUnion(repairedNoMetadataSessionIds)
+
+        // Session-ID rewrites connect the cached identity and the identity now
+        // on disk. Expand from every duplicate so all related groups are planned
+        // together, including an external owner that moves again in this scan.
+        var adjacentSessionIds: [String: Set<String>] = [:]
+        for copy in copiesByPath.values {
+            guard let originalSessionId = copy.cached.sessionId,
+                  originalSessionId != copy.currentSessionId
+            else { continue }
+            adjacentSessionIds[originalSessionId, default: []].insert(copy.currentSessionId)
+            adjacentSessionIds[copy.currentSessionId, default: []].insert(originalSessionId)
+        }
+        var pendingSessionIds = Array(affectedSessionIds)
+        while let sessionId = pendingSessionIds.popLast() {
+            for adjacent in adjacentSessionIds[sessionId] ?? []
+                where affectedSessionIds.insert(adjacent).inserted
+            {
+                pendingSessionIds.append(adjacent)
+            }
+        }
+
+        if !affectedSessionIds.isEmpty {
+            for entry in originalEntries where affectedSessionIds.contains(entry.sessionId) {
+                if let error = snapshotErrorsByPath[entry.path] { throw error }
+                guard !missingMetadataPaths.contains(entry.path), copiesByPath[entry.path] != nil else {
+                    throw Self.codexMissingSessionMetadataError(
+                        previousSessionId: entry.sessionId,
+                        path: entry.path
+                    )
+                }
+            }
+
+            var originalOwnerBySessionId: [String: (path: String, usage: CostUsageFileUsage)] = [:]
+            for sessionId in affectedSessionIds.sorted() {
+                let entries = originalGroups[sessionId] ?? []
+                let owners = entries.filter { $0.usage.codexInventoryOnly != true }
+                guard owners.count <= 1 else {
+                    throw Self.codexAmbiguousDuplicateSessionError(
+                        sessionId: sessionId,
+                        path: entries.map(\.path).sorted().first ?? ""
+                    )
+                }
+                if entries.count > 1, owners.isEmpty {
+                    throw Self.codexAmbiguousDuplicateSessionError(
+                        sessionId: sessionId,
+                        path: entries.map(\.path).sorted().first ?? ""
+                    )
+                }
+                if let owner = owners.first {
+                    originalOwnerBySessionId[sessionId] = (owner.path, owner.usage)
+                }
+            }
+
+            let affectedCopies = copiesByPath.values.filter { copy in
+                copy.cached.sessionId.map(affectedSessionIds.contains) == true
+                    || affectedSessionIds.contains(copy.currentSessionId)
+            }
+            let affectedCurrentGroups = Dictionary(
+                grouping: affectedCopies,
+                by: { $0.currentSessionId }
+            )
+            var ownerPathByCurrentSessionId: [String: String] = [:]
+
+            for currentSessionId in affectedCurrentGroups.keys.sorted() {
+                try checkCancellation?()
+                guard let candidates = affectedCurrentGroups[currentSessionId] else { continue }
+                if !candidates.contains(where: \.changed) {
+                    let cachedOwners = candidates.filter {
+                        $0.cached.codexInventoryOnly != true
+                            && $0.cached.sessionId == currentSessionId
+                    }
+                    if cachedOwners.count == 1 {
+                        ownerPathByCurrentSessionId[currentSessionId] = cachedOwners[0].path
+                        continue
+                    }
+
+                    // The former owner can move to another session while an
+                    // unchanged, previously proven sentinel remains behind. Its
+                    // full committed-prefix proof below makes promotion safe.
+                    guard cachedOwners.isEmpty,
+                          let originalOwner = originalOwnerBySessionId[currentSessionId],
+                          copiesByPath[originalOwner.path]?.currentSessionId != currentSessionId,
+                          let trusted = try coveringCopy(
+                              in: candidates,
+                              preferExistingOwner: true
+                          )
+                    else {
+                        throw Self.codexAmbiguousDuplicateSessionError(
+                            sessionId: currentSessionId,
+                            path: candidates.map(\.path).sorted().first ?? ""
+                        )
+                    }
+                    ownerPathByCurrentSessionId[currentSessionId] = trusted.path
+                    continue
+                }
+                if let covering = try coveringCopy(in: candidates, preferExistingOwner: true) {
+                    ownerPathByCurrentSessionId[currentSessionId] = covering.path
+                    continue
+                }
+
+                // A destructively rewritten former owner is less trustworthy
+                // than another copy that still covers its committed frontier.
+                // Select the longest mutually consistent trusted chain, even if
+                // that chain contains a valid append from this same refresh.
+                guard let originalOwner = originalOwnerBySessionId[currentSessionId],
+                      candidates.contains(where: {
+                          $0.path == originalOwner.path && $0.changed
+                      })
+                else {
+                    throw Self.codexAmbiguousDuplicateSessionError(
+                        sessionId: currentSessionId,
+                        path: candidates.map(\.path).sorted().first ?? ""
+                    )
+                }
+                var frontierCandidates: [CodexDuplicateCurrentCopy] = []
+                for candidate in candidates {
+                    if try Self.codexFileMatchesCommittedFrontier(
+                        fileURL: candidate.url,
+                        cached: originalOwner.usage,
+                        checkCancellation: checkCancellation
+                    ) {
+                        frontierCandidates.append(candidate)
+                    }
+                }
+                guard let trusted = try coveringCopy(
+                    in: frontierCandidates,
+                    preferExistingOwner: true
+                ) else {
+                    throw Self.codexAmbiguousDuplicateSessionError(
+                        sessionId: currentSessionId,
+                        path: candidates.map(\.path).sorted().first ?? ""
+                    )
+                }
+                ownerPathByCurrentSessionId[currentSessionId] = trusted.path
+                for candidate in candidates where candidate.path != trusted.path {
+                    let relationship = try Self.codexFilePrefixRelationship(
+                        lhsURL: trusted.url,
+                        rhsURL: candidate.url,
+                        checkCancellation: checkCancellation
+                    )
+                    if relationship != .identical && relationship != .rhsIsPrefix {
+                        quarantinedPaths.insert(candidate.path)
+                    }
+                }
+            }
+
+            // Validate every old aggregate frontier before mutating any role or
+            // total. This is the transaction boundary for the global plan.
+            var transferredUsageByReplacementPath: [String: CostUsageFileUsage] = [:]
+            var transferredOriginalOwnerPaths = Set<String>()
+            for originalSessionId in originalOwnerBySessionId.keys.sorted() {
+                guard let originalOwner = originalOwnerBySessionId[originalSessionId] else { continue }
+                guard let replacementPath = ownerPathByCurrentSessionId[originalSessionId],
+                      let replacement = copiesByPath[replacementPath]
+                else {
+                    throw Self.codexAmbiguousDuplicateSessionError(
+                        sessionId: originalSessionId,
+                        path: originalOwner.path
+                    )
+                }
+                let keepsOriginalOwner = replacementPath == originalOwner.path
+                    && replacement.currentSessionId == originalSessionId
+                if !keepsOriginalOwner {
+                    guard try Self.codexFileMatchesCommittedFrontier(
+                        fileURL: replacement.url,
+                        cached: originalOwner.usage,
+                        checkCancellation: checkCancellation
+                    ) else {
+                        throw Self.codexAmbiguousDuplicateSessionError(
+                            sessionId: originalSessionId,
+                            path: replacementPath
+                        )
+                    }
+                    var transferred = originalOwner.usage
+                    transferred.sessionId = originalSessionId
+                    transferred.forkedFromId = replacement.currentForkedFromId
+                    transferred.sourceGeneration = replacement.metadata.fileId
+                        ?? replacement.url.standardizedFileURL.resolvingSymlinksInPath().path
+                    transferred.sourceStatFingerprint = replacement.metadata.statFingerprint
+                    transferred.sourceChangeTimeNanoseconds = replacement.metadata.changeTimeNanoseconds
+                    transferred.codexInventoryOnly = false
+                    transferred.codexDuplicateQuarantined = nil
+                    transferredUsageByReplacementPath[replacementPath] = transferred
+                    transferredOriginalOwnerPaths.insert(originalOwner.path)
+                }
+            }
+
+            for copy in affectedCopies.sorted(by: { $0.path < $1.path }) {
+                let isOwner = ownerPathByCurrentSessionId[copy.currentSessionId] == copy.path
+                let keptExistingOwner = isOwner
+                    && copy.cached.codexInventoryOnly != true
+                    && copy.cached.sessionId == copy.currentSessionId
+                let keptStableSentinel = !isOwner
+                    && !copy.changed
+                    && copy.cached.codexInventoryOnly == true
+                    && copy.cached.sessionId == copy.currentSessionId
+
+                if isOwner, let transferred = transferredUsageByReplacementPath[copy.path] {
+                    // The replacement proved the exact committed prefix, so move
+                    // the full retained ledger instead of rebuilding only the
+                    // currently requested reporting window.
+                    cache.files[copy.path] = transferred
+                    pathsNeedingScan.append(copy.url)
+                    continue
+                }
+
+                if keptExistingOwner {
+                    if copy.changed { pathsNeedingScan.append(copy.url) }
+                    continue
+                }
+                if keptStableSentinel { continue }
+
+                if copy.cached.codexInventoryOnly != true,
+                   !transferredOriginalOwnerPaths.contains(copy.path) {
+                    Self.applyFileDays(cache: &cache, fileDays: copy.cached.days, sign: -1)
+                }
+                cache.files[copy.path] = Self.makeFileUsage(
+                    mtimeUnixMs: copy.metadata.mtimeUnixMs,
+                    size: copy.metadata.size,
+                    days: [:],
+                    parsedBytes: isOwner ? 0 : copy.metadata.size,
+                    sessionId: copy.currentSessionId,
+                    forkedFromId: copy.currentForkedFromId,
+                    sourceGeneration: copy.metadata.fileId
+                        ?? copy.url.standardizedFileURL.resolvingSymlinksInPath().path,
+                    sourceStatFingerprint: copy.metadata.statFingerprint,
+                    sourceChangeTimeNanoseconds: copy.metadata.changeTimeNanoseconds,
+                    codexInventoryOnly: !isOwner,
+                    codexDuplicateQuarantined: quarantinedPaths.contains(copy.path) ? true : nil
+                )
+                if isOwner { pathsNeedingScan.append(copy.url) }
+            }
+        }
+
+        let ownerEntries: [(path: String, sessionId: String)] = cache.files.compactMap { path, usage in
+            guard usage.codexInventoryOnly != true,
+                  let sessionId = usage.sessionId,
+                  !sessionId.isEmpty
+            else { return nil }
+            return (path: path, sessionId: sessionId)
+        }
+        let duplicateOwners = Dictionary(grouping: ownerEntries, by: { $0.sessionId })
+            .first { $0.value.count > 1 }
+        if let duplicateOwners {
+            throw Self.codexAmbiguousDuplicateSessionError(
+                sessionId: duplicateOwners.key,
+                path: duplicateOwners.value.map { $0.path }.sorted().first ?? ""
+            )
+        }
+
+        var seenPaths = Set<String>()
+        return CodexDuplicateReconciliation(
+            scanURLs: pathsNeedingScan.filter { seenPaths.insert($0.path).inserted },
+            quarantinedPaths: quarantinedPaths
+        )
+    }
+
     private static func listCodexRecentlyModifiedFiles(
         root: URL,
         scanSinceKey: String,
         scanUntilKey: String,
-        modifiedSince: Date) -> [URL]
+        modifiedSince: Date) throws -> [URL]
     {
         let lookbackSinceKey = self.dayKey(scanSinceKey, addingDays: -self.codexActiveSessionLookbackDays)
             ?? scanSinceKey
-        let partitioned = self.listCodexSessionFilesByDatePartition(
+        let partitioned = try self.listCodexSessionFilesByDatePartition(
             root: root,
             scanSinceKey: lookbackSinceKey,
             scanUntilKey: scanUntilKey)
-        let partitionedModified = self.filterRecentlyModified(files: partitioned, modifiedSince: modifiedSince)
+        let partitionedModified = try self.filterRecentlyModified(
+            files: partitioned,
+            modifiedSince: modifiedSince
+        )
 
-        let legacyRecursive = self.listCodexRecentlyModifiedFilesRecursive(root: root, modifiedSince: modifiedSince)
+        let legacyRecursive = try self.listCodexRecentlyModifiedFilesRecursive(
+            root: root,
+            modifiedSince: modifiedSince
+        )
         var seen = Set(partitionedModified.map(\.path))
         var out = partitionedModified
         for fileURL in legacyRecursive where !seen.contains(fileURL.path) {
@@ -775,13 +1644,26 @@ enum CostUsageScanner {
         return out
     }
 
-    private static func filterRecentlyModified(files: [URL], modifiedSince: Date) -> [URL] {
-        files.filter { fileURL in
-            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey])
-            guard values?.isRegularFile == true else { return false }
-            guard let modifiedAt = values?.contentModificationDate else { return false }
-            return modifiedAt >= modifiedSince
+    private static func filterRecentlyModified(files: [URL], modifiedSince: Date) throws -> [URL] {
+        var output: [URL] = []
+        for fileURL in files {
+            do {
+                let values = try fileURL.resourceValues(
+                    forKeys: [.isRegularFileKey, .contentModificationDateKey]
+                )
+                guard values.isRegularFile == true,
+                      let modifiedAt = values.contentModificationDate,
+                      modifiedAt >= modifiedSince
+                else {
+                    continue
+                }
+                output.append(fileURL)
+            } catch {
+                if self.isMissingFileError(error) { continue }
+                throw error
+            }
         }
+        return output
     }
 
     private static func isDatePartitionComponent(_ value: String, length: Int) -> Bool {
@@ -811,28 +1693,55 @@ enum CostUsageScanner {
         return out
     }
 
-    private static func listCodexRecentlyModifiedFilesRecursive(root: URL, modifiedSince: Date) -> [URL] {
+    private static func listCodexRecentlyModifiedFilesRecursive(
+        root: URL,
+        modifiedSince: Date
+    ) throws -> [URL] {
+        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
+        var enumerationError: Error?
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants])
-        else { return [] }
+            options: [.skipsHiddenFiles, .skipsPackageDescendants],
+            errorHandler: { _, error in
+                enumerationError = error
+                return false
+            })
+        else {
+            throw NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileReadUnknownError,
+                userInfo: [NSFilePathErrorKey: root.path]
+            )
+        }
 
         var out: [URL] = []
         while let fileURL = enumerator.nextObject() as? URL {
             guard fileURL.pathExtension.lowercased() == "jsonl" else { continue }
-            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey])
-            guard values?.isRegularFile == true else { continue }
-            guard let modifiedAt = values?.contentModificationDate, modifiedAt >= modifiedSince else { continue }
-            out.append(fileURL)
+            do {
+                let values = try fileURL.resourceValues(
+                    forKeys: [.isRegularFileKey, .contentModificationDateKey]
+                )
+                guard values.isRegularFile == true,
+                      let modifiedAt = values.contentModificationDate,
+                      modifiedAt >= modifiedSince
+                else {
+                    continue
+                }
+                out.append(fileURL)
+            } catch {
+                if self.isMissingFileError(error) { continue }
+                throw error
+            }
         }
+        if let enumerationError { throw enumerationError }
         return out
     }
 
     private static func isWithinCodexRoots(fileURL: URL, roots: [URL]) -> Bool {
-        let filePath = fileURL.standardizedFileURL.path
+        let filePath = fileURL.standardizedFileURL.resolvingSymlinksInPath().path
         return roots.contains { root in
-            let rootPath = root.standardizedFileURL.path
+            let rootPath = root.standardizedFileURL.resolvingSymlinksInPath().path
             if filePath == rootPath { return true }
             let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
             return filePath.hasPrefix(prefix)
@@ -842,7 +1751,7 @@ enum CostUsageScanner {
     private static func listCodexSessionFilesByDatePartition(
         root: URL,
         scanSinceKey: String,
-        scanUntilKey: String) -> [URL]
+        scanUntilKey: String) throws -> [URL]
     {
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         var out: [URL] = []
@@ -859,14 +1768,22 @@ enum CostUsageScanner {
                 .appendingPathComponent(m, isDirectory: true)
                 .appendingPathComponent(d, isDirectory: true)
 
-            if let items = try? FileManager.default.contentsOfDirectory(
-                at: dayDir,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles])
-            {
+            do {
+                guard FileManager.default.fileExists(atPath: dayDir.path) else {
+                    date = Calendar.current.date(byAdding: .day, value: 1, to: date)
+                        ?? untilDate.addingTimeInterval(1)
+                    continue
+                }
+                let items = try FileManager.default.contentsOfDirectory(
+                    at: dayDir,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles]
+                )
                 for item in items where item.pathExtension.lowercased() == "jsonl" {
                     out.append(item)
                 }
+            } catch {
+                if !self.isMissingFileError(error) { throw error }
             }
 
             date = Calendar.current.date(byAdding: .day, value: 1, to: date) ?? untilDate.addingTimeInterval(1)
@@ -875,13 +1792,23 @@ enum CostUsageScanner {
         return out
     }
 
-    private static func listCodexSessionFilesFlat(root: URL, scanSinceKey: String, scanUntilKey: String) -> [URL] {
+    private static func listCodexSessionFilesFlat(
+        root: URL,
+        scanSinceKey: String,
+        scanUntilKey: String
+    ) throws -> [URL] {
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
-        guard let items = try? FileManager.default.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants])
-        else { return [] }
+        let items: [URL]
+        do {
+            items = try FileManager.default.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            )
+        } catch {
+            if self.isMissingFileError(error) { return [] }
+            throw error
+        }
 
         var out: [URL] = []
         for item in items where item.pathExtension.lowercased() == "jsonl" {
@@ -895,14 +1822,25 @@ enum CostUsageScanner {
         return out
     }
 
-    private static func listCodexLegacySessionFilesRecursive(root: URL) -> [URL] {
+    private static func listCodexLegacySessionFilesRecursive(root: URL) throws -> [URL] {
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         let rootPath = root.standardizedFileURL.path
+        var enumerationError: Error?
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants])
-        else { return [] }
+            options: [.skipsHiddenFiles, .skipsPackageDescendants],
+            errorHandler: { _, error in
+                enumerationError = error
+                return false
+            })
+        else {
+            throw NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileReadUnknownError,
+                userInfo: [NSFilePathErrorKey: root.path]
+            )
+        }
 
         var out: [URL] = []
         while let item = enumerator.nextObject() as? URL {
@@ -913,7 +1851,14 @@ enum CostUsageScanner {
             guard item.pathExtension.lowercased() == "jsonl" else { continue }
             out.append(item)
         }
+        if let enumerationError { throw enumerationError }
         return out
+    }
+
+    private static func isMissingFileError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == NSCocoaErrorDomain
+            && nsError.code == NSFileNoSuchFileError
     }
 
     private static func isCodexDatePartitionAncestor(_ url: URL, rootPath: String) -> Bool {
@@ -1072,6 +2017,23 @@ enum CostUsageScanner {
                 .extractJSONByteIntField(Self.codexJSONFieldOutputTokens, from: bytes, in: objectRange, atDepth: 1) ??
                 0)
         return CostUsageCodexTotals(input: input, cached: cached, output: output)
+    }
+
+    private static func codexTimestamp(in lineData: Data) -> Date? {
+        lineData.withUnsafeBytes { rawBytes in
+            let bytes = rawBytes.bindMemory(to: UInt8.self)
+            guard !bytes.isEmpty,
+                  let timestamp = Self.extractJSONByteStringField(
+                      Self.codexJSONFieldTimestamp,
+                      from: bytes,
+                      in: 0..<bytes.count,
+                      atDepth: 1
+                  )
+            else {
+                return nil
+            }
+            return Self.dateFromTimestamp(timestamp)
+        }
     }
 
     private static func parseCodexFastLine(_ bytes: Data) -> CodexFastLine? {
@@ -1238,7 +2200,7 @@ enum CostUsageScanner {
             self.log.warning(
                 "Codex cost usage failed to open session file for session id parsing",
                 metadata: ["path": fileURL.path, "error": error.localizedDescription])
-            return nil
+            throw error
         }
         defer { try? handle.close() }
 
@@ -1286,7 +2248,7 @@ enum CostUsageScanner {
             self.log.warning(
                 "Codex cost usage failed while reading session file for session id parsing",
                 metadata: ["path": fileURL.path, "error": error.localizedDescription])
-            return nil
+            throw error
         }
 
         if let metadata = parseSessionMetadata(from: buffer) {
@@ -1455,6 +2417,7 @@ enum CostUsageScanner {
     static func parseCodexFile(
         fileURL: URL,
         range: CostUsageDayRange,
+        through: Date? = nil,
         startOffset: Int64 = 0,
         initialModel: String? = nil,
         initialTotals: CostUsageCodexTotals? = nil,
@@ -1471,6 +2434,7 @@ enum CostUsageScanner {
             try? Self.parseCodexFileCancellable(
                 fileURL: fileURL,
                 range: range,
+                through: through,
                 startOffset: startOffset,
                 initialModel: initialModel,
                 initialTotals: initialTotals,
@@ -1489,6 +2453,11 @@ enum CostUsageScanner {
             lastCodexTurnID: initialCodexTurnID,
             sessionId: nil,
             forkedFromId: nil,
+            lastTokenEventEndOffset: nil,
+            lastTokenEventFingerprint: nil,
+            lastTokenEventTimestamp: nil,
+            lastTokenEventTotalTokens: nil,
+            tokenEventWatermarks: [],
             rows: [])
     }
 
@@ -1496,6 +2465,7 @@ enum CostUsageScanner {
     static func parseCodexFileCancellable(
         fileURL: URL,
         range: CostUsageDayRange,
+        through: Date? = nil,
         startOffset: Int64 = 0,
         initialModel: String? = nil,
         initialTotals: CostUsageCodexTotals? = nil,
@@ -1518,6 +2488,11 @@ enum CostUsageScanner {
         var rawTotalsBaseline = initialRawTotalsBaseline ?? initialTotals
         var sawDivergentTotals = initialHasDivergentTotals
         var deferredError: Error?
+        var lastTokenEventEndOffset: Int64?
+        var lastTokenEventFingerprint: String?
+        var lastTokenEventTimestamp: Date?
+        var lastTokenEventTotalTokens: Int?
+        var tokenEventWatermarks: [CostUsageTokenEventWatermark] = []
 
         var days: [String: [String: [Int]]] = [:]
         var rows: [CodexUsageRow] = []
@@ -1563,9 +2538,15 @@ enum CostUsageScanner {
         }
 
         // swiftlint:disable:next function_body_length
-        func handleTokenCount(_ record: CodexTokenCountRecord) throws {
-            guard let dayKey = Self.dayKeyFromTimestamp(record.timestamp) ?? Self.dayKeyFromParsedISO(record.timestamp)
-            else { return }
+        func handleTokenCount(_ record: CodexTokenCountRecord, line: CostUsageJsonl.Line) throws {
+            let eventTimestamp = Self.dateFromTimestamp(record.timestamp)
+            let eventDayKey = Self.dayKeyFromTimestamp(record.timestamp)
+                ?? Self.dayKeyFromParsedISO(record.timestamp)
+            lastTokenEventEndOffset = line.endOffset
+            lastTokenEventFingerprint = CodexTokenObservationCursor.fingerprint(for: line.bytes)
+            lastTokenEventTimestamp = eventTimestamp
+            lastTokenEventTotalTokens = record.total.map { max(0, $0.input) + max(0, $0.output) }
+            guard let dayKey = eventDayKey else { return }
 
             let model = currentModel ?? record.model ?? "gpt-5"
             let total = record.total
@@ -1603,15 +2584,20 @@ enum CostUsageScanner {
                 defer {
                     unresolvedForkTotalWatermark = currentRawTotals
                 }
-                guard let last,
-                      let watermark = unresolvedForkTotalWatermark
-                else {
-                    return
-                }
+                guard let last else { return }
 
                 let rawLastDelta = last
-                let rawTotalDelta = Self.codexTotalDelta(from: watermark, to: currentRawTotals)
-                let adjustedDelta = Self.codexMinTotals(rawLastDelta, rawTotalDelta)
+                let adjustedDelta = if let watermark = unresolvedForkTotalWatermark {
+                    Self.codexMinTotals(
+                        rawLastDelta,
+                        Self.codexTotalDelta(from: watermark, to: currentRawTotals)
+                    )
+                } else {
+                    // The parent file is unavailable, but last_token_usage is
+                    // still the fork child's own completed turn. This is the
+                    // same conservative baseline used by the live poll path.
+                    rawLastDelta
+                }
                 deltaInput = adjustedDelta.input
                 deltaCached = adjustedDelta.cached
                 deltaOutput = adjustedDelta.output
@@ -1727,6 +2713,18 @@ enum CostUsageScanner {
                 return
             }
 
+            if CostUsageDayRange.isInRange(
+                dayKey: dayKey,
+                since: range.scanSinceKey,
+                until: range.scanUntilKey
+            ) {
+                tokenEventWatermarks.append(CostUsageTokenEventWatermark(
+                    endOffset: line.endOffset,
+                    lineFingerprint: CodexTokenObservationCursor.fingerprint(for: line.bytes),
+                    eventTimestamp: eventTimestamp,
+                    totalTokens: lastTokenEventTotalTokens
+                ))
+            }
             if deltaInput == 0, deltaCached == 0, deltaOutput == 0 { return }
             let cachedClamp = min(deltaCached, deltaInput)
             let normModel = CostUsagePricing.normalizeCodexModel(model)
@@ -1751,7 +2749,7 @@ enum CostUsageScanner {
             }
         }
 
-        func handleFastLine(_ fastLine: CodexFastLine) throws {
+        func handleFastLine(_ fastLine: CodexFastLine, line: CostUsageJsonl.Line) throws {
             switch fastLine {
             case let .sessionMeta(metadata):
                 try handleSessionMetadata(metadata)
@@ -1762,7 +2760,7 @@ enum CostUsageScanner {
             case let .taskStarted(turnID):
                 currentTurnID = turnID
             case let .tokenCount(record):
-                try handleTokenCount(record)
+                try handleTokenCount(record, line: line)
             }
         }
 
@@ -1792,6 +2790,14 @@ enum CostUsageScanner {
                 maxLineBytes: maxLineBytes,
                 prefixBytes: prefixBytes,
                 checkCancellation: checkCancellation,
+                stopBeforeLine: { line in
+                    guard let through,
+                          let timestamp = Self.codexTimestamp(in: line.bytes)
+                    else {
+                        return false
+                    }
+                    return timestamp > through
+                },
                 onLine: { line in
                     if deferredError != nil { return }
                     guard !line.bytes.isEmpty else { return }
@@ -1818,7 +2824,7 @@ enum CostUsageScanner {
 
                     if let fastLine = Self.parseCodexFastLine(line.bytes) {
                         do {
-                            try handleFastLine(fastLine)
+                            try handleFastLine(fastLine, line: line)
                         } catch {
                             deferredError = error
                         }
@@ -1905,6 +2911,13 @@ enum CostUsageScanner {
                         let total = (info?["total_token_usage"] as? [String: Any])
                         let last = (info?["last_token_usage"] as? [String: Any])
 
+                        lastTokenEventEndOffset = line.endOffset
+                        lastTokenEventFingerprint = CodexTokenObservationCursor.fingerprint(for: line.bytes)
+                        lastTokenEventTimestamp = Self.dateFromTimestamp(tsText)
+                        lastTokenEventTotalTokens = total.map {
+                            let totals = tokenTotals($0)
+                            return max(0, totals.input) + max(0, totals.output)
+                        }
                         var deltaInput = 0
                         var deltaCached = 0
                         var deltaOutput = 0
@@ -1937,15 +2950,17 @@ enum CostUsageScanner {
                             defer {
                                 unresolvedForkTotalWatermark = currentRawTotals
                             }
-                            guard let last,
-                                  let watermark = unresolvedForkTotalWatermark
-                            else {
-                                return
-                            }
+                            guard let last else { return }
 
                             let rawLastDelta = tokenTotals(last)
-                            let rawTotalDelta = Self.codexTotalDelta(from: watermark, to: currentRawTotals)
-                            let adjustedDelta = Self.codexMinTotals(rawLastDelta, rawTotalDelta)
+                            let adjustedDelta = if let watermark = unresolvedForkTotalWatermark {
+                                Self.codexMinTotals(
+                                    rawLastDelta,
+                                    Self.codexTotalDelta(from: watermark, to: currentRawTotals)
+                                )
+                            } else {
+                                rawLastDelta
+                            }
                             deltaInput = adjustedDelta.input
                             deltaCached = adjustedDelta.cached
                             deltaOutput = adjustedDelta.output
@@ -2064,6 +3079,18 @@ enum CostUsageScanner {
                             return
                         }
 
+                        if CostUsageDayRange.isInRange(
+                            dayKey: dayKey,
+                            since: range.scanSinceKey,
+                            until: range.scanUntilKey
+                        ) {
+                            tokenEventWatermarks.append(CostUsageTokenEventWatermark(
+                                endOffset: line.endOffset,
+                                lineFingerprint: CodexTokenObservationCursor.fingerprint(for: line.bytes),
+                                eventTimestamp: lastTokenEventTimestamp,
+                                totalTokens: lastTokenEventTotalTokens
+                            ))
+                        }
                         if deltaInput == 0, deltaCached == 0, deltaOutput == 0 { return }
                         let cachedClamp = min(deltaCached, deltaInput)
                         let normModel = CostUsagePricing.normalizeCodexModel(model)
@@ -2097,7 +3124,7 @@ enum CostUsageScanner {
             self.log.warning(
                 "Codex cost usage failed while scanning session file",
                 metadata: ["path": fileURL.path, "error": error.localizedDescription])
-            parsedBytes = startOffset
+            throw error
         }
 
         return CodexParseResult(
@@ -2113,6 +3140,11 @@ enum CostUsageScanner {
             lastCodexTurnID: currentTurnID,
             sessionId: sessionId,
             forkedFromId: forkedFromId,
+            lastTokenEventEndOffset: lastTokenEventEndOffset,
+            lastTokenEventFingerprint: lastTokenEventFingerprint,
+            lastTokenEventTimestamp: lastTokenEventTimestamp,
+            lastTokenEventTotalTokens: lastTokenEventTotalTokens,
+            tokenEventWatermarks: tokenEventWatermarks,
             rows: rows)
     }
 
@@ -2134,15 +3166,31 @@ enum CostUsageScanner {
     {
         try context.checkCancellation?()
         let metadata = Self.codexFileMetadata(fileURL: fileURL)
+        let cached = cache.files[metadata.path]
+        if let cached,
+           cached.codexInventoryOnly == true,
+           let sessionId = cached.sessionId,
+           !sessionId.isEmpty,
+           try Self.resolveChangedCodexInventorySentinel(
+               fileURL: fileURL,
+               metadata: metadata,
+               cached: cached,
+               sessionId: sessionId,
+               context: context,
+               cache: &cache
+           ) {
+            return
+        }
         if let fileId = metadata.fileId, state.seenFileIds.contains(fileId) {
             Self.dropCachedCodexFile(path: metadata.path, cached: cache.files[metadata.path], cache: &cache)
             return
         }
 
-        let cached = cache.files[metadata.path]
         if let cachedSessionId = cached?.sessionId, state.seenSessionIds.contains(cachedSessionId) {
-            Self.dropCachedCodexFile(path: metadata.path, cached: cached, cache: &cache)
-            return
+            throw Self.codexAmbiguousDuplicateSessionError(
+                sessionId: cachedSessionId,
+                path: metadata.path
+            )
         }
 
         let input = CodexFileScanInput(fileURL: fileURL, metadata: metadata, cached: cached)
@@ -2155,17 +3203,86 @@ enum CostUsageScanner {
         try Self.rescanCodexFile(input: input, context: context, cache: &cache, state: &state)
     }
 
+    private static func resolveChangedCodexInventorySentinel(
+        fileURL: URL,
+        metadata: CodexFileMetadata,
+        cached: CostUsageFileUsage,
+        sessionId: String,
+        context: CodexFileScanContext,
+        cache: inout CostUsageCache
+    ) throws -> Bool {
+        let owner = cache.files
+            .filter { path, usage in
+                path != metadata.path
+                    && usage.codexInventoryOnly != true
+                    && usage.sessionId == sessionId
+            }
+            .sorted(by: { $0.key < $1.key })
+            .first
+
+        guard let owner else {
+            throw Self.codexAmbiguousDuplicateSessionError(
+                sessionId: sessionId,
+                path: metadata.path
+            )
+        }
+        let ownerURL = URL(fileURLWithPath: owner.key)
+        let ownerMetadata = Self.codexFileMetadata(fileURL: ownerURL)
+        guard ownerMetadata.fileId != nil else {
+            throw Self.codexAmbiguousDuplicateSessionError(
+                sessionId: sessionId,
+                path: metadata.path
+            )
+        }
+        let relationship = try Self.codexFilePrefixRelationship(
+            lhsURL: fileURL,
+            rhsURL: ownerURL,
+            checkCancellation: context.checkCancellation
+        )
+        guard relationship == .identical || relationship == .lhsIsPrefix else {
+            // Role changes must happen in the pre-scan duplicate reconciliation
+            // pass so the fork resolver cannot retain snapshots from an old owner.
+            throw Self.codexAmbiguousDuplicateSessionError(
+                sessionId: sessionId,
+                path: metadata.path
+            )
+        }
+        cache.files[metadata.path] = Self.makeFileUsage(
+            mtimeUnixMs: metadata.mtimeUnixMs,
+            size: metadata.size,
+            days: [:],
+            parsedBytes: metadata.size,
+            sessionId: sessionId,
+            forkedFromId: cached.forkedFromId,
+            sourceGeneration: metadata.fileId
+                ?? fileURL.standardizedFileURL.resolvingSymlinksInPath().path,
+            sourceStatFingerprint: metadata.statFingerprint,
+            sourceChangeTimeNanoseconds: metadata.changeTimeNanoseconds,
+            codexInventoryOnly: true
+        )
+        return true
+    }
+
     private static func makeCodexRefreshPlan(
         cache: CostUsageCache,
         range: CostUsageDayRange,
         now: Date,
         nowMs: Int64,
-        options: Options) -> CodexRefreshPlan
+        options: Options) throws -> CodexRefreshPlan
     {
         let refreshMs = Int64(max(0, options.refreshMinIntervalSeconds) * 1000)
         let roots = self.codexSessionsRoots(options: options)
         let rootsFingerprint = Self.codexRootsFingerprint(roots)
         let rootsChanged = cache.roots != rootsFingerprint
+        let directoryFingerprintsChanged = if let cachedFingerprints = cache.codexSessionDirectoryFingerprints {
+            try Self.currentCodexDirectoryFingerprints(paths: cachedFingerprints.keys) != cachedFingerprints
+        } else {
+            true
+        }
+        let needsSessionInventory = options.forceRescan
+            || cache.codexSessionInventoryComplete != true
+            || rootsChanged
+            || directoryFingerprintsChanged
         let windowExpanded = Self.requestedWindowExpandsCache(range: range, cache: cache)
         let needsCostCacheMigration = cache.files.values.contains { Self.needsCodexCostCache($0, range: range) }
         let modelsDevLoad = ModelsDevCache.load(now: now, cacheRoot: options.cacheRoot)
@@ -2215,6 +3332,7 @@ enum CostUsageScanner {
         let shouldRefresh = options.forceRescan
             || windowExpanded
             || rootsChanged
+            || needsSessionInventory
             || needsCostCacheMigration
             || needsTurnIDCacheMigration
             || pricingChanged
@@ -2229,6 +3347,7 @@ enum CostUsageScanner {
             roots: roots,
             rootsFingerprint: rootsFingerprint,
             rootsChanged: rootsChanged,
+            needsSessionInventory: needsSessionInventory,
             windowExpanded: windowExpanded,
             needsCostCacheMigration: needsCostCacheMigration,
             modelsDevCatalog: modelsDevCatalog,
@@ -2254,12 +3373,266 @@ enum CostUsageScanner {
     {
         var cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: options.cacheRoot)
         let nowMs = Int64(now.timeIntervalSince1970 * 1000)
-        let plan = Self.makeCodexRefreshPlan(cache: cache, range: range, now: now, nowMs: nowMs, options: options)
+        let plan = try Self.makeCodexRefreshPlan(
+            cache: cache,
+            range: range,
+            now: now,
+            nowMs: nowMs,
+            options: options
+        )
 
         if plan.shouldRefresh {
             try checkCancellation?()
             if options.forceRescan {
                 cache = CostUsageCache()
+            }
+
+            let hadCompletedSessionInventory = cache.codexSessionInventoryComplete == true
+            let sessionInventory = plan.needsSessionInventory
+                ? try Self.inventoryCodexSessionFiles(
+                    roots: plan.roots,
+                    afterMetadataHook: options.codexInventoryAfterMetadataHook,
+                    checkCancellation: checkCancellation
+                )
+                : nil
+            let inventoryPaths = Set(sessionInventory?.files.map(\.metadata.path) ?? [])
+            var newlyDiscoveredInventoryPaths = Set<String>()
+            var promotedInventoryOwnerPaths = Set<String>()
+            var transferredInventoryOwnerPaths = Set<String>()
+            var inventoryQuarantinedPaths = Set<String>()
+
+            if let sessionInventory {
+                let cachedOwnersBeforeInventory = cache.files.filter {
+                    $0.value.codexInventoryOnly != true
+                        && $0.value.sessionId?.isEmpty == false
+                }
+                var previousOwnerUsageBySessionId: [String: CostUsageFileUsage] = [:]
+                for (_, usage) in cachedOwnersBeforeInventory {
+                    if let sessionId = usage.sessionId, !sessionId.isEmpty {
+                        previousOwnerUsageBySessionId[sessionId] = usage
+                    }
+                }
+                var cachedEntriesByGeneration: [String: [(path: String, usage: CostUsageFileUsage)]] = [:]
+                for (path, usage) in cache.files {
+                    guard let generation = usage.sourceGeneration else { continue }
+                    cachedEntriesByGeneration[generation, default: []].append((path, usage))
+                }
+                var relocatedCachePathByOriginalPath: [String: String] = [:]
+                var prunedInventoryOwnerPaths = Set<String>()
+                // Preserve aggregates and exact frontiers across the normal
+                // sessions -> archived_sessions rename. A destination path can
+                // already have a stale cache entry when an atomic replacement
+                // reuses that name, so generation identity (not key presence)
+                // decides whether the owner ledger still needs relocating.
+                for entry in sessionInventory.files.sorted(by: { $0.metadata.path < $1.metadata.path }) {
+                    guard let generation = entry.metadata.fileId else { continue }
+                    if let existing = cache.files[entry.metadata.path],
+                       existing.sourceGeneration == generation,
+                       existing.codexInventoryOnly != true {
+                        continue
+                    }
+                    let relocationCandidates = (cachedEntriesByGeneration[generation] ?? [])
+                        .filter {
+                            !inventoryPaths.contains($0.path)
+                                && $0.usage.codexInventoryOnly != true
+                        }
+                        .sorted { $0.path < $1.path }
+                    guard let oldPath = relocationCandidates
+                        .first(where: { cache.files[$0.path] != nil })?.path,
+                          let oldUsage = cache.files.removeValue(forKey: oldPath)
+                    else { continue }
+                    if let displaced = cache.files.removeValue(forKey: entry.metadata.path) {
+                        Self.applyFileDays(cache: &cache, fileDays: displaced.days, sign: -1)
+                        if displaced.codexInventoryOnly != true {
+                            prunedInventoryOwnerPaths.insert(entry.metadata.path)
+                        }
+                    }
+                    cache.files[entry.metadata.path] = oldUsage
+                    relocatedCachePathByOriginalPath[oldPath] = entry.metadata.path
+                }
+
+                // Inventory stubs outside the report window are still real
+                // cache entries; remove their tombstones when paths disappear.
+                for path in Array(cache.files.keys) where !inventoryPaths.contains(path) {
+                    guard let old = cache.files.removeValue(forKey: path) else { continue }
+                    Self.applyFileDays(cache: &cache, fileDays: old.days, sign: -1)
+                    if old.codexInventoryOnly != true {
+                        prunedInventoryOwnerPaths.insert(path)
+                    }
+                }
+
+                let ownerPathBySessionID = try Self.codexInventoryOwnerPaths(
+                    files: sessionInventory.files,
+                    cache: cache,
+                    previousOwnerUsageBySessionId: previousOwnerUsageBySessionId,
+                    quarantinedPaths: &inventoryQuarantinedPaths,
+                    checkCancellation: checkCancellation
+                )
+
+                var transferredUsageByReplacementPath: [String: CostUsageFileUsage] = [:]
+                var transferredOriginalOwnerPaths = Set<String>()
+                for (oldPath, oldOwner) in cachedOwnersBeforeInventory {
+                    guard let oldSessionID = oldOwner.sessionId, !oldSessionID.isEmpty else { continue }
+                    let relocatedEntry = relocatedCachePathByOriginalPath[oldPath].flatMap { relocatedPath in
+                        sessionInventory.files.first(where: { $0.metadata.path == relocatedPath })
+                    }
+                    let sameGenerationEntry = relocatedEntry ?? oldOwner.sourceGeneration.flatMap { generation in
+                        let matches = sessionInventory.files.filter { $0.metadata.fileId == generation }
+                        return matches.first(where: {
+                            $0.metadata.path == ownerPathBySessionID[oldSessionID]
+                        }) ?? matches.sorted(by: { $0.metadata.path < $1.metadata.path }).first
+                    }
+                    let currentEntry = sameGenerationEntry
+                        ?? sessionInventory.files.first(where: { $0.metadata.path == oldPath })
+                    let retainedOwnerPath = currentEntry.flatMap { entry -> String? in
+                        guard entry.sessionId == oldSessionID,
+                              ownerPathBySessionID[oldSessionID] == entry.metadata.path,
+                              let cachedAtCurrentPath = cache.files[entry.metadata.path],
+                              cachedAtCurrentPath.codexInventoryOnly != true,
+                              cachedAtCurrentPath.sessionId == oldSessionID,
+                              cachedAtCurrentPath.sourceGeneration == oldOwner.sourceGeneration
+                        else { return nil }
+                        return entry.metadata.path
+                    }
+                    if retainedOwnerPath != nil { continue }
+
+                    if let replacementPath = ownerPathBySessionID[oldSessionID],
+                       let replacement = sessionInventory.files.first(where: {
+                           $0.metadata.path == replacementPath
+                        }) {
+                        let isUncommittedEmptyOwnerStub = oldOwner.days.isEmpty
+                            && oldOwner.committedPrefixFingerprint == nil
+                        if !isUncommittedEmptyOwnerStub {
+                            guard try Self.codexFileMatchesCommittedFrontier(
+                                fileURL: replacement.url,
+                                cached: oldOwner,
+                                checkCancellation: checkCancellation
+                            ) else {
+                                throw Self.codexAmbiguousDuplicateSessionError(
+                                    sessionId: oldSessionID,
+                                    path: replacementPath
+                                )
+                            }
+                        }
+                        let replacementGeneration = replacement.metadata.fileId
+                            ?? replacement.url.standardizedFileURL.resolvingSymlinksInPath().path
+                        let transferred: CostUsageFileUsage
+                        if isUncommittedEmptyOwnerStub {
+                            // A cold/forced inventory deliberately records
+                            // dormant owners without parsing their bytes. The
+                            // duplicate planner already proved that this chosen
+                            // replacement covers the old file byte-for-byte, so
+                            // move only the empty identity and force a full scan.
+                            transferred = Self.makeFileUsage(
+                                mtimeUnixMs: replacement.metadata.mtimeUnixMs,
+                                size: replacement.metadata.size,
+                                days: [:],
+                                parsedBytes: 0,
+                                sessionId: oldSessionID,
+                                forkedFromId: replacement.forkedFromId,
+                                sourceGeneration: replacementGeneration,
+                                sourceStatFingerprint: replacement.metadata.statFingerprint,
+                                sourceChangeTimeNanoseconds: replacement.metadata.changeTimeNanoseconds,
+                                codexInventoryOnly: false
+                            )
+                        } else {
+                            var value = oldOwner
+                            value.sessionId = oldSessionID
+                            value.forkedFromId = replacement.forkedFromId
+                            value.sourceGeneration = replacementGeneration
+                            value.sourceStatFingerprint = replacement.metadata.statFingerprint
+                            value.sourceChangeTimeNanoseconds = replacement.metadata.changeTimeNanoseconds
+                            value.codexInventoryOnly = false
+                            value.codexDuplicateQuarantined = nil
+                            transferred = value
+                        }
+                        transferredUsageByReplacementPath[replacementPath] = transferred
+                        let aggregateOwnerCachePath = relocatedCachePathByOriginalPath[oldPath] ?? oldPath
+                        if prunedInventoryOwnerPaths.contains(aggregateOwnerCachePath) {
+                            Self.applyFileDays(cache: &cache, fileDays: oldOwner.days, sign: 1)
+                        } else {
+                            transferredOriginalOwnerPaths.insert(aggregateOwnerCachePath)
+                        }
+                    } else if let currentEntry, currentEntry.sessionId == nil {
+                        throw Self.codexMissingSessionMetadataError(
+                            previousSessionId: oldSessionID,
+                            path: currentEntry.metadata.path
+                        )
+                    }
+                }
+
+                // Persist every path/generation. Session identity chooses one
+                // aggregate owner; duplicate paths and malformed/no-meta files
+                // remain metadata-only sentinels so later appends cannot vanish.
+                for entry in sessionInventory.files.sorted(by: { $0.metadata.path < $1.metadata.path }) {
+                    let path = entry.metadata.path
+                    let sessionID = entry.sessionId.flatMap { $0.isEmpty ? nil : $0 }
+                    let isOwner = sessionID.map { ownerPathBySessionID[$0] == path } ?? false
+                    let shouldBeInventoryOnly = !isOwner
+                    if let old = cache.files[path] {
+                        if old.codexInventoryOnly != true,
+                           let previousSessionID = old.sessionId,
+                           !previousSessionID.isEmpty,
+                           sessionID == nil,
+                           ownerPathBySessionID[previousSessionID] == nil {
+                            throw Self.codexMissingSessionMetadataError(
+                                previousSessionId: previousSessionID,
+                                path: path
+                            )
+                        }
+                        let sameIdentity = old.sessionId == sessionID
+                            && old.sourceGeneration == entry.metadata.fileId
+                            && old.sourceStatFingerprint == entry.metadata.statFingerprint
+                            && old.sourceChangeTimeNanoseconds == entry.metadata.changeTimeNanoseconds
+                        let sameRole = (old.codexInventoryOnly == true) == shouldBeInventoryOnly
+                        let preservesOwnerLedgerAcrossGeneration = old.codexInventoryOnly != true
+                            && !shouldBeInventoryOnly
+                            && old.sessionId == sessionID
+                        if (sameIdentity && sameRole || preservesOwnerLedgerAcrossGeneration),
+                           transferredUsageByReplacementPath[path] == nil,
+                           !inventoryQuarantinedPaths.contains(path) {
+                            continue
+                        }
+                        if old.codexInventoryOnly != true,
+                           !transferredOriginalOwnerPaths.contains(path) {
+                            Self.applyFileDays(cache: &cache, fileDays: old.days, sign: -1)
+                        }
+                        if isOwner { promotedInventoryOwnerPaths.insert(path) }
+                    } else {
+                        newlyDiscoveredInventoryPaths.insert(path)
+                    }
+
+                    if var transferred = transferredUsageByReplacementPath[path] {
+                        transferred.sessionId = sessionID
+                        transferred.forkedFromId = entry.forkedFromId
+                        transferred.codexInventoryOnly = false
+                        transferred.codexDuplicateQuarantined = nil
+                        cache.files[path] = transferred
+                        promotedInventoryOwnerPaths.insert(path)
+                        transferredInventoryOwnerPaths.insert(path)
+                        continue
+                    }
+
+                    cache.files[path] = Self.makeFileUsage(
+                        mtimeUnixMs: entry.metadata.mtimeUnixMs,
+                        size: entry.metadata.size,
+                        days: [:],
+                        // No-meta sentinels deliberately remain deferred so a
+                        // repaired header is probed on a later refresh.
+                        parsedBytes: sessionID == nil || promotedInventoryOwnerPaths.contains(path)
+                            ? 0
+                            : entry.metadata.size,
+                        sessionId: sessionID,
+                        forkedFromId: entry.forkedFromId,
+                        sourceGeneration: entry.metadata.fileId,
+                        sourceStatFingerprint: entry.metadata.statFingerprint,
+                        sourceChangeTimeNanoseconds: entry.metadata.changeTimeNanoseconds,
+                        codexInventoryOnly: shouldBeInventoryOnly,
+                        codexDuplicateQuarantined: inventoryQuarantinedPaths.contains(path)
+                            ? true
+                            : nil
+                    )
+                }
             }
 
             let cachedSinceKey = cache.scanSinceKey
@@ -2270,28 +3643,59 @@ enum CostUsageScanner {
             var seenPaths: Set<String> = []
             var files: [URL] = []
             for root in plan.roots {
-                let rootFiles = Self.listCodexSessionFiles(
+                let rootFiles = try Self.listCodexSessionFiles(
                     root: root,
                     scanSinceKey: range.scanSinceKey,
                     scanUntilKey: range.scanUntilKey,
                     includeRecursive: options.forceRescan)
                 for fileURL in rootFiles.sorted(by: { $0.path < $1.path }) where !seenPaths.contains(fileURL.path) {
+                    if let sentinel = cache.files[fileURL.path], sentinel.codexInventoryOnly == true {
+                        let metadata = Self.codexFileMetadata(fileURL: fileURL)
+                        let currentGeneration = metadata.fileId
+                            ?? fileURL.standardizedFileURL.resolvingSymlinksInPath().path
+                        let parsedBytes = sentinel.parsedBytes ?? sentinel.size
+                        let changedOrDeferred = sentinel.sourceGeneration != currentGeneration
+                            || sentinel.sourceStatFingerprint != metadata.statFingerprint
+                            || sentinel.sourceChangeTimeNanoseconds != metadata.changeTimeNanoseconds
+                            || sentinel.mtimeUnixMs != metadata.mtimeUnixMs
+                            || sentinel.size != metadata.size
+                            || parsedBytes < metadata.size
+                        guard changedOrDeferred else { continue }
+                    }
+                    if newlyDiscoveredInventoryPaths.contains(fileURL.path),
+                       cache.files[fileURL.path]?.codexInventoryOnly != true {
+                        // The inventory stub only captured metadata. A file
+                        // selected by the active window must still be parsed.
+                        cache.files[fileURL.path]?.parsedBytes = 0
+                    }
                     seenPaths.insert(fileURL.path)
                     files.append(fileURL)
                 }
 
-                if shouldRunColdCacheLookback, let coldCacheLookbackStart {
-                    let recentlyModifiedFiles = Self.listCodexRecentlyModifiedFiles(
-                        root: root,
-                        scanSinceKey: range.scanSinceKey,
-                        scanUntilKey: range.scanUntilKey,
-                        modifiedSince: coldCacheLookbackStart)
-                    for fileURL in recentlyModifiedFiles.sorted(by: { $0.path < $1.path })
-                        where !seenPaths.contains(fileURL.path)
-                    {
-                        seenPaths.insert(fileURL.path)
-                        files.append(fileURL)
+            }
+
+            if let sessionInventory {
+                for entry in sessionInventory.files.sorted(by: { $0.metadata.path < $1.metadata.path }) {
+                    if cache.files[entry.metadata.path]?.codexInventoryOnly == true,
+                       entry.sessionId != nil {
+                        // A stable duplicate is represented by its sentinel;
+                        // only a later metadata change should make it enter the
+                        // scan path and trigger ambiguity handling.
+                        continue
                     }
+                    let isNewPath = newlyDiscoveredInventoryPaths.contains(entry.metadata.path)
+                    let wasModifiedInLookback = coldCacheLookbackStart.map {
+                        Date(timeIntervalSince1970: Double(entry.metadata.mtimeUnixMs) / 1000) >= $0
+                    } ?? false
+                    let shouldScan = promotedInventoryOwnerPaths.contains(entry.metadata.path)
+                        || (shouldRunColdCacheLookback && wasModifiedInLookback)
+                        || (hadCompletedSessionInventory && isNewPath)
+                    guard shouldScan, seenPaths.insert(entry.metadata.path).inserted else { continue }
+                    if cache.files[entry.metadata.path]?.codexInventoryOnly != true,
+                       !transferredInventoryOwnerPaths.contains(entry.metadata.path) {
+                        cache.files[entry.metadata.path]?.parsedBytes = 0
+                    }
+                    files.append(entry.url)
                 }
             }
 
@@ -2305,6 +3709,19 @@ enum CostUsageScanner {
                 seenPaths.insert(fileURL.path)
                 files.append(fileURL)
             }
+
+            let duplicateReconciliation = try Self.reconcileCodexDuplicateRolesBeforeScan(
+                cache: &cache,
+                checkCancellation: checkCancellation
+            )
+            if !duplicateReconciliation.quarantinedPaths.isEmpty {
+                files.removeAll { duplicateReconciliation.quarantinedPaths.contains($0.path) }
+                seenPaths.subtract(duplicateReconciliation.quarantinedPaths)
+            }
+            for fileURL in duplicateReconciliation.scanURLs where seenPaths.insert(fileURL.path).inserted {
+                files.append(fileURL)
+            }
+            files.sort(by: { $0.path < $1.path })
 
             let filePathsInScan = Set(files.map(\.path))
             var scanState = CodexScanState()
@@ -2330,6 +3747,7 @@ enum CostUsageScanner {
                     fileURL: fileURL,
                     context: CodexFileScanContext(
                         range: range,
+                        through: now,
                         forceFullScan: options
                             .forceRescan || plan.windowExpanded || plan.pricingChanged || plan.priorityMetadataChanged,
                         dropDeferredCodexRows: options.forceRescan || plan.pricingChanged || plan
@@ -2347,10 +3765,15 @@ enum CostUsageScanner {
             Self.pruneForceRescanFilesOutsideWindow(
                 cache: &cache,
                 range: range,
-                isForceRescan: options.forceRescan)
+                isForceRescan: options.forceRescan,
+                preservingPaths: inventoryPaths)
 
             let shouldDropAllUnscannedFiles = options.forceRescan || plan.rootsChanged || cache.files.isEmpty
             for key in cache.files.keys where !filePathsInScan.contains(key) {
+                // A validated inventory entry is intentionally retained even
+                // when it is outside the active report window. Its metadata is
+                // what makes a future append discoverable.
+                if inventoryPaths.contains(key) { continue }
                 guard let old = cache.files[key] else { continue }
                 let shouldDrop = shouldDropAllUnscannedFiles ||
                     old.touchesCodexScanWindow(sinceKey: range.scanSinceKey, untilKey: range.scanUntilKey)
@@ -2370,6 +3793,17 @@ enum CostUsageScanner {
                         continue
                     }
                 }
+            }
+
+            if let sessionInventory {
+                options.codexInventoryBeforeCommitHook?()
+                guard try Self.currentCodexDirectoryFingerprints(
+                    paths: sessionInventory.directoryFingerprints.keys
+                ) == sessionInventory.directoryFingerprints else {
+                    throw CodexInventoryError.changedDuringEnumeration
+                }
+                cache.codexSessionInventoryComplete = true
+                cache.codexSessionDirectoryFingerprints = sessionInventory.directoryFingerprints
             }
 
             let shouldRetainWiderWindow = !options.forceRescan && !plan.pricingChanged && !plan
@@ -2402,7 +3836,7 @@ enum CostUsageScanner {
             }
             cache.lastScanUnixMs = nowMs
             try checkCancellation?()
-            CostUsageCacheIO.save(provider: .codex, cache: cache, cacheRoot: options.cacheRoot)
+            try CostUsageCacheIO.save(provider: .codex, cache: cache, cacheRoot: options.cacheRoot)
         }
 
         return Self.buildCodexReportFromCache(
