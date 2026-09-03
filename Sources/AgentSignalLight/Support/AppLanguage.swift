@@ -2,6 +2,23 @@ import AgentSignalLightCore
 import AgentSignalLightUI
 import Foundation
 
+enum CodexQuotaSummaryState: Equatable {
+    case authoritative(AgentQuotaStatus, localObservation: AgentQuotaStatus?)
+    case localObservation(AgentQuotaStatus)
+    case unavailable
+
+    var displayedQuota: AgentQuotaStatus? {
+        switch self {
+        case let .authoritative(quota, _):
+            quota
+        case let .localObservation(observation):
+            observation
+        case .unavailable:
+            nil
+        }
+    }
+}
+
 enum AppLanguage: String, CaseIterable {
     case system = "system"
     case zhHans = "zh-Hans"
@@ -133,6 +150,13 @@ extension AppLanguage {
             return "pt"
         }
     }
+}
+
+struct CodexQuotaIdentityPresentation: Equatable {
+    let title: String
+    let context: String
+    let limitID: String?
+    let hasKnownLimitIdentity: Bool
 }
 
 extension MenuBarStatusModel {
@@ -292,12 +316,37 @@ extension MenuBarStatusModel {
         for badgeWindow: FloatingSignalQuotaBadgeWindow,
         quota: AgentQuotaStatus
     ) -> AgentQuotaWindowStatus? {
-        switch badgeWindow {
-        case .fiveHours:
-            return quota.primaryWindow
-        case .weekly:
-            return quota.secondaryWindow ?? quota.primaryWindow
+        let fiveHourMinutes = 5 * 60
+        let weeklyMinutes = 7 * 24 * 60
+        let windows = [quota.primaryWindow, quota.secondaryWindow].compactMap { $0 }
+
+        let exactMinutes = badgeWindow == .fiveHours ? fiveHourMinutes : weeklyMinutes
+        if let exactMatch = windows.first(where: { $0.windowMinutes == exactMinutes }) {
+            return exactMatch
         }
+
+        // A lone legacy or non-standard primary window still gets a dynamic
+        // title through the first badge slot. With multiple windows, however,
+        // only exact 5-hour/weekly durations are safe to map: treating a known
+        // weekly or monthly window as the other selection recreates the silent
+        // substitution that made the reported 100% quota misleading.
+        if windows.count == 1,
+           badgeWindow == .fiveHours,
+           windows[0].windowMinutes != weeklyMinutes {
+            return windows[0]
+        }
+
+        if windows.count > 1,
+           windows.allSatisfy({ $0.windowMinutes == nil }) {
+            switch badgeWindow {
+            case .fiveHours:
+                return quota.primaryWindow
+            case .weekly:
+                return quota.secondaryWindow
+            }
+        }
+
+        return nil
     }
 
     func quotaBadgeWindows(for quota: AgentQuotaStatus) -> [FloatingSignalQuotaBadgeWindow] {
@@ -316,7 +365,138 @@ extension MenuBarStatusModel {
             seen.append(window)
         }
 
-        return result.isEmpty ? [.fiveHours] : result
+        return result
+    }
+
+    func isQuotaBadgeWindowAvailable(
+        _ badgeWindow: FloatingSignalQuotaBadgeWindow,
+        quota: AgentQuotaStatus
+    ) -> Bool {
+        quotaBadgeWindows(for: quota).contains(badgeWindow)
+            && quotaWindow(for: badgeWindow, quota: quota) != nil
+    }
+
+    func selectedQuotaBadgeWindowStatus(for quota: AgentQuotaStatus) -> AgentQuotaWindowStatus? {
+        guard isQuotaBadgeWindowAvailable(floatingSignalQuotaBadgeWindow, quota: quota) else {
+            return nil
+        }
+        return quotaWindow(for: floatingSignalQuotaBadgeWindow, quota: quota)
+    }
+
+    func recentLocalQuotaObservation(now: Date = Date()) -> AgentQuotaStatus? {
+        // Local observations are a fallback, not a second user-facing quota.
+        // Keep the underlying observation for attribution checks without showing
+        // a competing card when the primary quota is already available.
+        guard latestAgentQuota == nil,
+              let observation = latestLocalAgentQuotaObservation else {
+            return nil
+        }
+        let age = now.timeIntervalSince(observation.updatedAt)
+        guard age >= -60, age <= 15 * 60 else { return nil }
+        return observation
+    }
+
+    func codexQuotaSummaryState(now: Date = Date()) -> CodexQuotaSummaryState {
+        if let latestAgentQuota {
+            return .authoritative(
+                latestAgentQuota,
+                localObservation: nil
+            )
+        }
+        if let localObservation = recentLocalQuotaObservation(now: now) {
+            return .localObservation(localObservation)
+        }
+        return .unavailable
+    }
+
+    func localQuotaObservationAddsContext(
+        _ observation: AgentQuotaStatus,
+        comparedTo authoritativeQuota: AgentQuotaStatus
+    ) -> Bool {
+        if normalizedQuotaIdentity(authoritativeQuota.limitID) == nil,
+           normalizedQuotaIdentity(observation.limitID) != nil {
+            return true
+        }
+        if normalizedQuotaIdentity(authoritativeQuota.limitName) == nil,
+           normalizedQuotaIdentity(observation.limitName) != nil {
+            return true
+        }
+        guard quotaLimitIdentityMatches(observation, authoritativeQuota) else {
+            return true
+        }
+
+        let authoritativeWindows = [
+            authoritativeQuota.primaryWindow,
+            authoritativeQuota.secondaryWindow,
+        ].compactMap { $0 }
+        let observationWindows = [
+            observation.primaryWindow,
+            observation.secondaryWindow,
+        ].compactMap { $0 }
+
+        return observationWindows.contains { observationWindow in
+            guard let authoritativeWindow = authoritativeWindows.first(where: {
+                $0.windowMinutes == observationWindow.windowMinutes
+            }) else {
+                return true
+            }
+            guard observation.updatedAt > authoritativeQuota.updatedAt else {
+                return false
+            }
+            return quotaWindowMateriallyDiffers(
+                observationWindow,
+                from: authoritativeWindow
+            )
+        }
+    }
+
+    private func quotaWindowMateriallyDiffers(
+        _ observation: AgentQuotaWindowStatus,
+        from authoritative: AgentQuotaWindowStatus
+    ) -> Bool {
+        let percentTolerance = 0.01
+        if abs(observation.remainingPercent - authoritative.remainingPercent) > percentTolerance
+            || abs(observation.usedPercent - authoritative.usedPercent) > percentTolerance {
+            return true
+        }
+
+        switch (observation.resetsAt, authoritative.resetsAt) {
+        case let (observationReset?, authoritativeReset?):
+            return abs(observationReset.timeIntervalSince(authoritativeReset)) > 1
+        case (nil, nil):
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func quotaLimitIdentityMatches(
+        _ lhs: AgentQuotaStatus,
+        _ rhs: AgentQuotaStatus
+    ) -> Bool {
+        let lhsID = normalizedQuotaIdentity(lhs.limitID)
+        let rhsID = normalizedQuotaIdentity(rhs.limitID)
+        if lhsID != nil || rhsID != nil {
+            return lhsID == rhsID
+        }
+
+        let lhsName = normalizedQuotaIdentity(lhs.limitName)
+        let rhsName = normalizedQuotaIdentity(rhs.limitName)
+        if lhsName != nil || rhsName != nil {
+            return lhsName == rhsName
+        }
+        return true
+    }
+
+    private func normalizedQuotaIdentity(_ value: String?) -> String? {
+        guard let normalized = value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+            !normalized.isEmpty
+        else {
+            return nil
+        }
+        return normalized
     }
 
     func quotaPercentText(for window: AgentQuotaWindowStatus?) -> String {
@@ -337,6 +517,83 @@ extension MenuBarStatusModel {
             "\(title) · 剩余 \(percent)",
             "\(title) · \(percent) left"
         )
+    }
+
+    func quotaUnavailableTitleLine(for badgeWindow: FloatingSignalQuotaBadgeWindow) -> String {
+        text(
+            "\(displayName(for: badgeWindow)) · 暂不可用",
+            "\(displayName(for: badgeWindow)) · unavailable"
+        )
+    }
+
+    func codexQuotaIdentityPresentation(
+        for quota: AgentQuotaStatus
+    ) -> CodexQuotaIdentityPresentation {
+        let limitID = quota.limitID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let limitName = quota.limitName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedLimitID = limitID?.isEmpty == false ? limitID : nil
+        let normalizedLimitName = limitName?.isEmpty == false ? limitName : nil
+        let hasKnownLimitIdentity = normalizedLimitID != nil || normalizedLimitName != nil
+        let title = normalizedLimitName
+            ?? normalizedLimitID
+            ?? text("Codex 配额", "Codex quota")
+
+        let savedAccount = quota.accountScopeID.flatMap { accountScopeID in
+            codexSavedAccounts.first { $0.id == accountScopeID }
+        }
+        // A successful account-scoped OAuth response can omit the pool name.
+        // Suppress only the display warning; never infer an identity for merging.
+        let isConfirmedOAuthQuota = quota.source == .oauth
+            && savedAccount != nil
+            && quota.accountScopeID == codexActiveSavedAccountID
+            && codexCurrentAccount?.credentialKind == .oauth
+            && quota == latestAgentQuota
+            && codexUsageFetchState?.source == .oauth
+            && codexUsageFetchState?.lastSuccessfulAt == quota.updatedAt
+            && codexUsageFetchState?.isStale == false
+            && codexUsageFetchState?.errorMessage == nil
+
+        var contextParts: [String] = []
+        if !hasKnownLimitIdentity && !isConfirmedOAuthQuota {
+            contextParts.append(text("额度范围未知", "Scope unavailable"))
+        }
+
+        if let savedAccount {
+            contextParts.append(savedAccount.displayName)
+        } else if quota.accountScopeID != nil {
+            contextParts.append(text("已保存账户", "Saved account"))
+        } else {
+            contextParts.append(text("账户未验证", "Account unverified"))
+        }
+
+        contextParts.append(displayName(for: quota.source))
+
+        return CodexQuotaIdentityPresentation(
+            title: title,
+            context: contextParts.joined(separator: " · "),
+            limitID: normalizedLimitID == title ? nil : normalizedLimitID,
+            hasKnownLimitIdentity: hasKnownLimitIdentity
+        )
+    }
+
+    func displayName(for quotaSource: AgentQuotaSource?) -> String {
+        guard let quotaSource else {
+            return text("来源未知", "Source unavailable")
+        }
+        switch quotaSource {
+        case .manualCookie:
+            return text("手动 Cookie", "Manual Cookie")
+        case .browserCookie:
+            return text("浏览器 Cookie", "Browser Cookie")
+        case .oauth:
+            return "Codex OAuth"
+        case .apiKey:
+            return "API Key"
+        case .desktopSession:
+            return text("本地会话", "Local session")
+        case .unknown:
+            return text("来源未知", "Source unavailable")
+        }
     }
 
     func quotaResetText(

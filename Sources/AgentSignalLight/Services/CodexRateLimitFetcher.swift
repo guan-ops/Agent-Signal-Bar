@@ -612,7 +612,9 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
         let quota = AgentQuotaStatus(
             remainingPercent: primary.remainingPercent,
             usedPercent: primary.usedPercent,
-            limitName: nil,
+            limitID: response.resolvedLimitID,
+            limitName: response.resolvedLimitName,
+            source: source.agentQuotaSource,
             windowMinutes: primary.windowMinutes,
             resetsAt: primary.resetsAt,
             updatedAt: updatedAt,
@@ -812,6 +814,21 @@ enum CodexUsageFetchSource: String, Codable, Equatable, Sendable {
     case oauth
     case apiKey = "api-key"
     case unknown
+
+    var agentQuotaSource: AgentQuotaSource {
+        switch self {
+        case .manualCookie:
+            return .manualCookie
+        case .browserCookie:
+            return .browserCookie
+        case .oauth:
+            return .oauth
+        case .apiKey:
+            return .apiKey
+        case .unknown:
+            return .unknown
+        }
+    }
 }
 
 struct CodexUsageStatus: Equatable, Sendable {
@@ -928,6 +945,8 @@ private struct CodexRateLimitResetCreditResponse: Decodable {
 struct CodexUsageResponse: Decodable, Sendable {
     let planType: PlanType?
     let rateLimit: RateLimitDetails?
+    let limitID: String?
+    let limitName: String?
     let credits: CreditDetails?
     let individualLimit: SpendControlLimitSnapshot?
     let spendControl: SpendControlDetails?
@@ -935,6 +954,8 @@ struct CodexUsageResponse: Decodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case planType = "plan_type"
         case rateLimit = "rate_limit"
+        case limitID = "limit_id"
+        case limitName = "limit_name"
         case credits
         case individualLimit = "individual_limit"
         case individualLimitCamel = "individualLimit"
@@ -945,10 +966,20 @@ struct CodexUsageResponse: Decodable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         planType = try? container.decodeIfPresent(PlanType.self, forKey: .planType)
         rateLimit = try? container.decodeIfPresent(RateLimitDetails.self, forKey: .rateLimit)
+        limitID = try? container.decodeIfPresent(String.self, forKey: .limitID)
+        limitName = try? container.decodeIfPresent(String.self, forKey: .limitName)
         credits = try? container.decodeIfPresent(CreditDetails.self, forKey: .credits)
         individualLimit = (try? container.decodeIfPresent(SpendControlLimitSnapshot.self, forKey: .individualLimit))
             ?? (try? container.decodeIfPresent(SpendControlLimitSnapshot.self, forKey: .individualLimitCamel))
         spendControl = try? container.decodeIfPresent(SpendControlDetails.self, forKey: .spendControl)
+    }
+
+    var resolvedLimitID: String? {
+        rateLimit?.limitID ?? limitID
+    }
+
+    var resolvedLimitName: String? {
+        rateLimit?.limitName ?? limitName
     }
 
     enum PlanType: Decodable, Equatable, Sendable {
@@ -970,11 +1001,15 @@ struct CodexUsageResponse: Decodable, Sendable {
     struct RateLimitDetails: Decodable, Sendable {
         let primaryWindow: WindowSnapshot?
         let secondaryWindow: WindowSnapshot?
+        let limitID: String?
+        let limitName: String?
         let individualLimit: SpendControlLimitSnapshot?
 
         enum CodingKeys: String, CodingKey {
             case primaryWindow = "primary_window"
             case secondaryWindow = "secondary_window"
+            case limitID = "limit_id"
+            case limitName = "limit_name"
             case individualLimit = "individual_limit"
             case individualLimitCamel = "individualLimit"
         }
@@ -983,6 +1018,8 @@ struct CodexUsageResponse: Decodable, Sendable {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             primaryWindow = try? container.decodeIfPresent(WindowSnapshot.self, forKey: .primaryWindow)
             secondaryWindow = try? container.decodeIfPresent(WindowSnapshot.self, forKey: .secondaryWindow)
+            limitID = try? container.decodeIfPresent(String.self, forKey: .limitID)
+            limitName = try? container.decodeIfPresent(String.self, forKey: .limitName)
             individualLimit = (try? container.decodeIfPresent(SpendControlLimitSnapshot.self, forKey: .individualLimit))
                 ?? (try? container.decodeIfPresent(SpendControlLimitSnapshot.self, forKey: .individualLimitCamel))
         }

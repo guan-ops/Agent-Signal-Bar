@@ -412,14 +412,36 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     private func addNativeQuotaMenuItems(to menu: NSMenu) {
-        menu.addItem(infoMenuItem(title: model.text("Codex 会话", "Codex Session")))
-
         if let quota = model.latestAgentQuota {
+            let identity = model.codexQuotaIdentityPresentation(for: quota)
+            menu.addItem(infoMenuItem(title: identity.title))
+            menu.addItem(infoMenuItem(title: identity.context))
+            if let limitID = identity.limitID {
+                menu.addItem(infoMenuItem(title: "ID · \(limitID)"))
+            }
             for badgeWindow in model.quotaBadgeWindows(for: quota) {
                 menu.addItem(infoMenuItem(title: model.quotaTitleLine(for: badgeWindow, quota: quota)))
             }
         } else {
+            menu.addItem(infoMenuItem(title: model.text("Codex 配额", "Codex quota")))
             menu.addItem(infoMenuItem(title: model.text("暂无会话数据", "No session data yet")))
+        }
+
+        if let localObservation = model.recentLocalQuotaObservation() {
+            let identity = model.codexQuotaIdentityPresentation(for: localObservation)
+            menu.addItem(infoMenuItem(
+                title: model.text("本地会话观察（未合并）", "Local session observation (not merged)")
+            ))
+            menu.addItem(infoMenuItem(title: identity.title))
+            menu.addItem(infoMenuItem(title: identity.context))
+            if let limitID = identity.limitID {
+                menu.addItem(infoMenuItem(title: "ID · \(limitID)"))
+            }
+            for badgeWindow in model.quotaBadgeWindows(for: localObservation) {
+                menu.addItem(infoMenuItem(
+                    title: model.quotaTitleLine(for: badgeWindow, quota: localObservation)
+                ))
+            }
         }
 
         if let resetCredits = model.codexResetCreditsPresentation() {

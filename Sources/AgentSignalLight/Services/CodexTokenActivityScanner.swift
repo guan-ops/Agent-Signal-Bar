@@ -79,16 +79,30 @@ struct CodexTokenActivityScanWatermark: Equatable, Sendable {
 struct CodexTokenActivityScanResult: Equatable, Sendable {
     let days: [CodexTokenActivityDay]
     let watermarks: [CodexTokenActivityScanWatermark]
+    /// A complete transaction can still exclude explicitly ambiguous sources.
+    /// Those sources never contribute days or absorbing watermarks.
     let isComplete: Bool
+    let failureDescription: String?
+    let warningDescription: String?
+    let excludedSourceIDs: Set<String>
+    let excludedSessionIDs: Set<String>
 
     init(
         days: [CodexTokenActivityDay],
         watermarks: [CodexTokenActivityScanWatermark],
-        isComplete: Bool = true
+        isComplete: Bool = true,
+        failureDescription: String? = nil,
+        warningDescription: String? = nil,
+        excludedSourceIDs: Set<String> = [],
+        excludedSessionIDs: Set<String> = []
     ) {
         self.days = days
         self.watermarks = watermarks
         self.isComplete = isComplete
+        self.failureDescription = failureDescription
+        self.warningDescription = warningDescription
+        self.excludedSourceIDs = excludedSourceIDs
+        self.excludedSessionIDs = excludedSessionIDs
     }
 }
 
@@ -130,7 +144,7 @@ extension CodexTokenActivityScanning {
 final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Sendable {
     private typealias ModelContext = (lineNumber: Int, model: String, turnID: String?)
 
-    static let currentCacheVersion = 24
+    static let currentCacheVersion = 25
 
     private static let newlineNeedle = Data([0x0A])
     private static let tokenCountNeedle = Data("token_count".utf8)
@@ -149,6 +163,7 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
     private let costUsageCacheRoot: URL?
     private let usesAgentSignalCostUsageScanner: Bool
     private let priorityDatabaseURL: URL?
+    private let costUsageScanCheckpoint = CostUsageScanner.CodexScanCheckpoint()
 
     init(
         sessionRootURLs: [URL]? = nil,
@@ -203,11 +218,17 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
             return CodexTokenActivityScanResult(days: activity, watermarks: [])
         }
         do {
-            let activity = try agentSignalCostUsageDailyActivityResult(now: now, days: days)
+            let report = try agentSignalCostUsageDailyActivityResult(now: now, days: days)
+            let activity = codexTokenActivityDays(from: report)
+            let watermarks = try agentSignalCostUsageScanWatermarks(through: now)
             progress?(activity)
             return CodexTokenActivityScanResult(
                 days: activity,
-                watermarks: try agentSignalCostUsageScanWatermarks(through: now)
+                watermarks: watermarks,
+                warningDescription: report.warnings.isEmpty ? nil
+                    : "Excluded \(report.warnings.count) ambiguous session group(s).",
+                excludedSourceIDs: Set(report.warnings.flatMap(\.sourcePaths).map(Self.canonicalTokenSourceID)),
+                excludedSessionIDs: Set(report.warnings.map(\.sessionID))
             )
         } catch {
             // Preserve the last known-good aggregate. The model will retry with
@@ -215,12 +236,14 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
             return CodexTokenActivityScanResult(
                 days: cachedDailyActivity(now: now, days: days) ?? [],
                 watermarks: (try? agentSignalCostUsageScanWatermarks(through: now)) ?? [],
-                isComplete: false
+                isComplete: false,
+                failureDescription: String(describing: error)
             )
         }
     }
 
     func clearCache() {
+        costUsageScanCheckpoint.clear()
         if let cacheURL {
             try? fileManager.removeItem(at: cacheURL)
         }
@@ -509,7 +532,7 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
     private func agentSignalCostUsageDailyActivityResult(
         now: Date,
         days: Int
-    ) throws -> [CodexTokenActivityDay] {
+    ) throws -> CostUsageDailyReport {
         let range = agentSignalCostUsageDateRange(now: now, days: days)
         let options = agentSignalCostUsageOptions(forceRefresh: true)
         let codexReport = try CostUsageScanner.loadDailyReportCancellable(
@@ -534,7 +557,7 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
             options: piOptions,
             checkCancellation: nil
         )
-        return codexTokenActivityDays(from: CostUsageDailyReport.merged([codexReport, piReport]))
+        return CostUsageDailyReport.merged([codexReport, piReport])
     }
 
     private func agentSignalCachedCostUsageDailyActivity(
@@ -588,6 +611,7 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
         )
         let owners = cache.files.compactMap { path, usage -> (String, String, CostUsageFileUsage)? in
             guard usage.codexInventoryOnly != true,
+                  usage.codexNoncontributingDuplicate != true,
                   let sessionID = usage.sessionId,
                   !sessionID.isEmpty
             else { return nil }
@@ -602,6 +626,7 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
         var watermarks: [CodexTokenActivityScanWatermark] = []
         for (path, usage) in cache.files.sorted(by: { $0.key < $1.key }) {
             guard usage.codexInventoryOnly != true,
+                  usage.codexNoncontributingDuplicate != true,
                   let generation = usage.sourceGeneration,
                   let event = Self.costUsageTokenEventFrontier(usage, through: through)
             else { continue }
@@ -649,7 +674,26 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
         // the aggregate owner's inode, so the owner's watermark alone cannot
         // absorb that exact cursor. Export a generation-specific alias only after
         // re-proving the common prefix against the committed owner frontier.
-        for (path, usage) in cache.files where usage.codexInventoryOnly == true {
+        for (path, usage) in cache.files
+        where usage.codexInventoryOnly == true || usage.codexNoncontributingDuplicate == true {
+            if usage.codexNoncontributingDuplicate == true {
+                // This source was proven to contain no numeric token event at
+                // all. It is not a copy of the owner's token-bearing prefix,
+                // so it must never export an alias or absorbing tombstone.
+                // Re-prove the entire snapshot: even a stable append could
+                // introduce usage that needs a new duplicate reconciliation.
+                guard try Self.verifiedNoncontributingDuplicate(
+                    path: path,
+                    usage: usage
+                ) else {
+                    throw CostUsageScanner.codexChangedDuringScanError(path: path)
+                }
+                continue
+            }
+            // No owner was established for an identity conflict. In particular,
+            // do not publish a quarantine tombstone that would discard live
+            // usage merely because this group's history could not be counted.
+            guard usage.codexIdentityConflict != true else { continue }
             guard let sessionID = usage.sessionId,
                   !sessionID.isEmpty
             else { continue }
@@ -707,6 +751,46 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
             if $0.sourceID != $1.sourceID { return $0.sourceID < $1.sourceID }
             return $0.endOffset < $1.endOffset
         }
+    }
+
+    private static func verifiedNoncontributingDuplicate(
+        path: String,
+        usage: CostUsageFileUsage
+    ) throws -> Bool {
+        guard usage.codexInventoryOnly == true,
+              usage.codexDuplicateQuarantined != true,
+              usage.codexIdentityConflict != true,
+              usage.sessionId?.isEmpty == false,
+              usage.size > 0,
+              usage.parsedBytes == usage.size,
+              usage.sourceGeneration != nil,
+              usage.sourceStatFingerprint != nil,
+              usage.sourceChangeTimeNanoseconds != nil,
+              let expectedFingerprint = usage.committedPrefixFingerprint,
+              !expectedFingerprint.isEmpty,
+              usage.days.isEmpty,
+              usage.codexRows?.isEmpty != false,
+              usage.tokenEventWatermarks?.isEmpty != false,
+              usage.lastTokenEventEndOffset == nil,
+              usage.lastTokenEventFingerprint == nil,
+              usage.lastTokenEventTimestamp == nil,
+              usage.lastTokenEventTotalTokens == nil
+        else { return false }
+
+        let fileURL = URL(fileURLWithPath: path)
+        guard Self.costUsageFileMetadata(
+            CostUsageScanner.codexFileMetadata(fileURL: fileURL), matches: usage
+        ),
+            try CostUsageScanner.codexCommittedPrefixFingerprint(
+                fileURL: fileURL,
+                throughOffset: usage.size,
+                checkCancellation: nil
+            ) == expectedFingerprint,
+            Self.costUsageFileMetadata(
+                CostUsageScanner.codexFileMetadata(fileURL: fileURL), matches: usage
+            )
+        else { return false }
+        return true
     }
 
     private static func costUsageTokenEventFrontier(
@@ -840,6 +924,7 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
         var options = CostUsageScanner.Options(
             cacheRoot: costUsageCacheRoot,
             codexTraceDatabaseURL: priorityDatabaseURL,
+            codexScanCheckpoint: costUsageScanCheckpoint,
             forceRescan: false
         )
         options.codexSessionsRoots = sessionRootURLs

@@ -77,6 +77,22 @@ public struct CostUsageTokenSnapshot: Sendable, Equatable {
     }
 }
 
+public struct CostUsageScanWarning: Codable, Equatable, Hashable, Sendable {
+    public enum Reason: String, Codable, Sendable {
+        case ambiguousSessionIdentity
+    }
+
+    public let reason: Reason
+    public let sessionID: String
+    public let sourcePaths: [String]
+
+    public init(reason: Reason, sessionID: String, sourcePaths: [String]) {
+        self.reason = reason
+        self.sessionID = sessionID
+        self.sourcePaths = Array(Set(sourcePaths)).sorted()
+    }
+}
+
 public struct CostUsageDailyReport: Sendable, Decodable {
     public struct ModelBreakdown: Sendable, Decodable, Equatable {
         public let modelName: String
@@ -287,6 +303,7 @@ public struct CostUsageDailyReport: Sendable, Decodable {
 
     public let data: [Entry]
     public let summary: Summary?
+    public let warnings: [CostUsageScanWarning]
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -294,10 +311,12 @@ public struct CostUsageDailyReport: Sendable, Decodable {
         case summary
         case daily
         case totals
+        case warnings
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.warnings = try container.decodeIfPresent([CostUsageScanWarning].self, forKey: .warnings) ?? []
 
         if container.contains(.type) {
             _ = try container.decode(String.self, forKey: .type)
@@ -321,9 +340,10 @@ public struct CostUsageDailyReport: Sendable, Decodable {
         }
     }
 
-    public init(data: [Entry], summary: Summary?) {
+    public init(data: [Entry], summary: Summary?, warnings: [CostUsageScanWarning] = []) {
         self.data = data
         self.summary = summary
+        self.warnings = warnings
     }
 }
 
@@ -482,8 +502,10 @@ extension CostUsageDailyReport {
 
     public static func merged(_ reports: [CostUsageDailyReport]) -> CostUsageDailyReport {
         let entries = self.mergedEntries(from: reports)
-        guard !entries.isEmpty else { return CostUsageDailyReport(data: [], summary: nil) }
-        return CostUsageDailyReport(data: entries, summary: self.mergedSummary(from: entries))
+        var seenWarnings = Set<CostUsageScanWarning>()
+        let warnings = reports.flatMap(\.warnings).filter { seenWarnings.insert($0).inserted }
+        guard !entries.isEmpty else { return CostUsageDailyReport(data: [], summary: nil, warnings: warnings) }
+        return CostUsageDailyReport(data: entries, summary: self.mergedSummary(from: entries), warnings: warnings)
     }
 
     private static func mergedEntries(from reports: [CostUsageDailyReport]) -> [Entry] {

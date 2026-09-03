@@ -63,13 +63,14 @@ extension CostUsageScanner {
                 guard let key = parseJSONByteStringRange(in: bytes, index: &valueIndex, limit: range.upperBound)
                 else { return nil }
                 index = valueIndex
-                guard depth == targetDepth,
-                      !key.hasEscapes,
-                      self.byteRange(bytes, key.range, equals: field)
-                else { continue }
-
+                guard depth == targetDepth else { continue }
                 self.skipJSONByteWhitespace(in: bytes, index: &valueIndex, limit: range.upperBound)
                 guard valueIndex < range.upperBound, bytes[valueIndex] == 0x3A else { continue } // :
+
+                let keyMatches = key.hasEscapes
+                    ? self.decodeJSONStringViaFoundation(from: bytes, in: key.range).map { Array($0.utf8) == field } == true
+                    : self.byteRange(bytes, key.range, equals: field)
+                guard keyMatches else { continue }
 
                 valueIndex += 1
                 self.skipJSONByteWhitespace(in: bytes, index: &valueIndex, limit: range.upperBound)
@@ -234,7 +235,7 @@ extension CostUsageScanner {
         var data = Data([0x22])
         data.append(UnsafeBufferPointer(rebasing: bytes[range]))
         data.append(0x22)
-        return (try? JSONSerialization.jsonObject(with: data)) as? String
+        return (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) as? String
     }
 
     private static func byteRange(

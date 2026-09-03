@@ -1363,6 +1363,10 @@ struct DebugWindowView: View {
 
     private var agentQuotaSummaryCard: some View {
         let quota = selectedUsageQuota
+        let codexQuotaState = model.codexQuotaSummaryState()
+        let displayedQuota = selectedUsagePlatform == .codex
+            ? codexQuotaState.displayedQuota
+            : quota
 
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
@@ -1371,8 +1375,8 @@ struct DebugWindowView: View {
 
                 Spacer(minLength: 12)
 
-                if let quota {
-                    Text(model.quotaUpdatedText(for: quota))
+                if let displayedQuota {
+                    Text(model.quotaUpdatedText(for: displayedQuota))
                         .font(settingsDetailFont)
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
@@ -1382,9 +1386,16 @@ struct DebugWindowView: View {
 
             if selectedUsagePlatform == .codex {
                 VStack(alignment: .leading, spacing: 8) {
-                    if let quota {
-                        quotaWindowTiles(for: quota)
-                    } else {
+                    switch codexQuotaState {
+                    case let .authoritative(authoritativeQuota, localObservation):
+                        codexQuotaIdentitySummary(authoritativeQuota)
+                        quotaWindowTiles(for: authoritativeQuota)
+                        if let localObservation {
+                            codexLocalQuotaObservationSummary(localObservation)
+                        }
+                    case let .localObservation(localObservation):
+                        codexLocalQuotaObservationSummary(localObservation)
+                    case .unavailable:
                         HStack(alignment: .top, spacing: 8) {
                             quotaWindowPlaceholderTile(.fiveHours)
                             quotaWindowPlaceholderTile(.weekly)
@@ -1902,6 +1913,75 @@ struct DebugWindowView: View {
         }
     }
 
+    private func codexQuotaIdentitySummary(_ quota: AgentQuotaStatus) -> some View {
+        let identity = model.codexQuotaIdentityPresentation(for: quota)
+
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(identity.title)
+                .font(settingsBodyStrongFont)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Text(identity.context)
+                .font(settingsDetailFont)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .truncationMode(.tail)
+
+            if let limitID = identity.limitID {
+                Text("ID · \(limitID)")
+                    .font(settingsDetailFont.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func codexLocalQuotaObservationSummary(_ observation: AgentQuotaStatus) -> some View {
+        let identity = model.codexQuotaIdentityPresentation(for: observation)
+        let windowSummary = model.quotaBadgeWindows(for: observation)
+            .map { model.quotaTitleLine(for: $0, quota: observation) }
+            .joined(separator: " · ")
+
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(model.text("本地会话观察（未与账户额度合并）", "Local session observation (not merged with account quota)"))
+                .font(settingsDetailStrongFont)
+                .foregroundStyle(.orange)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(identity.title)
+                .font(settingsDetailStrongFont)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            if let limitID = identity.limitID {
+                Text("ID · \(limitID)")
+                    .font(settingsDetailFont.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Text(windowSummary)
+                .font(settingsDetailFont)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            Text(identity.context)
+                .font(settingsDetailFont)
+                .foregroundStyle(.tertiary)
+                .lineLimit(2)
+                .truncationMode(.tail)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
     private var claudeUsageSessions: [SessionStatus] {
         model.activitySnapshot.sessions.filter { UsagePlatform.claude.matches(session: $0) }
     }
@@ -1967,7 +2047,26 @@ struct DebugWindowView: View {
                 }
             }
 
+            if selectedUsagePlatform == .codex {
+                Text(model.text(
+                    "本机 Codex 会话汇总，不归属于当前所选账号。",
+                    "Device-wide Codex sessions; not scoped to the selected account."
+                ))
+                .font(settingsDetailFont)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
             if selectedUsagePlatform.supportsTokenActivity {
+                if let status = model.tokenActivityStatusText {
+                    Label(
+                        status,
+                        systemImage: model.tokenActivityIssue == nil ? "info.circle" : "exclamationmark.triangle"
+                    )
+                    .font(settingsDetailFont)
+                    .foregroundStyle(model.tokenActivityIssue == nil ? Color.secondary : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
                 VStack(alignment: .leading, spacing: 8) {
                     LazyVGrid(
                         columns: [
@@ -1989,12 +2088,12 @@ struct DebugWindowView: View {
 
                         tokenUsageDashboardMetric(
                             title: model.text("今日 token 用量", "Today token usage"),
-                            value: "\(model.compactTokenCountText(selectedTokenActivityTodayTokens)) token"
+                            value: tokenActivityCountText(for: .today)
                         )
 
                         tokenUsageDashboardMetric(
                             title: model.text("近 30 天 token 用量", "Last 30 days token usage"),
-                            value: "\(model.compactTokenCountText(selectedTokenActivityLast30DaysTokens)) token"
+                            value: tokenActivityCountText(for: .last30Days)
                         )
                     }
 
@@ -2045,6 +2144,15 @@ struct DebugWindowView: View {
     private var selectedTokenActivityLast30DaysTokens: Int {
         guard selectedUsagePlatform == .codex else { return 0 }
         return tokenActivityLast30DaysTokens
+    }
+
+    private func tokenActivityCountText(for window: FloatingSignalTokenBadgeWindow) -> String {
+        guard selectedUsagePlatform == .codex,
+              let total = model.tokenActivityDisplayTotal(for: window)
+        else {
+            return model.text("暂无数据", "Unavailable")
+        }
+        return "\(model.compactTokenCountText(total)) token"
     }
 
     private func tokenUsageDashboardMetric(title: String, value: String) -> some View {
@@ -2889,8 +2997,8 @@ struct DebugWindowView: View {
                 settingRow(model.text("额度角标", "Quota badge")) {
                     settingsSwitch(floatingSignalQuotaBadgeEnabledBinding)
                         .help(model.text(
-                            "显示 Agent 剩余额度百分比，点击可查看当前可用的额度周期。",
-                            "Show remaining agent quota percentage; click to view the available quota windows."
+                            "显示 Agent 剩余额度百分比；所选周期暂不可用时显示 --，点击可切换到当前可用周期。",
+                            "Show remaining agent quota; -- appears when the selected window is unavailable. Click to choose an available window."
                         ))
                 }
 

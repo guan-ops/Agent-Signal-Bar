@@ -42,8 +42,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        guard !flag else { return true }
-
         DispatchQueue.main.async {
             AgentSignalAppServices.statusBarController.showDebugWindow()
         }

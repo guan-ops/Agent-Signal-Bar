@@ -5,6 +5,10 @@ struct CodexCLIStatus: Equatable, Sendable {
     let checkedAt: Date
 }
 
+protocol CodexCLIStatusProbing: Sendable {
+    func probeStatus() -> CodexCLIStatus
+}
+
 final class CodexCLIStatusProbe: @unchecked Sendable {
     private let environment: [String: String]
     private let fileManager: FileManager
@@ -67,7 +71,11 @@ final class CodexCLIStatusProbe: @unchecked Sendable {
     }
 
     private func resolveCodexExecutable() -> String? {
-        CodexExecutableResolver.resolve(environment: environment, fileManager: fileManager)
+        CodexExecutableResolver.resolve(
+            environment: environment,
+            fileManager: fileManager,
+            includeLoginShellLookup: true
+        )
     }
 
     private func waitForProcess(_ process: Process, timeout: TimeInterval) -> Bool {
@@ -99,5 +107,11 @@ final class CodexCLIStatusProbe: @unchecked Sendable {
     private func temporaryCaptureURL(suffix: String) -> URL {
         fileManager.temporaryDirectory
             .appendingPathComponent("agent-signal-codex-version-\(UUID().uuidString).\(suffix)")
+    }
+}
+
+extension CodexCLIStatusProbe: CodexCLIStatusProbing {
+    func probeStatus() -> CodexCLIStatus {
+        probe()
     }
 }

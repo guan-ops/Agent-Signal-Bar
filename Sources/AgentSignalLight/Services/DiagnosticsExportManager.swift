@@ -2,6 +2,16 @@ import Foundation
 
 struct DiagnosticsExportManager: Sendable {
     private static let commandTimeout: TimeInterval = 60
+    private let diagnosticsRootOverride: URL?
+    private let outputDirectoryOverride: URL?
+
+    init(
+        diagnosticsRootURL: URL? = nil,
+        outputDirectoryURL: URL? = nil
+    ) {
+        diagnosticsRootOverride = diagnosticsRootURL
+        outputDirectoryOverride = outputDirectoryURL
+    }
 
     func export(full: Bool = false) throws -> DiagnosticsExportResult {
         let rootURL = try diagnosticsRootURL()
@@ -9,10 +19,16 @@ struct DiagnosticsExportManager: Sendable {
         guard FileManager.default.isExecutableFile(atPath: scriptURL.path) else {
             throw DiagnosticsExportError.missingScript(scriptURL.path)
         }
+        let outputDirectoryURL = try prepareOutputDirectory()
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["bash", scriptURL.path] + (full ? ["--full"] : [])
+        process.arguments = [
+            "bash",
+            scriptURL.path,
+            "--output",
+            outputDirectoryURL.path
+        ] + (full ? ["--full"] : [])
         process.currentDirectoryURL = rootURL
 
         let outputURL = temporaryCaptureURL(suffix: "out")
@@ -74,6 +90,10 @@ struct DiagnosticsExportManager: Sendable {
     }
 
     private func diagnosticsRootURL() throws -> URL {
+        if let diagnosticsRootOverride {
+            return diagnosticsRootOverride.standardizedFileURL
+        }
+
         let bundleURL = Bundle.main.bundleURL.standardizedFileURL
         let distParent = bundleURL.deletingLastPathComponent()
         if distParent.lastPathComponent == "dist" {
@@ -94,6 +114,41 @@ struct DiagnosticsExportManager: Sendable {
         }
 
         throw DiagnosticsExportError.cannotLocateDiagnosticsRoot(bundleURL.path)
+    }
+
+    private func prepareOutputDirectory() throws -> URL {
+        let outputURL: URL
+        if let outputDirectoryOverride {
+            outputURL = outputDirectoryOverride.standardizedFileURL
+        } else if let applicationSupportURL = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first {
+            outputURL = applicationSupportURL
+                .appendingPathComponent("AgentSignalLight", isDirectory: true)
+                .appendingPathComponent("Diagnostics", isDirectory: true)
+        } else {
+            throw DiagnosticsExportError.cannotPrepareOutputDirectory(
+                "The user Application Support directory is unavailable."
+            )
+        }
+
+        do {
+            try FileManager.default.createDirectory(
+                at: outputURL,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: outputURL.path
+            )
+            return outputURL
+        } catch {
+            throw DiagnosticsExportError.cannotPrepareOutputDirectory(
+                "\(outputURL.path): \(error.localizedDescription)"
+            )
+        }
     }
 }
 
@@ -129,6 +184,7 @@ struct DiagnosticsExportResult: Sendable {
 
 enum DiagnosticsExportError: Error, LocalizedError {
     case cannotLocateDiagnosticsRoot(String)
+    case cannotPrepareOutputDirectory(String)
     case missingScript(String)
     case commandFailed(DiagnosticsExportResult)
     case commandTimedOut(TimeInterval)
@@ -137,6 +193,8 @@ enum DiagnosticsExportError: Error, LocalizedError {
         switch self {
         case .cannotLocateDiagnosticsRoot(let appPath):
             return "无法从当前 app 位置找到项目根目录或内置诊断资源：\(appPath)"
+        case .cannotPrepareOutputDirectory(let detail):
+            return "无法准备诊断导出目录：\(detail)"
         case .missingScript(let path):
             return "没有找到可执行的诊断导出脚本：\(path)"
         case .commandFailed(let result):

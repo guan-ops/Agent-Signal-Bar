@@ -8,6 +8,30 @@ import SQLite3
 @testable import AgentSignalLightUI
 
 final class AgentSignalLightCoreTests: XCTestCase {
+    private var isolatedUsageSnapshotURL: URL?
+
+    override func setUp() {
+        super.setUp()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "agent-signal-usage-test-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let fileURL = directory.appendingPathComponent("usage.json")
+        isolatedUsageSnapshotURL = fileURL
+        CodexAccountUsageSnapshotStore.defaultFileURLOverride = fileURL
+    }
+
+    override func tearDown() {
+        if CodexAccountUsageSnapshotStore.defaultFileURLOverride == isolatedUsageSnapshotURL {
+            CodexAccountUsageSnapshotStore.defaultFileURLOverride = nil
+        }
+        if let directory = isolatedUsageSnapshotURL?.deletingLastPathComponent() {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        isolatedUsageSnapshotURL = nil
+        super.tearDown()
+    }
+
     func testCodex56BuiltInPricingCoversAllVariantsAndDatedAliases() throws {
         let emptyCatalog = ModelsDevCatalog(providers: [:])
 
@@ -337,7 +361,9 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(quotaUpdate?.agent, "codex-desktop")
         XCTAssertEqual(quotaUpdate?.quota.remainingPercent ?? -1, 57.5, accuracy: 0.01)
         XCTAssertEqual(quotaUpdate?.quota.usedPercent ?? -1, 42.5, accuracy: 0.01)
+        XCTAssertEqual(quotaUpdate?.quota.limitID, "codex_bengalfox")
         XCTAssertEqual(quotaUpdate?.quota.limitName, "GPT-5.3-Codex-Spark")
+        XCTAssertEqual(quotaUpdate?.quota.source, .desktopSession)
         XCTAssertEqual(quotaUpdate?.quota.windowMinutes, 300)
         XCTAssertEqual(quotaUpdate?.quota.resetsAt, Date(timeIntervalSince1970: 1_781_788_782))
         XCTAssertEqual(quotaUpdate?.quota.primaryWindow?.remainingPercent ?? -1, 57.5, accuracy: 0.01)
@@ -351,6 +377,56 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(quotaUpdate?.quota.tokenUsage?.effectiveTotalTokens, 36_912)
         XCTAssertEqual(quotaUpdate?.quota.tokenUsage?.contextWindowTokens, 258_400)
         XCTAssertEqual(quotaUpdate?.tokenActivityUsage?.effectiveTotalTokens, 54_000)
+    }
+
+    func testAgentQuotaStatusDecodesLegacyPayloadAndUnknownFutureSource() throws {
+        let legacy = Data("""
+        {
+          "remaining_percent": 84,
+          "used_percent": 16,
+          "window_minutes": 10080,
+          "updated_at": 0
+        }
+        """.utf8)
+        let legacyQuota = try JSONDecoder().decode(AgentQuotaStatus.self, from: legacy)
+
+        XCTAssertNil(legacyQuota.limitID)
+        XCTAssertNil(legacyQuota.accountScopeID)
+        XCTAssertNil(legacyQuota.source)
+
+        let futureSource = Data("""
+        {
+          "remaining_percent": 100,
+          "limit_id": "codex_future",
+          "source": "future-source",
+          "updated_at": 0
+        }
+        """.utf8)
+        let futureQuota = try JSONDecoder().decode(AgentQuotaStatus.self, from: futureSource)
+
+        XCTAssertEqual(futureQuota.limitID, "codex_future")
+        XCTAssertEqual(futureQuota.source, .unknown)
+    }
+
+    func testAgentQuotaStatusRoundTripsIdentityAndAttribution() throws {
+        let accountScopeID = UUID()
+        let quota = AgentQuotaStatus(
+            remainingPercent: 100,
+            usedPercent: 0,
+            limitID: "codex_bengalfox",
+            limitName: "GPT-5.3-Codex-Spark",
+            accountScopeID: accountScopeID,
+            source: .oauth,
+            windowMinutes: 10_080,
+            updatedAt: Date(timeIntervalSince1970: 1_782_483_230)
+        )
+
+        let decoded = try JSONDecoder().decode(
+            AgentQuotaStatus.self,
+            from: JSONEncoder().encode(quota)
+        )
+
+        XCTAssertEqual(decoded, quota)
     }
 
     func testCodexDesktopSessionParserMapsTokenCountToActivityPoint() {
@@ -921,8 +997,14 @@ final class AgentSignalLightCoreTests: XCTestCase {
             usesAgentSignalCostUsageScanner: true
         )
         let result = scanner.scanDailyActivityResult(now: now, days: 1, progress: nil)
-        XCTAssertFalse(result.isComplete)
+        // A cold identity conflict is an explicit omission, not a failure of
+        // every unrelated source. No arbitrary duplicate becomes authoritative.
+        XCTAssertTrue(result.isComplete)
         XCTAssertTrue(result.days.isEmpty)
+        XCTAssertNotNil(result.warningDescription)
+        XCTAssertEqual(result.excludedSessionIDs, ["divergent-session"])
+        XCTAssertEqual(result.excludedSourceIDs.count, 2)
+        XCTAssertTrue(result.watermarks.isEmpty)
     }
 
     func testHardLinkedDuplicateSentinelOrderingCannotDropOwnerAggregate() throws {
@@ -4052,6 +4134,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
         let data = Data("""
         {
           "rate_limit": {
+            "limit_id": "codex_bengalfox",
+            "limit_name": "GPT-5.3-Codex-Spark",
             "primary_window": {
               "used_percent": 2.5,
               "reset_at": 1781788782,
@@ -4077,12 +4161,15 @@ final class AgentSignalLightCoreTests: XCTestCase {
         let usageStatus = try CodexRateLimitFetcher.usageStatus(
             from: response,
             updatedAt: updatedAt,
-            source: .unknown
+            source: .oauth
         )
         let quota = usageStatus.quota
 
         XCTAssertEqual(quota.remainingPercent, 97.5, accuracy: 0.01)
         XCTAssertEqual(quota.usedPercent ?? -1, 2.5, accuracy: 0.01)
+        XCTAssertEqual(quota.limitID, "codex_bengalfox")
+        XCTAssertEqual(quota.limitName, "GPT-5.3-Codex-Spark")
+        XCTAssertEqual(quota.source, .oauth)
         XCTAssertEqual(quota.windowMinutes, 300)
         XCTAssertEqual(quota.resetsAt, Date(timeIntervalSince1970: 1_781_788_782))
         XCTAssertEqual(quota.updatedAt, updatedAt)
@@ -4096,7 +4183,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(usageStatus.credits?.remaining ?? -1, 0, accuracy: 0.01)
         XCTAssertEqual(usageStatus.credits?.remainingPercent ?? -1, 0, accuracy: 0.01)
         XCTAssertEqual(usageStatus.credits?.resetsAt, Date(timeIntervalSince1970: 1_782_375_582))
-        XCTAssertEqual(usageStatus.source, .unknown)
+        XCTAssertEqual(usageStatus.source, .oauth)
     }
 
     func testCodexRateLimitFetcherDoesNotInventCreditQuotaWhenBalanceIsMissing() throws {
@@ -5925,6 +6012,112 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
     }
 
+    func testCLIAndRPCStatusProbesUseLoginShellExecutableDiscovery() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let binDir = root.appendingPathComponent("bin", isDirectory: true)
+        let codexURL = binDir.appendingPathComponent("codex", isDirectory: false)
+        let shellURL = root.appendingPathComponent("fake-login-shell", isDirectory: false)
+        try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let codexScript = #"""
+        #!/bin/sh
+        if [ "${1:-}" = "--version" ]; then
+          printf '%s\n' 'codex-cli login-shell-test'
+          exit 0
+        fi
+        while IFS= read -r line; do
+          case "$line" in
+            *'"method":"initialize"'*)
+              printf '%s\n' '{"id":1,"result":{}}'
+              ;;
+            *rateLimits*)
+              printf '%s\n' '{"id":2,"result":{"rateLimits":{"planType":"pro"}}}'
+              ;;
+            *account*read*)
+              printf '%s\n' '{"id":3,"result":{"account":{"type":"chatgpt","email":"shell@example.com","planType":"pro"}}}'
+              ;;
+          esac
+        done
+        """#
+        try codexScript.write(to: codexURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codexURL.path)
+
+        let shellScript = """
+        #!/bin/sh
+        last=""
+        for arg in "$@"; do
+          last="$arg"
+        done
+        PATH="$CODEX_TEST_LOGIN_BIN:/usr/bin:/bin" /bin/sh -c "$last"
+        """
+        try shellScript.write(to: shellURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shellURL.path)
+
+        let environment = [
+            "SHELL": shellURL.path,
+            "PATH": "/usr/bin:/bin",
+            "CODEX_TEST_LOGIN_BIN": binDir.path
+        ]
+        let cliStatus = CodexCLIStatusProbe(environment: environment).probe(timeout: 2)
+        XCTAssertEqual(cliStatus.versionText, "codex-cli login-shell-test")
+
+        let rpcStatus = await CodexRPCStatusProbe(environment: environment).probe(
+            initializeTimeout: 2,
+            requestTimeout: 2
+        )
+        XCTAssertEqual(rpcStatus.accountEmail, "shell@example.com")
+        XCTAssertEqual(rpcStatus.accountPlanName, "Pro 20x")
+        XCTAssertEqual(rpcStatus.rateLimitPlanName, "Pro 20x")
+    }
+
+    func testDiagnosticsExportUsesExplicitPrivateDirectoryOutsideResourceRoot() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diagnostics-manager-\(UUID().uuidString)", isDirectory: true)
+        let resourceRoot = root.appendingPathComponent("AgentSignalLight.app/Contents/Resources", isDirectory: true)
+        let scriptDirectory = resourceRoot.appendingPathComponent("script", isDirectory: true)
+        let scriptURL = scriptDirectory.appendingPathComponent("export_diagnostics.sh", isDirectory: false)
+        let outputDirectory = root.appendingPathComponent("User Application Support/Diagnostics", isDirectory: true)
+        try FileManager.default.createDirectory(at: scriptDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let exporter = #"""
+        #!/bin/bash
+        set -eu
+        output=""
+        mode="quick"
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --output) output="$2"; shift 2 ;;
+            --full) mode="full"; shift ;;
+            *) exit 2 ;;
+          esac
+        done
+        [[ -n "$output" ]]
+        mkdir -p "$output"
+        archive="$output/diagnostics-test.zip"
+        printf '%s' "$mode" > "$archive"
+        printf 'mode=%s\n' "$mode"
+        printf 'Diagnostics archive: %s\n' "$archive"
+        """#
+        try exporter.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+        let result = try DiagnosticsExportManager(
+            diagnosticsRootURL: resourceRoot,
+            outputDirectoryURL: outputDirectory
+        ).export(full: true)
+
+        let archiveURL = try XCTUnwrap(result.archiveURL)
+        XCTAssertEqual(archiveURL.standardizedFileURL.path, outputDirectory.appendingPathComponent("diagnostics-test.zip").path)
+        XCTAssertEqual(try String(contentsOf: archiveURL, encoding: .utf8), "full")
+        XCTAssertTrue(result.output.contains("mode=full"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: resourceRoot.appendingPathComponent("dist").path))
+        let attributes = try FileManager.default.attributesOfItem(atPath: outputDirectory.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+    }
+
     func testCodexExecutableResolverFindsChatGPTAndLegacyAppBundles() {
         let homeURL = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
         let candidates = [
@@ -5990,7 +6183,101 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testCodexAccountUsageSnapshotsStayScopedToAccountIDWhenEmailsMatch() throws {
+    func testForcedProviderRefreshSupersedesOldAccountRequest() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("provider-refresh-race-\(UUID().uuidString)", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "alpha-provider@example.com",
+            accountID: "acct_alpha_provider",
+            accessToken: "alpha-provider-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: root.appendingPathComponent("accounts.json")
+        )
+        let alpha = try manager.saveCurrentAccount()
+
+        try codexOAuthAuthJSON(
+            email: "beta-provider@example.com",
+            accountID: "acct_beta_provider",
+            accessToken: "beta-provider-access"
+        ).write(to: authURL)
+        let beta = try manager.saveCurrentAccount()
+        _ = try manager.switchToAccount(id: alpha.id)
+
+        let oldCheckedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let newCheckedAt = oldCheckedAt.addingTimeInterval(10)
+        let cliProbe = BlockingFirstCodexCLIStatusProbe(statuses: [
+            CodexCLIStatus(versionText: "codex-old", checkedAt: oldCheckedAt),
+            CodexCLIStatus(versionText: "codex-new", checkedAt: newCheckedAt),
+        ])
+        let rpcProbe = SequencedCodexRPCStatusProbe(statuses: [
+            CodexRPCStatus(
+                accountEmail: "alpha-provider@example.com",
+                accountPlanName: "Alpha",
+                rateLimitPlanName: nil,
+                checkedAt: oldCheckedAt
+            ),
+            CodexRPCStatus(
+                accountEmail: "beta-provider@example.com",
+                accountPlanName: "Beta",
+                rateLimitPlanName: nil,
+                checkedAt: newCheckedAt
+            ),
+        ])
+        let statusFetcher = SequencedCodexServiceStatusFetcher(statuses: [
+            CodexServiceStatus(indicator: .minor, description: "Old status", updatedAt: oldCheckedAt),
+            CodexServiceStatus(indicator: .none, description: "New status", updatedAt: newCheckedAt),
+        ])
+        let model = MenuBarStatusModel(
+            store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexUsageSnapshotStore: CodexAccountUsageSnapshotStore(
+                fileURL: root.appendingPathComponent("usage.json")
+            ),
+            codexCLIStatusProbe: cliProbe,
+            codexRPCStatusProbe: rpcProbe,
+            codexServiceStatusFetcher: statusFetcher,
+            performsAccountSwitchBackgroundRefreshes: false
+        )
+        model.isCodexDesktopMonitoringEnabled = false
+
+        model.refreshCodexProviderDetails(force: true)
+        let firstProbeStarted = await Task.detached {
+            cliProbe.waitUntilFirstProbeStarts(seconds: 2)
+        }.value
+        XCTAssertTrue(firstProbeStarted)
+
+        model.switchCodexAccount(beta)
+        model.refreshCodexProviderDetails(force: true)
+        for _ in 0..<100 where model.codexProviderAccountEmail != "beta-provider@example.com" {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        XCTAssertEqual(model.codexProviderAccountEmail, "beta-provider@example.com")
+        XCTAssertEqual(model.codexProviderPlanName, "Beta")
+        XCTAssertEqual(model.codexCLIVersionText, "codex-new")
+        XCTAssertEqual(model.codexProviderServiceStatusText, "New status")
+        XCTAssertFalse(model.isCodexProviderDetailsLoading)
+
+        cliProbe.releaseFirstProbe()
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(model.codexActiveSavedAccountID, beta.id)
+        XCTAssertEqual(model.codexProviderAccountEmail, "beta-provider@example.com")
+        XCTAssertEqual(model.codexProviderPlanName, "Beta")
+        XCTAssertEqual(model.codexCLIVersionText, "codex-new")
+        XCTAssertEqual(model.codexProviderServiceStatusText, "New status")
+    }
+
+    @MainActor
+    func testCodexQuotaSnapshotsStayAccountScopedWhileTokenSnapshotIsDeviceWide() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let accountStoreURL = root.appendingPathComponent("accounts.json")
@@ -6097,15 +6384,20 @@ final class AgentSignalLightCoreTests: XCTestCase {
         let loadedAlpha = try XCTUnwrap(try manager.loadState().currentAccount)
         XCTAssertEqual(usageStore.snapshot(for: loadedAlpha)?.quota?.remainingPercent, 84)
         XCTAssertEqual(usageStore.snapshot(for: loadedAlpha)?.resetCredits?.availableCount, 1)
-        XCTAssertEqual(usageStore.snapshot(for: loadedAlpha)?.tokenUsage?.totalTokens, 1_000)
-        XCTAssertEqual(usageStore.snapshot(for: loadedAlpha)?.tokenActivityDays.first?.totalTokens, 1_000)
+        XCTAssertNil(usageStore.snapshot(for: loadedAlpha)?.tokenUsage)
+        XCTAssertTrue(usageStore.snapshot(for: loadedAlpha)?.tokenActivityDays.isEmpty == true)
 
         _ = try manager.switchToAccount(id: beta.id)
         let loadedBeta = try XCTUnwrap(try manager.loadState().currentAccount)
         XCTAssertEqual(usageStore.snapshot(for: loadedBeta)?.quota?.remainingPercent, 42)
         XCTAssertEqual(usageStore.snapshot(for: loadedBeta)?.resetCredits?.availableCount, 2)
-        XCTAssertEqual(usageStore.snapshot(for: loadedBeta)?.tokenUsage?.totalTokens, 2_000)
-        XCTAssertEqual(usageStore.snapshot(for: loadedBeta)?.tokenActivityDays.first?.totalTokens, 2_000)
+        XCTAssertNil(usageStore.snapshot(for: loadedBeta)?.tokenUsage)
+        XCTAssertTrue(usageStore.snapshot(for: loadedBeta)?.tokenActivityDays.isEmpty == true)
+        XCTAssertEqual(usageStore.deviceTokenSnapshot()?.tokenUsage?.totalTokens, 2_000)
+        XCTAssertEqual(
+            usageStore.deviceTokenSnapshot()?.tokenActivityDays.first?.totalTokens,
+            2_000
+        )
 
         let defaults = UserDefaults.standard
         let originalMonitoring = defaults.object(forKey: "isCodexDesktopMonitoringEnabled")
@@ -6128,14 +6420,19 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssertEqual(model.codexActiveSavedAccountID, beta.id)
         XCTAssertEqual(model.latestAgentQuota?.remainingPercent, 42)
+        XCTAssertEqual(model.latestAgentQuota?.accountScopeID, beta.id)
+        XCTAssertEqual(model.latestAgentQuota?.source, .oauth)
         XCTAssertEqual(model.latestCodexResetCredits?.availableCount, 2)
         XCTAssertEqual(model.codexResetCreditsPresentation()?.availableText, "2 available")
         XCTAssertEqual(model.codexUsageFetchState, betaUsageFetchState)
         XCTAssertEqual(model.codexResetCreditsFetchState, betaResetFetchState)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
 
         model.switchCodexAccount(alpha)
         XCTAssertEqual(model.codexActiveSavedAccountID, alpha.id)
         XCTAssertEqual(model.latestAgentQuota?.remainingPercent, 84)
+        XCTAssertEqual(model.latestAgentQuota?.accountScopeID, alpha.id)
+        XCTAssertEqual(model.latestAgentQuota?.source, .browserCookie)
         XCTAssertEqual(model.latestCodexResetCredits?.availableCount, 1)
         XCTAssertEqual(model.codexResetCreditsPresentation()?.availableText, "1 available")
         XCTAssertEqual(model.codexUsageFetchState?.source, alphaUsageFetchState.source)
@@ -6146,6 +6443,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             alphaResetFetchState.lastSuccessfulAt
         )
         XCTAssertTrue(model.codexResetCreditsFetchState?.isStale ?? false)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
 
         model.switchCodexAccount(gamma)
         XCTAssertEqual(model.codexActiveSavedAccountID, gamma.id)
@@ -6154,14 +6452,393 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertNil(model.codexResetCreditsPresentation())
         XCTAssertNil(model.codexUsageFetchState)
         XCTAssertNil(model.codexResetCreditsFetchState)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
 
         model.switchCodexAccount(beta)
         XCTAssertEqual(model.codexActiveSavedAccountID, beta.id)
         XCTAssertEqual(model.latestAgentQuota?.remainingPercent, 42)
+        XCTAssertEqual(model.latestAgentQuota?.accountScopeID, beta.id)
+        XCTAssertEqual(model.latestAgentQuota?.source, .oauth)
         XCTAssertEqual(model.latestCodexResetCredits?.availableCount, 2)
         XCTAssertEqual(model.codexResetCreditsPresentation()?.availableText, "2 available")
         XCTAssertEqual(model.codexUsageFetchState, betaUsageFetchState)
         XCTAssertEqual(model.codexResetCreditsFetchState, betaResetFetchState)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
+    }
+
+    func testLegacyAccountTokenSnapshotMigratesToDeviceLedger() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-device-token-migration-\(UUID().uuidString)", isDirectory: true)
+        let authURL = root.appendingPathComponent("auth.json")
+        let usageURL = root.appendingPathComponent("usage.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try codexOAuthAuthJSON(
+            email: "legacy-device@example.com",
+            accountID: "acct_legacy_device",
+            accessToken: "legacy-device-access"
+        ).write(to: authURL)
+        let manager = CodexAccountManager(
+            environment: ["CODEX_HOME": root.path],
+            fileManager: .default,
+            storeURL: root.appendingPathComponent("accounts.json")
+        )
+        _ = try manager.saveCurrentAccount()
+        let account = try XCTUnwrap(try manager.loadState().currentAccount)
+        let now = Date()
+        let day = Calendar.current.startOfDay(for: now)
+        let legacySnapshot = CodexAccountUsageSnapshot(
+            accountKey: account.usageSnapshotKey,
+            email: account.normalizedUsageEmail,
+            accountID: account.normalizedUsageAccountID,
+            authFingerprint: account.authFingerprint,
+            quota: nil,
+            credits: nil,
+            resetCredits: nil,
+            usageFetchState: nil,
+            resetCreditsFetchState: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 321),
+            liveTokenUsageScanBaseline: nil,
+            unscannedLiveTokenCarry: nil,
+            liveTokenCounters: nil,
+            unscannedLiveTokenCarryByDay: nil,
+            liveTokenUsageScanCutoff: nil,
+            liveTokenScanWatermarks: nil,
+            legacyUnscopedTokenFloor: nil,
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(day: day, totalTokens: 321)],
+            updatedAt: now
+        )
+        try JSONEncoder().encode(
+            LegacyCodexUsageStoreDocument(version: 1, snapshots: [legacySnapshot])
+        ).write(to: usageURL, options: .atomic)
+
+        let usageStore = CodexAccountUsageSnapshotStore(fileURL: usageURL)
+        XCTAssertEqual(usageStore.deviceTokenSnapshot()?.tokenUsage?.totalTokens, 321)
+        XCTAssertEqual(usageStore.deviceTokenSnapshot()?.tokenActivityDays.first?.totalTokens, 321)
+
+        usageStore.store(
+            account: account,
+            quota: nil,
+            credits: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 321),
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [CodexTokenActivityDay(day: day, totalTokens: 321)],
+            updatedAt: now
+        )
+        XCTAssertNil(usageStore.snapshot(for: account)?.tokenUsage)
+        XCTAssertTrue(usageStore.snapshot(for: account)?.tokenActivityDays.isEmpty == true)
+        XCTAssertEqual(usageStore.deviceTokenSnapshot()?.tokenUsage?.totalTokens, 321)
+    }
+
+    func testLegacyAccountTokenSnapshotsMergeUniqueDeviceHistoryWithoutDoubleCounting() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-device-token-merge-\(UUID().uuidString)", isDirectory: true)
+        let usageURL = root.appendingPathComponent("usage.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let calendar = Calendar(identifier: .gregorian)
+        let sharedDay = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_782_432_000))
+        let alphaDay = calendar.date(byAdding: .day, value: -1, to: sharedDay)!
+        let betaDay = calendar.date(byAdding: .day, value: 1, to: sharedDay)!
+        let alphaUpdatedAt = Date(timeIntervalSince1970: 1_782_500_100)
+        let betaUpdatedAt = Date(timeIntervalSince1970: 1_782_500_200)
+
+        func cursor(
+            source: String,
+            generation: String,
+            offset: UInt64,
+            fingerprint: String
+        ) -> CodexTokenObservationCursor {
+            CodexTokenObservationCursor(
+                sourceID: source,
+                sourceGeneration: generation,
+                sourceStatFingerprint: 10,
+                sourceChangeTimeNanoseconds: 20,
+                endOffset: offset,
+                lineFingerprint: fingerprint
+            )
+        }
+
+        func counter(
+            sessionID: String,
+            total: Int,
+            scannedBaseline: Int? = nil,
+            updatedAt: Date,
+            cursor: CodexTokenObservationCursor
+        ) -> CodexLiveTokenCounterSnapshot {
+            CodexLiveTokenCounterSnapshot(
+                key: sessionID,
+                sessionID: sessionID,
+                totalTokens: total,
+                scannedBaseline: scannedBaseline ?? total,
+                day: sharedDay,
+                updatedAt: updatedAt,
+                observationCursor: cursor
+            )
+        }
+
+        func watermark(
+            sessionID: String,
+            cursor: CodexTokenObservationCursor,
+            total: Int
+        ) -> CodexLiveTokenScanWatermarkSnapshot {
+            CodexLiveTokenScanWatermarkSnapshot(
+                sessionID: sessionID,
+                sourceID: cursor.sourceID,
+                sourceGeneration: cursor.sourceGeneration,
+                sourceStatFingerprint: cursor.sourceStatFingerprint,
+                sourceChangeTimeNanoseconds: cursor.sourceChangeTimeNanoseconds,
+                endOffset: cursor.endOffset,
+                lineFingerprint: cursor.lineFingerprint,
+                eventTimestamp: nil,
+                totalTokens: total
+            )
+        }
+
+        let sharedAlphaCursor = cursor(
+            source: "/sessions/shared.jsonl",
+            generation: "shared-generation",
+            offset: 100,
+            fingerprint: "shared-100"
+        )
+        let sharedBetaCursor = cursor(
+            source: "/sessions/shared.jsonl",
+            generation: "shared-generation",
+            offset: 200,
+            fingerprint: "shared-200"
+        )
+        let alphaCursor = cursor(
+            source: "/sessions/alpha.jsonl",
+            generation: "alpha-generation",
+            offset: 300,
+            fingerprint: "alpha-300"
+        )
+        let betaCursor = cursor(
+            source: "/sessions/beta.jsonl",
+            generation: "beta-generation",
+            offset: 400,
+            fingerprint: "beta-400"
+        )
+        let absorbedCursor = cursor(
+            source: "/sessions/absorbed.jsonl",
+            generation: "absorbed-generation",
+            offset: 100,
+            fingerprint: "absorbed-100"
+        )
+        let absorbedWatermarkCursor = cursor(
+            source: "/sessions/absorbed.jsonl",
+            generation: "absorbed-generation",
+            offset: 200,
+            fingerprint: "absorbed-200"
+        )
+
+        let alphaSnapshot = CodexAccountUsageSnapshot(
+            accountKey: "account:alpha",
+            email: "alpha@example.com",
+            accountID: "alpha",
+            authFingerprint: "alpha-auth",
+            quota: nil,
+            credits: nil,
+            resetCredits: nil,
+            usageFetchState: nil,
+            resetCreditsFetchState: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 300),
+            liveTokenUsageScanBaseline: 300,
+            unscannedLiveTokenCarry: 25,
+            liveTokenCounters: [
+                counter(
+                    sessionID: "shared-session",
+                    total: 100,
+                    updatedAt: alphaUpdatedAt,
+                    cursor: sharedAlphaCursor
+                ),
+                counter(
+                    sessionID: "alpha-session",
+                    total: 300,
+                    updatedAt: alphaUpdatedAt,
+                    cursor: alphaCursor
+                ),
+                counter(
+                    sessionID: "absorbed-session",
+                    total: 250,
+                    scannedBaseline: 0,
+                    updatedAt: alphaUpdatedAt,
+                    cursor: absorbedCursor
+                ),
+            ],
+            unscannedLiveTokenCarryByDay: nil,
+            liveTokenUsageScanCutoff: alphaUpdatedAt,
+            liveTokenScanWatermarks: [
+                watermark(sessionID: "shared-session", cursor: sharedAlphaCursor, total: 100),
+                watermark(sessionID: "alpha-session", cursor: alphaCursor, total: 300),
+            ],
+            legacyUnscopedTokenFloor: nil,
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [
+                CodexTokenActivityDay(day: alphaDay, totalTokens: 300),
+                CodexTokenActivityDay(day: sharedDay, totalTokens: 100),
+            ],
+            updatedAt: alphaUpdatedAt
+        )
+        let betaSnapshot = CodexAccountUsageSnapshot(
+            accountKey: "account:beta",
+            email: "beta@example.com",
+            accountID: "beta",
+            authFingerprint: "beta-auth",
+            quota: nil,
+            credits: nil,
+            resetCredits: nil,
+            usageFetchState: nil,
+            resetCreditsFetchState: nil,
+            tokenUsage: AgentTokenUsage(totalTokens: 400),
+            liveTokenUsageScanBaseline: 400,
+            unscannedLiveTokenCarry: 40,
+            liveTokenCounters: [
+                counter(
+                    sessionID: "shared-session",
+                    total: 150,
+                    updatedAt: betaUpdatedAt,
+                    cursor: sharedBetaCursor
+                ),
+                counter(
+                    sessionID: "beta-session",
+                    total: 400,
+                    updatedAt: betaUpdatedAt,
+                    cursor: betaCursor
+                ),
+            ],
+            unscannedLiveTokenCarryByDay: nil,
+            liveTokenUsageScanCutoff: betaUpdatedAt,
+            liveTokenScanWatermarks: [
+                watermark(sessionID: "shared-session", cursor: sharedBetaCursor, total: 150),
+                watermark(sessionID: "beta-session", cursor: betaCursor, total: 400),
+                watermark(
+                    sessionID: "absorbed-session",
+                    cursor: absorbedWatermarkCursor,
+                    total: 250
+                ),
+            ],
+            legacyUnscopedTokenFloor: nil,
+            tokenActivityCacheVersion: CodexTokenActivityScanner.currentCacheVersion,
+            tokenActivityDays: [
+                CodexTokenActivityDay(day: sharedDay, totalTokens: 150),
+                CodexTokenActivityDay(day: betaDay, totalTokens: 400),
+            ],
+            updatedAt: betaUpdatedAt
+        )
+        try JSONEncoder().encode(
+            LegacyCodexUsageStoreDocument(
+                version: 1,
+                snapshots: [alphaSnapshot, betaSnapshot]
+            )
+        ).write(to: usageURL, options: .atomic)
+
+        let migrated = try XCTUnwrap(
+            CodexAccountUsageSnapshotStore(fileURL: usageURL).deviceTokenSnapshot()
+        )
+        XCTAssertEqual(migrated.tokenUsage?.totalTokens, 400)
+        XCTAssertEqual(migrated.tokenUsageSessionID, "beta-session")
+        XCTAssertEqual(migrated.unscannedLiveTokenCarry, 40)
+        XCTAssertEqual(migrated.liveTokenUsageScanCutoff, betaUpdatedAt)
+        XCTAssertEqual(migrated.tokenActivityDays.map(\.day), [alphaDay, sharedDay, betaDay])
+        XCTAssertEqual(migrated.tokenActivityDays.map(\.totalTokens), [300, 150, 400])
+        XCTAssertEqual(migrated.tokenActivityDays.map(\.totalTokens).reduce(0, +), 850)
+
+        let counters = try XCTUnwrap(migrated.liveTokenCounters)
+        XCTAssertEqual(Set(counters.compactMap(\.sessionID)), Set([
+            "alpha-session",
+            "absorbed-session",
+            "beta-session",
+            "shared-session",
+        ]))
+        XCTAssertEqual(counters.first { $0.sessionID == "shared-session" }?.totalTokens, 150)
+        XCTAssertEqual(counters.first { $0.sessionID == "shared-session" }?.observationCursor?.endOffset, 200)
+        XCTAssertEqual(
+            counters.first { $0.sessionID == "absorbed-session" }?.scannedBaseline,
+            250,
+            "A counter already covered by a later watermark must not revive as pending usage"
+        )
+
+        let watermarks = try XCTUnwrap(migrated.liveTokenScanWatermarks)
+        XCTAssertEqual(Set(watermarks.map(\.sourceGeneration)), Set([
+            "alpha-generation",
+            "absorbed-generation",
+            "beta-generation",
+            "shared-generation",
+        ]))
+        XCTAssertEqual(
+            watermarks.first { $0.sourceGeneration == "shared-generation" }?.endOffset,
+            200
+        )
+    }
+
+    @MainActor
+    func testColdStartWithoutAnyCodexAccountClearsRestoredScopedQuota() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("no-account-restored-quota-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let defaults = UserDefaults.standard
+        let quotaCacheKey = "cachedLatestAgentQuota"
+        let monitoringKey = "isCodexDesktopMonitoringEnabled"
+        let originalQuotaCache = defaults.object(forKey: quotaCacheKey)
+        let originalMonitoring = defaults.object(forKey: monitoringKey)
+        defer {
+            if let originalQuotaCache {
+                defaults.set(originalQuotaCache, forKey: quotaCacheKey)
+            } else {
+                defaults.removeObject(forKey: quotaCacheKey)
+            }
+            if let originalMonitoring {
+                defaults.set(originalMonitoring, forKey: monitoringKey)
+            } else {
+                defaults.removeObject(forKey: monitoringKey)
+            }
+        }
+        defaults.set(false, forKey: monitoringKey)
+
+        let stateStore = SignalStateStore(
+            stateFileURL: root.appendingPathComponent("status.json")
+        )
+        let restoredQuota = AgentQuotaStatus(
+            remainingPercent: 62,
+            usedPercent: 38,
+            accountScopeID: UUID(),
+            source: .oauth,
+            windowMinutes: 300,
+            updatedAt: Date(timeIntervalSince1970: 1_782_500_100)
+        )
+        _ = try stateStore.applySessionQuota(
+            restoredQuota,
+            sessionID: "codex-desktop:stale-account",
+            agent: "codex-desktop",
+            updatedAt: restoredQuota.updatedAt
+        )
+        let newerCachedQuota = AgentQuotaStatus(
+            remainingPercent: 41,
+            usedPercent: 59,
+            accountScopeID: UUID(),
+            source: .browserCookie,
+            windowMinutes: 300,
+            updatedAt: restoredQuota.updatedAt.addingTimeInterval(60)
+        )
+        defaults.set(try JSONEncoder().encode(newerCachedQuota), forKey: quotaCacheKey)
+
+        let model = MenuBarStatusModel(
+            store: stateStore,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: EmptyCodexAccountManager(),
+            performsAccountSwitchBackgroundRefreshes: false
+        )
+
+        XCTAssertNil(model.codexCurrentAccount)
+        XCTAssertTrue(model.codexSavedAccounts.isEmpty)
+        XCTAssertNil(model.latestAgentQuota)
+        XCTAssertNil(defaults.data(forKey: quotaCacheKey))
     }
 
     @MainActor
@@ -9259,7 +9936,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testAccountSwitchRejectsTokenScanCompletionFromPreviousAccount() async throws {
+    func testAccountSwitchKeepsDeviceTokenScanInFlightAndAppliesCompletion() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("token-account-switch-\(UUID().uuidString)", isDirectory: true)
         let authURL = root.appendingPathComponent("auth.json")
@@ -9328,8 +10005,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             }
         )
         defer { scanner.finishScan() }
-        let discarded = expectation(description: "previous account scan discarded")
-        let betaApplied = expectation(description: "new account scan applied")
+        let applied = expectation(description: "device token scan applied across account switch")
         let model = MenuBarStatusModel(
             store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
             codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
@@ -9337,18 +10013,14 @@ final class AgentSignalLightCoreTests: XCTestCase {
             codexUsageSnapshotStore: usageStore,
             codexTokenActivityScanner: scanner,
             tokenActivityScanObserver: { disposition in
-                if disposition == .discardedStaleContext {
-                    discarded.fulfill()
-                } else if disposition == .applied {
-                    betaApplied.fulfill()
-                }
+                if disposition == .applied { applied.fulfill() }
             },
             performsAccountSwitchBackgroundRefreshes: false
         )
         model.isCodexDesktopMonitoringEnabled = true
         model.isMonitoringPaused = false
 
-        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
         model.refreshTokenActivityIfNeeded()
         XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
 
@@ -9356,28 +10028,18 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(model.codexActiveSavedAccountID, beta.id)
         XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
 
-        let betaScanStarted = Task.detached {
-            scanner.waitUntilScanStarts(seconds: 2)
-        }
         scanner.finishScan()
-        await fulfillment(of: [discarded], timeout: 2)
-        let didStartBetaScan = await betaScanStarted.value
-        XCTAssertTrue(didStartBetaScan)
-        XCTAssertTrue(model.isTokenActivityLoading)
-        XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
-
-        scanner.finishScan()
-        await fulfillment(of: [betaApplied], timeout: 2)
+        await fulfillment(of: [applied], timeout: 2)
 
         XCTAssertEqual(model.codexActiveSavedAccountID, beta.id)
         XCTAssertFalse(model.isTokenActivityLoading)
-        XCTAssertEqual(scanner.scanCallCount, 2)
-        XCTAssertEqual(model.tokenActivityDays, [CodexTokenActivityDay(day: today, totalTokens: 2_000)])
-        XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
+        XCTAssertEqual(scanner.scanCallCount, 1)
+        XCTAssertEqual(model.tokenActivityDays, [CodexTokenActivityDay(day: today, totalTokens: 9_999)])
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 9_999)
     }
 
     @MainActor
-    func testStaleDesktopPollCannotPersistIntoReplacementAccount() async throws {
+    func testStaleDesktopPollRetainsDeviceActivityAndTokensButRejectsReplacementAccountQuota() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("stale-desktop-poll-account-\(UUID().uuidString)", isDirectory: true)
         let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
@@ -9407,8 +10069,15 @@ final class AgentSignalLightCoreTests: XCTestCase {
         let betaCurrent = try XCTUnwrap(try manager.loadState().currentAccount)
         _ = try manager.switchToAccount(id: alpha.id)
 
-        let now = Date()
-        let eventAt = now.addingTimeInterval(-10)
+        let wallClock = Date()
+        let now = Date(
+            timeIntervalSince1970: floor(wallClock.timeIntervalSince1970) + 0.5
+        )
+        // The snapshot keeps sub-millisecond precision, while ISO8601 JSONL
+        // formatting rounds this down. Exact cursor evidence must still win.
+        let eventAt = Date(
+            timeIntervalSince1970: floor(now.timeIntervalSince1970) - 10 + 0.0001
+        )
         let today = Calendar.current.startOfDay(for: now)
         let rawSessionID = "019c846a-b85e-7bd3-924b-cc33e3f180d9"
         let liveSessionID = "codex-desktop:\(rawSessionID)"
@@ -9441,7 +10110,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
         try [
             #"{"timestamp":"\#(isoTimestamp(eventAt))","type":"session_meta","payload":{"id":"\#(rawSessionID)","originator":"Codex Desktop"}}"#,
-            #"{"timestamp":"\#(isoTimestamp(eventAt))","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+            #"{"timestamp":"\#(isoTimestamp(eventAt))","type":"event_msg","payload":{"type":"task_started"}}"#,
+            #"{"timestamp":"\#(isoTimestamp(eventAt))","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":350,"cached_input_tokens":0,"output_tokens":0,"total_tokens":350},"last_token_usage":{"input_tokens":350,"cached_input_tokens":0,"output_tokens":0,"total_tokens":350}},"rate_limits":{"limit_id":"codex_old_account","primary":{"used_percent":73,"window_minutes":300}}}}"#,
         ].joined(separator: "\n").appending("\n")
             .write(to: sessionURL, atomically: true, encoding: .utf8)
 
@@ -9477,7 +10147,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
         model.isCodexDesktopMonitoringEnabled = true
         model.isMonitoringPaused = false
-        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 100)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 200)
 
         model.pollCodexDesktopActivity()
         model.switchCodexAccount(beta)
@@ -9494,12 +10164,20 @@ final class AgentSignalLightCoreTests: XCTestCase {
             }
         }
         XCTAssertTrue(didFinishPoll)
-        try await Task.sleep(for: .milliseconds(100))
+        for _ in 0..<100
+            where model.tokenActivityTotal(for: .today, now: now) != 350 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
 
-        XCTAssertNil(stateStore.readSnapshot().sessions.first(where: {
-            $0.sessionID == liveSessionID
-        }))
-        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 200)
+        let retainedDeviceSession = try XCTUnwrap(
+            stateStore.readSnapshot().sessions.first(where: {
+                $0.sessionID == liveSessionID
+            })
+        )
+        XCTAssertEqual(retainedDeviceSession.signal, .thinking)
+        XCTAssertNil(retainedDeviceSession.quota)
+        XCTAssertNil(model.latestAgentQuota)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 350)
 
         // A quota already present in the process-wide SignalState file is also
         // untrusted after activation, even when the replacement account has a
@@ -9517,16 +10195,16 @@ final class AgentSignalLightCoreTests: XCTestCase {
         model.reload()
         try await Task.sleep(for: .milliseconds(100))
 
-        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 200)
-        let persistedBeta = try XCTUnwrap(usageStore.snapshot(for: betaCurrent))
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 350)
+        let persistedDevice = try XCTUnwrap(usageStore.deviceTokenSnapshot())
         XCTAssertEqual(
-            persistedBeta.liveTokenCounters?.first(where: { $0.sessionID == liveSessionID })?.totalTokens,
-            200
+            persistedDevice.liveTokenCounters?.first(where: { $0.sessionID == liveSessionID })?.totalTokens,
+            350
         )
     }
 
     @MainActor
-    func testAccountSwitchAwayAndBackStillRejectsOriginalScanGeneration() async throws {
+    func testAccountSwitchAwayAndBackKeepsDeviceTokenScanGeneration() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("token-account-switch-aba-\(UUID().uuidString)", isDirectory: true)
         let authURL = root.appendingPathComponent("auth.json")
@@ -9585,8 +10263,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             }
         )
         defer { scanner.finishScan() }
-        let discarded = expectation(description: "original Alpha generation discarded")
-        let replacementApplied = expectation(description: "new Alpha generation applied")
+        let applied = expectation(description: "device scan survives Alpha Beta Alpha cycle")
         let model = MenuBarStatusModel(
             store: SignalStateStore(stateFileURL: root.appendingPathComponent("status.json")),
             codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
@@ -9594,11 +10271,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             codexUsageSnapshotStore: usageStore,
             codexTokenActivityScanner: scanner,
             tokenActivityScanObserver: { disposition in
-                if disposition == .discardedStaleContext {
-                    discarded.fulfill()
-                } else if disposition == .applied {
-                    replacementApplied.fulfill()
-                }
+                if disposition == .applied { applied.fulfill() }
             },
             performsAccountSwitchBackgroundRefreshes: false
         )
@@ -9607,26 +10280,18 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         model.refreshTokenActivityIfNeeded(force: true)
         XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 1))
-        // Keep the original scan blocked while cycling A -> B -> A, but do not
-        // start an unrelated scan for the intermediate account. The stale A
-        // result must still be rejected by generation, not account identity.
-        model.isMonitoringPaused = true
+        // A saved-account cycle must not invalidate a device-wide JSONL scan.
         model.switchCodexAccount(beta)
         XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
         model.switchCodexAccount(alpha)
-        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 2_000)
 
         scanner.finishScan()
-        await fulfillment(of: [discarded], timeout: 2)
-        model.isMonitoringPaused = false
-        model.refreshTokenActivityIfNeeded(force: true)
-        XCTAssertTrue(scanner.waitUntilScanStarts(seconds: 2))
-        scanner.finishScan()
-        await fulfillment(of: [replacementApplied], timeout: 2)
+        await fulfillment(of: [applied], timeout: 2)
 
         XCTAssertEqual(model.codexActiveSavedAccountID, alpha.id)
-        XCTAssertEqual(scanner.scanCallCount, 2)
-        XCTAssertEqual(model.tokenActivityTotal(for: .today), 1_000)
+        XCTAssertEqual(scanner.scanCallCount, 1)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today), 9_999)
     }
 
     @MainActor
@@ -9690,7 +10355,321 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
 
         XCTAssertEqual(model.quotaBadgeWindows(for: quota), [.weekly])
+        XCTAssertNil(model.quotaWindow(for: .fiveHours, quota: quota))
+        XCTAssertFalse(model.isQuotaBadgeWindowAvailable(.fiveHours, quota: quota))
+        XCTAssertTrue(model.isQuotaBadgeWindowAvailable(.weekly, quota: quota))
         XCTAssertEqual(model.quotaTitleLine(for: .weekly, quota: quota), "一周 · 剩余 84%")
+    }
+
+    @MainActor
+    func testFiveHourOnlyQuotaDoesNotInventWeeklyWindow() {
+        let model = makeMenuBarStatusModel()
+        let fiveHourWindow = AgentQuotaWindowStatus(
+            remainingPercent: 70,
+            usedPercent: 30,
+            windowMinutes: 300,
+            resetsAt: Date(timeIntervalSince1970: 1_782_000_000)
+        )
+        let quota = AgentQuotaStatus(
+            remainingPercent: fiveHourWindow.remainingPercent,
+            usedPercent: fiveHourWindow.usedPercent,
+            windowMinutes: fiveHourWindow.windowMinutes,
+            resetsAt: fiveHourWindow.resetsAt,
+            updatedAt: Date(timeIntervalSince1970: 1_781_900_000),
+            primary: fiveHourWindow,
+            secondary: nil
+        )
+
+        XCTAssertEqual(model.quotaBadgeWindows(for: quota), [.fiveHours])
+        XCTAssertNotNil(model.quotaWindow(for: .fiveHours, quota: quota))
+        XCTAssertNil(model.quotaWindow(for: .weekly, quota: quota))
+        XCTAssertFalse(model.isQuotaBadgeWindowAvailable(.weekly, quota: quota))
+    }
+
+    @MainActor
+    func testKnownNonstandardSecondaryWindowIsNotAliasedToMissingQuotaSelection() {
+        let model = makeMenuBarStatusModel()
+        let fiveHours = AgentQuotaWindowStatus(
+            remainingPercent: 70,
+            usedPercent: 30,
+            windowMinutes: 300
+        )
+        let weekly = AgentQuotaWindowStatus(
+            remainingPercent: 60,
+            usedPercent: 40,
+            windowMinutes: 10_080
+        )
+        let monthly = AgentQuotaWindowStatus(
+            remainingPercent: 90,
+            usedPercent: 10,
+            windowMinutes: 43_200
+        )
+        let fiveHourAndMonthly = AgentQuotaStatus(
+            remainingPercent: fiveHours.remainingPercent,
+            usedPercent: fiveHours.usedPercent,
+            windowMinutes: fiveHours.windowMinutes,
+            updatedAt: Date(),
+            primary: fiveHours,
+            secondary: monthly
+        )
+        let weeklyAndMonthly = AgentQuotaStatus(
+            remainingPercent: weekly.remainingPercent,
+            usedPercent: weekly.usedPercent,
+            windowMinutes: weekly.windowMinutes,
+            updatedAt: Date(),
+            primary: weekly,
+            secondary: monthly
+        )
+
+        XCTAssertEqual(model.quotaBadgeWindows(for: fiveHourAndMonthly), [.fiveHours])
+        XCTAssertNil(model.quotaWindow(for: .weekly, quota: fiveHourAndMonthly))
+        XCTAssertEqual(model.quotaBadgeWindows(for: weeklyAndMonthly), [.weekly])
+        XCTAssertNil(model.quotaWindow(for: .fiveHours, quota: weeklyAndMonthly))
+    }
+
+    @MainActor
+    func testLocalQuotaObservationComparisonDetectsIdentityOrWindowContext() {
+        let model = makeMenuBarStatusModel()
+        let weekly = AgentQuotaWindowStatus(
+            remainingPercent: 100,
+            usedPercent: 0,
+            windowMinutes: 10_080,
+            resetsAt: nil
+        )
+        let fiveHours = AgentQuotaWindowStatus(
+            remainingPercent: 100,
+            usedPercent: 0,
+            windowMinutes: 300,
+            resetsAt: nil
+        )
+        let authoritative = AgentQuotaStatus(
+            remainingPercent: 100,
+            usedPercent: 0,
+            limitID: "codex_bengalfox",
+            limitName: "GPT-5.3-Codex-Spark",
+            source: .oauth,
+            windowMinutes: weekly.windowMinutes,
+            updatedAt: Date(),
+            primary: weekly
+        )
+        let duplicateLocal = AgentQuotaStatus(
+            remainingPercent: 100,
+            usedPercent: 0,
+            limitID: "CODEX_BENGALFOX",
+            limitName: "GPT-5.3-Codex-Spark",
+            source: .desktopSession,
+            windowMinutes: weekly.windowMinutes,
+            updatedAt: Date(),
+            primary: weekly
+        )
+        let richerLocal = AgentQuotaStatus(
+            remainingPercent: 100,
+            usedPercent: 0,
+            limitID: "codex_bengalfox",
+            limitName: "GPT-5.3-Codex-Spark",
+            source: .desktopSession,
+            windowMinutes: fiveHours.windowMinutes,
+            updatedAt: Date(),
+            primary: fiveHours,
+            secondary: weekly
+        )
+        let distinctLocal = AgentQuotaStatus(
+            remainingPercent: 100,
+            usedPercent: 0,
+            limitID: "codex_other",
+            source: .desktopSession,
+            windowMinutes: weekly.windowMinutes,
+            updatedAt: Date(),
+            primary: weekly
+        )
+        let namingLocal = AgentQuotaStatus(
+            remainingPercent: 100,
+            usedPercent: 0,
+            limitID: "codex_bengalfox",
+            limitName: "GPT-5.3-Codex-Spark",
+            source: .desktopSession,
+            windowMinutes: weekly.windowMinutes,
+            updatedAt: Date(),
+            primary: weekly
+        )
+        let unnamedAuthoritative = AgentQuotaStatus(
+            remainingPercent: 100,
+            usedPercent: 0,
+            limitID: "codex_bengalfox",
+            source: .oauth,
+            windowMinutes: weekly.windowMinutes,
+            updatedAt: Date(),
+            primary: weekly
+        )
+        let changedWeekly = AgentQuotaWindowStatus(
+            remainingPercent: 75,
+            usedPercent: 25,
+            windowMinutes: 10_080,
+            resetsAt: weekly.resetsAt
+        )
+        let newerChangedLocal = AgentQuotaStatus(
+            remainingPercent: changedWeekly.remainingPercent,
+            usedPercent: changedWeekly.usedPercent,
+            limitID: "codex_bengalfox",
+            limitName: "GPT-5.3-Codex-Spark",
+            source: .desktopSession,
+            windowMinutes: changedWeekly.windowMinutes,
+            updatedAt: authoritative.updatedAt.addingTimeInterval(1),
+            primary: changedWeekly
+        )
+        let olderChangedLocal = AgentQuotaStatus(
+            remainingPercent: changedWeekly.remainingPercent,
+            usedPercent: changedWeekly.usedPercent,
+            limitID: "codex_bengalfox",
+            limitName: "GPT-5.3-Codex-Spark",
+            source: .desktopSession,
+            windowMinutes: changedWeekly.windowMinutes,
+            updatedAt: authoritative.updatedAt.addingTimeInterval(-1),
+            primary: changedWeekly
+        )
+        let resetChangedWindow = AgentQuotaWindowStatus(
+            remainingPercent: weekly.remainingPercent,
+            usedPercent: weekly.usedPercent,
+            windowMinutes: weekly.windowMinutes,
+            resetsAt: authoritative.updatedAt.addingTimeInterval(3_600)
+        )
+        let resetChangedLocal = AgentQuotaStatus(
+            remainingPercent: resetChangedWindow.remainingPercent,
+            usedPercent: resetChangedWindow.usedPercent,
+            limitID: "codex_bengalfox",
+            limitName: "GPT-5.3-Codex-Spark",
+            source: .desktopSession,
+            windowMinutes: resetChangedWindow.windowMinutes,
+            updatedAt: authoritative.updatedAt.addingTimeInterval(2),
+            primary: resetChangedWindow
+        )
+
+        XCTAssertFalse(model.localQuotaObservationAddsContext(duplicateLocal, comparedTo: authoritative))
+        XCTAssertTrue(model.localQuotaObservationAddsContext(richerLocal, comparedTo: authoritative))
+        XCTAssertTrue(model.localQuotaObservationAddsContext(distinctLocal, comparedTo: authoritative))
+        XCTAssertTrue(model.localQuotaObservationAddsContext(namingLocal, comparedTo: unnamedAuthoritative))
+        XCTAssertTrue(model.localQuotaObservationAddsContext(newerChangedLocal, comparedTo: authoritative))
+        XCTAssertFalse(model.localQuotaObservationAddsContext(olderChangedLocal, comparedTo: authoritative))
+        XCTAssertTrue(model.localQuotaObservationAddsContext(resetChangedLocal, comparedTo: authoritative))
+    }
+
+    @MainActor
+    func testCodexQuotaSummaryShowsLocalObservationWhenAuthoritativeQuotaIsUnavailable() throws {
+        let model = makeMenuBarStatusModel()
+        let now = Date()
+        let localQuota = AgentQuotaStatus(
+            remainingPercent: 71,
+            usedPercent: 29,
+            limitID: "codex_local_observation",
+            limitName: "Local observation",
+            source: .desktopSession,
+            windowMinutes: 300,
+            updatedAt: now,
+            primary: AgentQuotaWindowStatus(
+                remainingPercent: 71,
+                usedPercent: 29,
+                windowMinutes: 300
+            )
+        )
+        XCTAssertTrue(model.updateLatestLocalQuotaObservation(
+            CodexDesktopQuotaUpdate(
+                sessionID: "codex-desktop:local-only",
+                agent: "codex-desktop",
+                quota: localQuota
+            )
+        ))
+        XCTAssertNil(model.latestAgentQuota)
+
+        let state = model.codexQuotaSummaryState(now: now)
+        guard case let .localObservation(observation) = state else {
+            return XCTFail("Expected a clearly separate local-only quota presentation")
+        }
+        XCTAssertEqual(observation, localQuota)
+        XCTAssertEqual(state.displayedQuota, localQuota)
+    }
+
+    @MainActor
+    func testLocalQuotaObservationUsesJSONLByteOrderBeforeEventTimestamp() {
+        let model = makeMenuBarStatusModel()
+        let now = Date()
+
+        func update(
+            remainingPercent: Double,
+            eventAt: Date,
+            offset: UInt64
+        ) -> CodexDesktopQuotaUpdate {
+            CodexDesktopQuotaUpdate(
+                sessionID: "codex-desktop:quota-order",
+                agent: "codex-desktop",
+                quota: AgentQuotaStatus(
+                    remainingPercent: remainingPercent,
+                    usedPercent: 100 - remainingPercent,
+                    limitID: "codex_bengalfox",
+                    source: .desktopSession,
+                    windowMinutes: 300,
+                    updatedAt: eventAt
+                ),
+                tokenObservationCursor: CodexTokenObservationCursor(
+                    sourceID: "/test/quota-order.jsonl",
+                    sourceGeneration: "quota-order-generation",
+                    endOffset: offset,
+                    lineFingerprint: "line-\(offset)"
+                )
+            )
+        }
+
+        XCTAssertTrue(model.updateLatestLocalQuotaObservation(update(
+            remainingPercent: 80,
+            eventAt: now.addingTimeInterval(10),
+            offset: 100
+        )))
+        XCTAssertTrue(model.updateLatestLocalQuotaObservation(update(
+            remainingPercent: 65,
+            eventAt: now.addingTimeInterval(5),
+            offset: 200
+        )))
+        XCTAssertEqual(model.latestLocalAgentQuotaObservation?.remainingPercent, 65)
+
+        XCTAssertFalse(model.updateLatestLocalQuotaObservation(update(
+            remainingPercent: 95,
+            eventAt: now.addingTimeInterval(20),
+            offset: 150
+        )))
+        XCTAssertEqual(model.latestLocalAgentQuotaObservation?.remainingPercent, 65)
+    }
+
+    @MainActor
+    func testCodexQuotaIdentityPresentationNeverCallsUnknownScopeGeneric() {
+        let model = makeMenuBarStatusModel()
+        model.appLanguage = .zhHans
+        let identifiedQuota = AgentQuotaStatus(
+            remainingPercent: 100,
+            usedPercent: 0,
+            limitID: "codex_bengalfox",
+            limitName: "GPT-5.3-Codex-Spark",
+            source: .desktopSession,
+            windowMinutes: 10_080,
+            updatedAt: Date(timeIntervalSince1970: 1_782_483_230)
+        )
+        let identified = model.codexQuotaIdentityPresentation(for: identifiedQuota)
+
+        XCTAssertEqual(identified.title, "GPT-5.3-Codex-Spark")
+        XCTAssertEqual(identified.limitID, "codex_bengalfox")
+        XCTAssertTrue(identified.context.contains("账户未验证"))
+        XCTAssertTrue(identified.context.contains("本地会话"))
+
+        let unscopedQuota = AgentQuotaStatus(
+            remainingPercent: 100,
+            usedPercent: 0,
+            source: .oauth,
+            windowMinutes: 10_080,
+            updatedAt: Date(timeIntervalSince1970: 1_782_483_230)
+        )
+        let unscoped = model.codexQuotaIdentityPresentation(for: unscopedQuota)
+
+        XCTAssertEqual(unscoped.title, "Codex 配额")
+        XCTAssertTrue(unscoped.context.contains("额度范围未知"))
+        XCTAssertFalse(unscoped.hasKnownLimitIdentity)
     }
 
     @MainActor
@@ -11746,9 +12725,16 @@ final class AgentSignalLightCoreTests: XCTestCase {
                 "AGENT_SIGNAL_LIGHT_STATE_FILE": "\n\t",
                 "AGENT_SIGNAL_LIGHT_STATE_DIR": "  ",
                 "SIGNAL_LIGHT_STATE_DIR": "\n"
-            ]
+            ],
+            applicationSupportDirectory: URL(
+                fileURLWithPath: "/Users/tester/Library/Application Support",
+                isDirectory: true
+            )
         )
-        XCTAssertEqual(defaultFallback.path, "/tmp/agent-signal/status.json")
+        XCTAssertEqual(
+            defaultFallback.path,
+            "/Users/tester/Library/Application Support/Agent Signal Bar/SignalState/status.json"
+        )
     }
 
     func testCompletedSessionExpiresBackToIdle() throws {
@@ -14242,6 +15228,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         XCTAssertEqual(model.latestAgentQuota?.usedPercent ?? -1, 20, accuracy: 0.01)
+        XCTAssertEqual(model.latestAgentQuota?.source, .oauth)
+        XCTAssertEqual(model.latestAgentQuota?.accountScopeID, model.codexActiveSavedAccountID)
 
         let externallyRefreshedAuth = try XCTUnwrap(String(data: codexOAuthAuthJSON(
             email: "external@example.com",
@@ -14272,6 +15260,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssertFalse(model.isCodexRateLimitFetchInFlight)
         XCTAssertEqual(model.latestAgentQuota?.usedPercent ?? -1, 80, accuracy: 0.01)
+        XCTAssertEqual(model.latestAgentQuota?.source, .oauth)
+        XCTAssertEqual(model.latestAgentQuota?.accountScopeID, model.codexActiveSavedAccountID)
         XCTAssertEqual(model.codexUsageFetchState?.source, .oauth)
         XCTAssertNil(model.codexUsageFetchState?.errorMessage)
         XCTAssertEqual(
@@ -15392,6 +16382,77 @@ private func makeMenuBarStatusModel(
         store: store,
         codexAccountManager: EmptyCodexAccountManager()
     )
+}
+
+private struct LegacyCodexUsageStoreDocument: Encodable {
+    let version: Int
+    let snapshots: [CodexAccountUsageSnapshot]
+}
+
+private final class BlockingFirstCodexCLIStatusProbe: CodexCLIStatusProbing, @unchecked Sendable {
+    private let statuses: [CodexCLIStatus]
+    private let firstStarted = DispatchSemaphore(value: 0)
+    private let firstRelease = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var callCount = 0
+
+    init(statuses: [CodexCLIStatus]) {
+        self.statuses = statuses
+    }
+
+    func probeStatus() -> CodexCLIStatus {
+        let index = lock.withLock { () -> Int in
+            defer { callCount += 1 }
+            return callCount
+        }
+        if index == 0 {
+            firstStarted.signal()
+            firstRelease.wait()
+        }
+        return statuses[min(index, statuses.count - 1)]
+    }
+
+    func waitUntilFirstProbeStarts(seconds: TimeInterval) -> Bool {
+        firstStarted.wait(timeout: .now() + seconds) == .success
+    }
+
+    func releaseFirstProbe() {
+        firstRelease.signal()
+    }
+}
+
+private final class SequencedCodexRPCStatusProbe: CodexRPCStatusProbing, @unchecked Sendable {
+    private let statuses: [CodexRPCStatus]
+    private let lock = NSLock()
+    private var callCount = 0
+
+    init(statuses: [CodexRPCStatus]) {
+        self.statuses = statuses
+    }
+
+    func probeStatus() async -> CodexRPCStatus {
+        lock.withLock {
+            defer { callCount += 1 }
+            return statuses[min(callCount, statuses.count - 1)]
+        }
+    }
+}
+
+private final class SequencedCodexServiceStatusFetcher: CodexServiceStatusFetching, @unchecked Sendable {
+    private let statuses: [CodexServiceStatus]
+    private let lock = NSLock()
+    private var callCount = 0
+
+    init(statuses: [CodexServiceStatus]) {
+        self.statuses = statuses
+    }
+
+    func fetchStatus() async throws -> CodexServiceStatus {
+        lock.withLock {
+            defer { callCount += 1 }
+            return statuses[min(callCount, statuses.count - 1)]
+        }
+    }
 }
 
 private final class ExecutablePathFileManager: FileManager, @unchecked Sendable {

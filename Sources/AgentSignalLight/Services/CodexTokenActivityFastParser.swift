@@ -210,15 +210,17 @@ enum CodexTokenActivityFastParser {
         payloadRange: Range<Int>?
     ) -> String? {
         if let payloadRange {
-            for key in [fieldSessionID, fieldSessionIDCamel, fieldID] {
-                if let value = extractJSONByteStringField(key, from: bytes, in: payloadRange, atDepth: 1),
+            for key in [fieldID, fieldSessionID, fieldSessionIDCamel] {
+                if let value = extractJSONByteStringField(key, from: bytes, in: payloadRange, atDepth: 1)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
                    !value.isEmpty {
                     return value
                 }
             }
         }
-        for key in [fieldSessionID, fieldSessionIDCamel, fieldID] {
-            if let value = extractJSONByteStringField(key, from: bytes, in: rootRange, atDepth: 1),
+        for key in [fieldID, fieldSessionID, fieldSessionIDCamel] {
+            if let value = extractJSONByteStringField(key, from: bytes, in: rootRange, atDepth: 1)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
                !value.isEmpty {
                 return value
             }
@@ -431,15 +433,14 @@ enum CodexTokenActivityFastParser {
                     return nil
                 }
                 index = valueIndex
-                guard depth == targetDepth,
-                      !key.hasEscapes,
-                      byteRange(bytes, key.range, equals: field)
-                else {
-                    continue
-                }
-
+                guard depth == targetDepth else { continue }
                 skipJSONByteWhitespace(in: bytes, index: &valueIndex, limit: range.upperBound)
                 guard valueIndex < range.upperBound, bytes[valueIndex] == 0x3A else { continue }
+
+                let keyMatches = key.hasEscapes
+                    ? decodeJSONStringViaFoundation(from: bytes, in: key.range).map { Array($0.utf8) == field } == true
+                    : byteRange(bytes, key.range, equals: field)
+                guard keyMatches else { continue }
 
                 valueIndex += 1
                 skipJSONByteWhitespace(in: bytes, index: &valueIndex, limit: range.upperBound)
@@ -604,7 +605,7 @@ enum CodexTokenActivityFastParser {
         var data = Data([0x22])
         data.append(UnsafeBufferPointer(rebasing: bytes[range]))
         data.append(0x22)
-        return (try? JSONSerialization.jsonObject(with: data)) as? String
+        return (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) as? String
     }
 
     private static func byteRange(

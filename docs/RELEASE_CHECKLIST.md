@@ -64,7 +64,7 @@ The all-in-one release gate replaces the old manual command chain. It packages r
   - `阻塞`
   - `关闭灯` gray paused, not all black/off
 - Use `./scripts/agent-signal stale --session smoke --agent script --event StaleCheck` and confirm stale uses the gray/yellow stale display.
-- Open `连接`, click `导出诊断`, confirm Finder selects a new zip under `dist/diagnostics/`, and confirm the settings window shows the archive path.
+- Open `连接`, click `导出诊断`, confirm Finder selects a new zip under `~/Library/Application Support/AgentSignalLight/Diagnostics/`, and confirm the settings window shows the archive path. The installed app must not attempt to write diagnostics inside its signed bundle.
 - Open `关于`, click `检查更新`, and confirm the Sparkle update UI opens or reports the current build correctly. Confirm the `自动检查更新` switch maps to Sparkle rather than the legacy GitHub notification checker.
 
 ## Hook Smoke Test
