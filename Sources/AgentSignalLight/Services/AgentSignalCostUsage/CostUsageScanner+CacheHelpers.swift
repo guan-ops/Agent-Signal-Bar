@@ -285,6 +285,8 @@ extension CostUsageScanner {
         committedPrefixFingerprint: String? = nil,
         codexInventoryOnly: Bool? = nil,
         codexDuplicateQuarantined: Bool? = nil,
+        codexIdentityConflict: Bool? = nil,
+        codexNoncontributingDuplicate: Bool? = nil,
         lastTokenEventEndOffset: Int64? = nil,
         lastTokenEventFingerprint: String? = nil,
         lastTokenEventTimestamp: Date? = nil,
@@ -325,6 +327,8 @@ extension CostUsageScanner {
             committedPrefixFingerprint: committedPrefixFingerprint,
             codexInventoryOnly: codexInventoryOnly,
             codexDuplicateQuarantined: codexDuplicateQuarantined,
+            codexIdentityConflict: codexIdentityConflict,
+            codexNoncontributingDuplicate: codexNoncontributingDuplicate,
             lastTokenEventEndOffset: lastTokenEventEndOffset,
             lastTokenEventFingerprint: lastTokenEventFingerprint,
             lastTokenEventTimestamp: lastTokenEventTimestamp,
@@ -1481,7 +1485,7 @@ extension CostUsageScanner {
                 totalTokens: totalTokens,
                 totalCostUSD: costSeen ? totalCost : nil)
 
-        return CostUsageDailyReport(data: entries, summary: summary)
+        return CostUsageDailyReport(data: entries, summary: summary, warnings: cache.codexScanWarnings ?? [])
     }
 
     static func sortedModelBreakdowns(_ breakdowns: [CostUsageDailyReport.ModelBreakdown])

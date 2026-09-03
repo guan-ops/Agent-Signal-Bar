@@ -152,13 +152,14 @@ public enum CodexDesktopSessionParser {
             return nil
         }
         let payload = object["payload"] as? [String: Any]
+        // Subagent metadata can use session_id for its parent while id identifies this session.
         for value in [
+            payload?["id"],
             payload?["session_id"],
             payload?["sessionId"],
-            payload?["id"],
+            object["id"],
             object["session_id"],
             object["sessionId"],
-            object["id"],
         ] {
             guard let value = value as? String else { continue }
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -333,7 +334,9 @@ private extension CodexDesktopSessionParser {
             return AgentQuotaStatus(
                 remainingPercent: primaryWindow.remainingPercent,
                 usedPercent: primaryWindow.usedPercent,
+                limitID: stringValue(rateLimits["limit_id"]),
                 limitName: stringValue(rateLimits["limit_name"]),
+                source: .desktopSession,
                 windowMinutes: primaryWindow.windowMinutes,
                 resetsAt: primaryWindow.resetsAt,
                 updatedAt: timestamp,
@@ -357,6 +360,7 @@ private extension CodexDesktopSessionParser {
             remainingPercent: 100 - usedPercent,
             usedPercent: usedPercent,
             limitName: "Context",
+            source: .desktopSession,
             windowMinutes: nil,
             resetsAt: nil,
             updatedAt: timestamp,

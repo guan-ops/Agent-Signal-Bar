@@ -3,6 +3,8 @@ import Foundation
 
 public enum SignalStateStoreError: Error, LocalizedError {
     case cannotCreateStateDirectory(URL, Error)
+    case unsafeStateDirectory(URL)
+    case unsafeStateFile(URL)
     case cannotOpenLock(String)
     case cannotAcquireLock(String, Int32)
 
@@ -10,6 +12,10 @@ public enum SignalStateStoreError: Error, LocalizedError {
         switch self {
         case .cannotCreateStateDirectory(let url, let error):
             return "Cannot create state directory at \(url.path): \(error.localizedDescription)"
+        case .unsafeStateDirectory(let url):
+            return "State directory is not a private directory owned by the current user: \(url.path)."
+        case .unsafeStateFile(let url):
+            return "State file is not a regular file owned by the current user: \(url.path)."
         case .cannotOpenLock(let path):
             return "Cannot open state lock at \(path)."
         case .cannotAcquireLock(let path, let errorCode):
@@ -28,14 +34,18 @@ public final class SignalStateStore: @unchecked Sendable {
 
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
+    private let enforcesPrivateStateDirectory: Bool
 
     public init(
-        stateFileURL: URL = SignalStateStore.defaultStateFileURL(),
+        stateFileURL: URL? = nil,
         sessionTTLSeconds: Double = SignalStateStore.defaultSessionTTL(),
         completedTTLSeconds: Double = SignalStateStore.defaultCompletedTTL(),
         eventLimit: Int = SignalStateStore.defaultEventLimit()
     ) {
-        self.stateFileURL = stateFileURL
+        let environment = ProcessInfo.processInfo.environment
+        self.stateFileURL = stateFileURL ?? SignalStateStore.defaultStateFileURL(environment: environment)
+        enforcesPrivateStateDirectory = stateFileURL == nil
+            && !SignalStateStore.hasExplicitStateLocation(environment: environment)
         self.sessionTTLSeconds = sessionTTLSeconds
         self.completedTTLSeconds = completedTTLSeconds
         self.eventLimit = eventLimit
@@ -47,17 +57,49 @@ public final class SignalStateStore: @unchecked Sendable {
     }
 
     public static func defaultStateFileURL(
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        applicationSupportDirectory: URL? = nil
     ) -> URL {
         if let explicit = nonEmptyEnvironmentValue("AGENT_SIGNAL_LIGHT_STATE_FILE", in: environment) {
             return URL(fileURLWithPath: explicit.expandingTildeInPath)
         }
 
-        let stateDirectory = nonEmptyEnvironmentValue("AGENT_SIGNAL_LIGHT_STATE_DIR", in: environment)
-            ?? nonEmptyEnvironmentValue("SIGNAL_LIGHT_STATE_DIR", in: environment)
-            ?? "/tmp/agent-signal"
-        return URL(fileURLWithPath: stateDirectory.expandingTildeInPath, isDirectory: true)
+        return defaultStateDirectoryURL(
+            environment: environment,
+            applicationSupportDirectory: applicationSupportDirectory
+        )
             .appendingPathComponent("status.json")
+    }
+
+    public static func defaultStateDirectoryURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        applicationSupportDirectory: URL? = nil
+    ) -> URL {
+        if let stateDirectory = nonEmptyEnvironmentValue("AGENT_SIGNAL_LIGHT_STATE_DIR", in: environment)
+            ?? nonEmptyEnvironmentValue("SIGNAL_LIGHT_STATE_DIR", in: environment)
+        {
+            return URL(fileURLWithPath: stateDirectory.expandingTildeInPath, isDirectory: true)
+        }
+
+        let baseDirectory = applicationSupportDirectory
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return baseDirectory
+            .appendingPathComponent("Agent Signal Bar", isDirectory: true)
+            .appendingPathComponent("SignalState", isDirectory: true)
+    }
+
+    public static func hasExplicitStateLocation(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        nonEmptyEnvironmentValue("AGENT_SIGNAL_LIGHT_STATE_FILE", in: environment) != nil
+            || hasExplicitStateDirectory(environment: environment)
+    }
+
+    public static func hasExplicitStateDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        nonEmptyEnvironmentValue("AGENT_SIGNAL_LIGHT_STATE_DIR", in: environment) != nil
+            || nonEmptyEnvironmentValue("SIGNAL_LIGHT_STATE_DIR", in: environment) != nil
     }
 
     public static func defaultSessionTTL(
@@ -150,7 +192,12 @@ public final class SignalStateStore: @unchecked Sendable {
                 try readSnapshotLocked(persistingRuntimeChanges: true)
             }
         } catch {
-            return readSnapshotWithoutLock()
+            return SignalSnapshot(
+                aggregate: .stale,
+                sessions: [],
+                stateFileURL: stateFileURL,
+                updatedAt: nil
+            )
         }
     }
 
@@ -163,7 +210,7 @@ public final class SignalStateStore: @unchecked Sendable {
                 resolvedSignal = .idle
             }
 
-            var document = readDocument()
+            var document = try readDocument()
             _ = pruneRuntimeSessions(in: &document, now: now)
 
             switch resolvedSignal.displayState {
@@ -212,7 +259,7 @@ public final class SignalStateStore: @unchecked Sendable {
         try withStateLock {
             let now = Date()
             let eventDate = updatedAt
-            var document = readDocument()
+            var document = try readDocument()
             let existingBeforePrune = document.sessions[sessionID]
 
             if shouldIgnoreOutOfOrderEvent(
@@ -314,7 +361,7 @@ public final class SignalStateStore: @unchecked Sendable {
     ) throws -> SignalSnapshot {
         try withStateLock {
             let now = Date()
-            var document = readDocument()
+            var document = try readDocument()
             let pruneResult = pruneRuntimeSessions(in: &document, now: now)
 
             if var record = document.sessions[sessionID] {
@@ -407,7 +454,7 @@ private extension SignalStateStore {
     }
 
     func readSnapshotLocked(persistingRuntimeChanges: Bool) throws -> SignalSnapshot {
-        var document = readDocument()
+        var document = try readDocument()
         let originalDocument = document
         let now = Date()
         prepareSnapshotDocument(&document, now: now)
@@ -417,17 +464,6 @@ private extension SignalStateStore {
             try writeDocument(document)
         }
 
-        return document.snapshot(stateFileURL: stateFileURL)
-    }
-
-    func readSnapshotWithoutLock() -> SignalSnapshot {
-        var document = readDocument()
-        let originalDocument = document
-        let now = Date()
-        prepareSnapshotDocument(&document, now: now)
-        if document != originalDocument {
-            document.updatedAt = now
-        }
         return document.snapshot(stateFileURL: stateFileURL)
     }
 
@@ -589,8 +625,8 @@ private extension SignalStateStore {
         document.events = compactedEvents
     }
 
-    func readDocument() -> SignalStateDocument {
-        guard let data = try? Data(contentsOf: stateFileURL) else {
+    func readDocument() throws -> SignalStateDocument {
+        guard let data = try readSecureStateDataIfPresent() else {
             return SignalStateDocument()
         }
 
@@ -602,34 +638,36 @@ private extension SignalStateStore {
     }
 
     func writeDocument(_ document: SignalStateDocument) throws {
-        let directory = stateFileURL.deletingLastPathComponent()
-        do {
-            try FileManager.default.createDirectory(
-                at: directory,
-                withIntermediateDirectories: true
-            )
-        } catch {
-            throw SignalStateStoreError.cannotCreateStateDirectory(directory, error)
-        }
-
+        try prepareStateDirectory()
+        _ = try validateSecureStateFileIfPresent()
         let data = try encoder.encode(document)
-        try data.write(to: stateFileURL, options: [.atomic])
+        try writeSecureAtomicData(data, to: stateFileURL)
     }
 
     func withStateLock<T>(_ body: () throws -> T) throws -> T {
+        try prepareStateDirectory()
         let directory = stateFileURL.deletingLastPathComponent()
-        do {
-            try FileManager.default.createDirectory(
-                at: directory,
-                withIntermediateDirectories: true
-            )
-        } catch {
-            throw SignalStateStoreError.cannotCreateStateDirectory(directory, error)
+        let lockURL = directory.appendingPathComponent("state.lock")
+        let fileDescriptor = Darwin.open(
+            lockURL.path,
+            O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+            mode_t(0o600)
+        )
+        guard fileDescriptor >= 0 else {
+            throw SignalStateStoreError.cannotOpenLock(lockURL.path)
         }
 
-        let lockURL = directory.appendingPathComponent("state.lock")
-        let fileDescriptor = Darwin.open(lockURL.path, O_CREAT | O_RDWR, mode_t(0o600))
-        guard fileDescriptor >= 0 else {
+        var lockInfo = stat()
+        guard Darwin.fstat(fileDescriptor, &lockInfo) == 0,
+              isSecureRegularFile(lockInfo)
+        else {
+            Darwin.close(fileDescriptor)
+            throw SignalStateStoreError.cannotOpenLock(lockURL.path)
+        }
+        do {
+            try hardenPrivateLeafDescriptor(fileDescriptor)
+        } catch {
+            Darwin.close(fileDescriptor)
             throw SignalStateStoreError.cannotOpenLock(lockURL.path)
         }
 
@@ -654,6 +692,240 @@ private extension SignalStateStore {
         }
 
         return try body()
+    }
+
+    func prepareStateDirectory() throws {
+        let directory = stateFileURL.deletingLastPathComponent()
+        if enforcesPrivateStateDirectory {
+            try ensureDirectory(
+                at: directory.deletingLastPathComponent(),
+                requiresPrivateExistingDirectory: true
+            )
+        }
+        try ensureDirectory(
+            at: directory,
+            requiresPrivateExistingDirectory: enforcesPrivateStateDirectory
+        )
+    }
+
+    func ensureDirectory(
+        at directory: URL,
+        requiresPrivateExistingDirectory: Bool
+    ) throws {
+        var info = stat()
+        let existed = Darwin.lstat(directory.path, &info) == 0
+
+        if !existed {
+            guard errno == ENOENT else {
+                throw SignalStateStoreError.unsafeStateDirectory(directory)
+            }
+            do {
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: NSNumber(value: 0o700)]
+                )
+            } catch {
+                throw SignalStateStoreError.cannotCreateStateDirectory(directory, error)
+            }
+        }
+
+        let directoryDescriptor = Darwin.open(
+            directory.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard directoryDescriptor >= 0 else {
+            throw SignalStateStoreError.unsafeStateDirectory(directory)
+        }
+        defer { Darwin.close(directoryDescriptor) }
+
+        guard Darwin.fstat(directoryDescriptor, &info) == 0,
+              isDirectory(info),
+              info.st_uid == geteuid(),
+              (info.st_mode & mode_t(0o022)) == 0
+        else {
+            throw SignalStateStoreError.unsafeStateDirectory(directory)
+        }
+
+        do {
+            if !existed || requiresPrivateExistingDirectory {
+                try removeExtendedACL(from: directoryDescriptor)
+                guard Darwin.fchmod(directoryDescriptor, mode_t(0o700)) == 0 else {
+                    throw SignalStateStoreError.unsafeStateDirectory(directory)
+                }
+            } else if try hasExtendedACL(on: directoryDescriptor) {
+                throw SignalStateStoreError.unsafeStateDirectory(directory)
+            }
+        } catch let error as SignalStateStoreError {
+            throw error
+        } catch {
+            throw SignalStateStoreError.unsafeStateDirectory(directory)
+        }
+    }
+
+    func validateSecureStateFileIfPresent() throws -> Bool {
+        guard let fileDescriptor = try openSecureStateFileIfPresent() else { return false }
+        Darwin.close(fileDescriptor)
+        return true
+    }
+
+    func readSecureStateDataIfPresent() throws -> Data? {
+        guard let fileDescriptor = try openSecureStateFileIfPresent() else { return nil }
+        defer { Darwin.close(fileDescriptor) }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+        while true {
+            let bytesRead = buffer.withUnsafeMutableBytes { bytes in
+                Darwin.read(fileDescriptor, bytes.baseAddress, bytes.count)
+            }
+            if bytesRead == 0 {
+                return data
+            }
+            if bytesRead < 0 {
+                if errno == EINTR { continue }
+                throw SignalStateStoreError.unsafeStateFile(stateFileURL)
+            }
+            data.append(contentsOf: buffer.prefix(Int(bytesRead)))
+        }
+    }
+
+    func openSecureStateFileIfPresent() throws -> Int32? {
+        let fileDescriptor = Darwin.open(
+            stateFileURL.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard fileDescriptor >= 0 else {
+            if errno == ENOENT { return nil }
+            throw SignalStateStoreError.unsafeStateFile(stateFileURL)
+        }
+
+        var info = stat()
+        guard Darwin.fstat(fileDescriptor, &info) == 0,
+              isSecureRegularFile(info)
+        else {
+            Darwin.close(fileDescriptor)
+            throw SignalStateStoreError.unsafeStateFile(stateFileURL)
+        }
+
+        do {
+            try hardenPrivateLeafDescriptor(fileDescriptor)
+        } catch {
+            Darwin.close(fileDescriptor)
+            throw SignalStateStoreError.unsafeStateFile(stateFileURL)
+        }
+        return fileDescriptor
+    }
+
+    func writeSecureAtomicData(_ data: Data, to destination: URL) throws {
+        let temporaryURL = destination.deletingLastPathComponent().appendingPathComponent(
+            ".\(destination.lastPathComponent).\(UUID().uuidString).tmp"
+        )
+        var fileDescriptor = Darwin.open(
+            temporaryURL.path,
+            O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW,
+            mode_t(0o600)
+        )
+        guard fileDescriptor >= 0 else {
+            throw posixError()
+        }
+
+        var shouldRemoveTemporaryFile = true
+        defer {
+            if fileDescriptor >= 0 {
+                Darwin.close(fileDescriptor)
+            }
+            if shouldRemoveTemporaryFile {
+                Darwin.unlink(temporaryURL.path)
+            }
+        }
+
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                guard let baseAddress = bytes.baseAddress else { break }
+                let written = Darwin.write(
+                    fileDescriptor,
+                    baseAddress.advanced(by: offset),
+                    bytes.count - offset
+                )
+                if written < 0 {
+                    if errno == EINTR {
+                        continue
+                    }
+                    throw posixError()
+                }
+                guard written > 0 else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
+                }
+                offset += written
+            }
+        }
+
+        try hardenPrivateLeafDescriptor(fileDescriptor)
+        guard Darwin.fsync(fileDescriptor) == 0 else {
+            throw posixError()
+        }
+        let closeResult = Darwin.close(fileDescriptor)
+        fileDescriptor = -1
+        guard closeResult == 0 else {
+            throw posixError()
+        }
+        guard Darwin.rename(temporaryURL.path, destination.path) == 0 else {
+            throw posixError()
+        }
+        shouldRemoveTemporaryFile = false
+
+        let directoryDescriptor = Darwin.open(
+            destination.deletingLastPathComponent().path,
+            O_RDONLY | O_CLOEXEC
+        )
+        if directoryDescriptor >= 0 {
+            _ = Darwin.fsync(directoryDescriptor)
+            Darwin.close(directoryDescriptor)
+        }
+    }
+
+    func isDirectory(_ info: stat) -> Bool {
+        (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
+    }
+
+    func isSecureRegularFile(_ info: stat) -> Bool {
+        (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG)
+            && info.st_uid == geteuid()
+            && info.st_nlink == 1
+    }
+
+    func hardenPrivateLeafDescriptor(_ fileDescriptor: Int32) throws {
+        try removeExtendedACL(from: fileDescriptor)
+        guard Darwin.fchmod(fileDescriptor, mode_t(0o600)) == 0 else {
+            throw posixError()
+        }
+    }
+
+    func hasExtendedACL(on fileDescriptor: Int32) throws -> Bool {
+        errno = 0
+        guard let acl = acl_get_fd_np(fileDescriptor, ACL_TYPE_EXTENDED) else {
+            if errno == ENOENT { return false }
+            throw posixError()
+        }
+        acl_free(UnsafeMutableRawPointer(acl))
+        return true
+    }
+
+    func removeExtendedACL(from fileDescriptor: Int32) throws {
+        guard try hasExtendedACL(on: fileDescriptor) else { return }
+        guard let emptyACL = acl_init(1) else {
+            throw posixError()
+        }
+        defer { acl_free(UnsafeMutableRawPointer(emptyACL)) }
+        guard acl_set_fd_np(fileDescriptor, emptyACL, ACL_TYPE_EXTENDED) == 0 else {
+            throw posixError()
+        }
+    }
+
+    func posixError() -> Error {
+        NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
     }
 }
 

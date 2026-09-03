@@ -13,7 +13,7 @@ enum CostUsageCacheIO {
     private static func artifactVersion(for provider: UsageProvider) -> Int {
         switch provider {
         case .codex:
-            15
+            16
         case .claude, .vertexai:
             4
         default:
@@ -115,6 +115,11 @@ struct CostUsageCache: Codable {
     var codexPriorityTurnIDsByDay: [String: [String]]?
     var codexSessionInventoryComplete: Bool?
     var codexSessionDirectoryFingerprints: [String: Int64]?
+    var codexScanWarnings: [CostUsageScanWarning]?
+    /// Migrate identity decisions without discarding the confirmed usage ledger.
+    var codexIdentityPolicyVersion: Int?
+    /// These owners depend on revocable no-usage proofs, not byte-equivalent copies.
+    var codexNoncontributingSessionIDs: [String]?
 
     /// filePath -> file usage
     var files: [String: CostUsageFileUsage] = [:]
@@ -152,6 +157,12 @@ struct CostUsageFileUsage: Codable {
     /// True when this unchanged duplicate diverges from the proven owner chain.
     /// A metadata change clears the quarantine through normal reconciliation.
     var codexDuplicateQuarantined: Bool?
+    /// No copy in this session group has a provable aggregate owner. Unlike a
+    /// rejected copy beside a verified owner, this never authorizes a watermark.
+    var codexIdentityConflict: Bool?
+    /// A fully parsed, unchanged no-usage copy. Its full-file SHA-256 is stored
+    /// in committedPrefixFingerprint; it is never a usage/watermark alias.
+    var codexNoncontributingDuplicate: Bool?
     var lastTokenEventEndOffset: Int64?
     var lastTokenEventFingerprint: String?
     var lastTokenEventTimestamp: Date?

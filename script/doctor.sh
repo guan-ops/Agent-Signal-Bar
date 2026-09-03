@@ -7,7 +7,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="AgentSignalLight"
 RELEASE_BASENAME="AgentSignalBar"
 BUNDLE_ID="com.agentsignallight.AgentSignalLight"
-STATE_DIR="${AGENT_SIGNAL_LIGHT_STATE_DIR:-/tmp/agent-signal}"
+DEFAULT_STATE_DIR="$HOME/Library/Application Support/Agent Signal Bar/SignalState"
+STATE_DIR="${AGENT_SIGNAL_LIGHT_STATE_DIR:-${SIGNAL_LIGHT_STATE_DIR:-$DEFAULT_STATE_DIR}}"
 STATE_FILE="${AGENT_SIGNAL_LIGHT_STATE_FILE:-$STATE_DIR/status.json}"
 APP_BUNDLE="$ROOT_DIR/dist/$APP_NAME.app"
 CLI_BIN="$ROOT_DIR/dist/bin/agent-signal"
@@ -1244,6 +1245,13 @@ if [[ -f "$STATE_FILE" ]]; then
   pass "state file exists at $STATE_FILE"
 else
   warn "state file not present yet at $STATE_FILE"
+fi
+
+if [[ -z "${AGENT_SIGNAL_LIGHT_STATE_FILE:-}" \
+  && -z "${AGENT_SIGNAL_LIGHT_STATE_DIR:-}" \
+  && -z "${SIGNAL_LIGHT_STATE_DIR:-}" \
+  && -e "/tmp/agent-signal" ]]; then
+  warn "legacy /tmp/agent-signal exists but is intentionally ignored; no automatic migration is performed"
 fi
 
 if [[ -f "$LAUNCH_AGENT_PLIST" ]]; then

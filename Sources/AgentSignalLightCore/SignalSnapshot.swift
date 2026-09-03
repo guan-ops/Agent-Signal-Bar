@@ -30,7 +30,10 @@ public struct SessionStatus: Identifiable, Equatable, Sendable {
 public struct AgentQuotaStatus: Codable, Equatable, Sendable {
     public let remainingPercent: Double
     public let usedPercent: Double?
+    public let limitID: String?
     public let limitName: String?
+    public let accountScopeID: UUID?
+    public let source: AgentQuotaSource?
     public let windowMinutes: Int?
     public let resetsAt: Date?
     public let updatedAt: Date
@@ -41,7 +44,10 @@ public struct AgentQuotaStatus: Codable, Equatable, Sendable {
     public init(
         remainingPercent: Double,
         usedPercent: Double? = nil,
+        limitID: String? = nil,
         limitName: String? = nil,
+        accountScopeID: UUID? = nil,
+        source: AgentQuotaSource? = nil,
         windowMinutes: Int? = nil,
         resetsAt: Date? = nil,
         updatedAt: Date,
@@ -51,7 +57,10 @@ public struct AgentQuotaStatus: Codable, Equatable, Sendable {
     ) {
         self.remainingPercent = min(max(remainingPercent, 0), 100)
         self.usedPercent = usedPercent.map { min(max($0, 0), 100) }
+        self.limitID = limitID
         self.limitName = limitName
+        self.accountScopeID = accountScopeID
+        self.source = source
         self.windowMinutes = windowMinutes
         self.resetsAt = resetsAt
         self.updatedAt = updatedAt
@@ -83,16 +92,59 @@ public struct AgentQuotaStatus: Codable, Equatable, Sendable {
         secondary
     }
 
+    public func attributed(
+        to accountScopeID: UUID?,
+        source: AgentQuotaSource? = nil
+    ) -> AgentQuotaStatus {
+        AgentQuotaStatus(
+            remainingPercent: remainingPercent,
+            usedPercent: usedPercent,
+            limitID: limitID,
+            limitName: limitName,
+            accountScopeID: accountScopeID,
+            source: source ?? self.source,
+            windowMinutes: windowMinutes,
+            resetsAt: resetsAt,
+            updatedAt: updatedAt,
+            primary: primary,
+            secondary: secondary,
+            tokenUsage: tokenUsage
+        )
+    }
+
     private enum CodingKeys: String, CodingKey {
         case remainingPercent = "remaining_percent"
         case usedPercent = "used_percent"
+        case limitID = "limit_id"
         case limitName = "limit_name"
+        case accountScopeID = "account_scope_id"
+        case source
         case windowMinutes = "window_minutes"
         case resetsAt = "resets_at"
         case updatedAt = "updated_at"
         case primary
         case secondary
         case tokenUsage = "token_usage"
+    }
+}
+
+public enum AgentQuotaSource: String, Codable, Equatable, Sendable {
+    case manualCookie = "manual-cookie"
+    case browserCookie = "browser-cookie"
+    case oauth
+    case apiKey = "api-key"
+    case desktopSession = "desktop-session"
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        self = Self(rawValue: rawValue) ?? .unknown
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }
 

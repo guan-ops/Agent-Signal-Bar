@@ -11,6 +11,10 @@ struct CodexRPCStatus: Equatable, Sendable {
     }
 }
 
+protocol CodexRPCStatusProbing: Sendable {
+    func probeStatus() async -> CodexRPCStatus
+}
+
 final class CodexRPCStatusProbe: @unchecked Sendable {
     private let environment: [String: String]
     private let fileManager: FileManager
@@ -58,7 +62,17 @@ final class CodexRPCStatusProbe: @unchecked Sendable {
     }
 
     private func resolveCodexExecutable() -> String? {
-        CodexExecutableResolver.resolve(environment: environment, fileManager: fileManager)
+        CodexExecutableResolver.resolve(
+            environment: environment,
+            fileManager: fileManager,
+            includeLoginShellLookup: true
+        )
+    }
+}
+
+extension CodexRPCStatusProbe: CodexRPCStatusProbing {
+    func probeStatus() async -> CodexRPCStatus {
+        await probe()
     }
 }
 

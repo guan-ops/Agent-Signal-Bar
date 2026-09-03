@@ -41,6 +41,10 @@ struct CodexServiceStatus: Equatable, Sendable {
     }
 }
 
+protocol CodexServiceStatusFetching: Sendable {
+    func fetchStatus() async throws -> CodexServiceStatus
+}
+
 final class CodexServiceStatusFetcher: @unchecked Sendable {
     private let baseURL: URL
     private let session: URLSessionProtocol
@@ -100,5 +104,11 @@ final class CodexServiceStatusFetcher: @unchecked Sendable {
         let plain = ISO8601DateFormatter()
         plain.formatOptions = [.withInternetDateTime]
         return plain.date(from: raw)
+    }
+}
+
+extension CodexServiceStatusFetcher: CodexServiceStatusFetching {
+    func fetchStatus() async throws -> CodexServiceStatus {
+        try await fetch()
     }
 }

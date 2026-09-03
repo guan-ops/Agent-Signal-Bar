@@ -58,7 +58,7 @@ struct AgentSignalIconPreview {
                     let snapshot = SignalSnapshot(
                         aggregate: item.signal,
                         sessions: [],
-                        stateFileURL: URL(fileURLWithPath: "/tmp/agent-signal/status.json")
+                        stateFileURL: SignalStateStore.defaultStateFileURL()
                     )
                     let image = StatusBarIconRenderer.image(
                         snapshot: snapshot,
@@ -329,7 +329,7 @@ struct AgentSignalIconPreview {
         let snapshot = SignalSnapshot(
             aggregate: .working,
             sessions: [],
-            stateFileURL: URL(fileURLWithPath: "/tmp/agent-signal/status.json")
+            stateFileURL: SignalStateStore.defaultStateFileURL()
         )
         let image = StatusBarIconRenderer.image(
             snapshot: snapshot,
@@ -389,7 +389,7 @@ struct AgentSignalIconPreview {
         let snapshot = SignalSnapshot(
             aggregate: .working,
             sessions: [],
-            stateFileURL: URL(fileURLWithPath: "/tmp/agent-signal/status.json")
+            stateFileURL: SignalStateStore.defaultStateFileURL()
         )
         let customization = SignalEffectCustomization(activeEffect: .trafficCycle)
         let tick = frameIndex % 12
