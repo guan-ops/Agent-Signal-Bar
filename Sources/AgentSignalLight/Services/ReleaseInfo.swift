@@ -35,22 +35,34 @@ struct ReleaseInfo: Equatable, Sendable {
     }
 
     static func current() -> ReleaseInfo {
-        let info = appBundleInfoDictionary() ?? Bundle.main.infoDictionary ?? [:]
-        let version = info["CFBundleShortVersionString"] as? String ?? fallbackVersion
-        let build = info["CFBundleVersion"] as? String ?? fallbackBuild
-        let manifestURL = findManifestURL()
-        let releaseInfoURL = findReleaseInfoURL()
+        resolve(
+            bundleInfo: appBundleInfoDictionary() ?? [:],
+            manifestURL: findManifestURL(),
+            releaseInfoURL: findReleaseInfoURL()
+        )
+    }
+
+    static func resolve(bundleInfo info: [String: Any], manifestURL: URL?, releaseInfoURL: URL?) -> ReleaseInfo {
+        let bundleVersion = info["CFBundleShortVersionString"] as? String
+        let bundleBuild = info["CFBundleVersion"] as? String
         let manifest = manifestURL.flatMap { ReleaseMetadata(url: $0) }
         let releaseInfo = releaseInfoURL.flatMap { ReleaseMetadata(url: $0) }
-        let metadata = manifest ?? releaseInfo
+        // A neighboring release manifest can belong to an older package. Keep
+        // the displayed identity aligned with the bundle that Sparkle updates.
+        let metadata = [manifest, releaseInfo].compactMap { $0 }.first {
+            (bundleVersion == nil || $0.version == bundleVersion)
+                && (bundleBuild == nil || $0.build == bundleBuild)
+        }
 
         return ReleaseInfo(
-            version: metadata?.version ?? version,
-            build: metadata?.build ?? build,
+            version: bundleVersion ?? metadata?.version ?? fallbackVersion,
+            build: bundleBuild ?? metadata?.build ?? fallbackBuild,
             signingMode: metadata?.signingMode ?? "ad_hoc",
             notarizationReady: metadata?.notarizationReady ?? false,
-            manifestURL: manifestURL,
-            releaseInfoURL: releaseInfoURL
+            manifestURL: metadata != nil && metadata?.version == manifest?.version
+                && metadata?.build == manifest?.build ? manifestURL : nil,
+            releaseInfoURL: metadata != nil && metadata?.version == releaseInfo?.version
+                && metadata?.build == releaseInfo?.build ? releaseInfoURL : nil
         )
     }
 
@@ -159,6 +171,9 @@ struct ReleaseInfo: Equatable, Sendable {
             return nil
         }
 
+        guard plist["CFBundleIdentifier"] as? String == "com.agentsignallight.AgentSignalLight" else {
+            return nil
+        }
         return plist
     }
 }

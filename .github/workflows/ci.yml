@@ -44,7 +44,9 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          bash -n script/*.sh
+          for script in script/*.sh; do
+            bash -n "$script"
+          done
           bash -n scripts/agent-signal
           bash -n scripts/agent-signal-run
           bash -n scripts/codex-signal-hook

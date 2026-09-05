@@ -797,6 +797,7 @@ extension CostUsageScanner {
     static func codexCommittedPrefixFingerprint(
         fileURL: URL,
         throughOffset: Int64,
+        allowingAppend: Bool = false,
         checkCancellation: CancellationCheck?
     ) throws -> String? {
         guard throughOffset > 0 else { return nil }
@@ -813,8 +814,13 @@ extension CostUsageScanner {
             fileDescriptor: handle.fileDescriptor,
             path: fileURL.path
         )
-        guard Self.codexFileMetadataIsSameSnapshot(descriptorBefore, before),
-              Self.codexFileMetadataIsSameSnapshot(
+        func matches(_ later: CodexFileMetadata, _ earlier: CodexFileMetadata) -> Bool {
+            if Self.codexFileMetadataIsSameSnapshot(later, earlier) { return true }
+            return allowingAppend && earlier.fileId != nil
+                && later.fileId == earlier.fileId && later.size > earlier.size
+        }
+        guard matches(descriptorBefore, before),
+              matches(
                   Self.codexFileMetadata(fileURL: fileURL),
                   before
               )
@@ -838,8 +844,8 @@ extension CostUsageScanner {
             path: fileURL.path
         )
         let after = Self.codexFileMetadata(fileURL: fileURL)
-        guard Self.codexFileMetadataIsSameSnapshot(descriptorAfter, descriptorBefore),
-              Self.codexFileMetadataIsSameSnapshot(after, before)
+        guard matches(descriptorAfter, descriptorBefore),
+              matches(after, before)
         else {
             return nil
         }
@@ -859,8 +865,85 @@ extension CostUsageScanner {
         return try Self.codexCommittedPrefixFingerprint(
             fileURL: fileURL,
             throughOffset: parsedBytes,
+            allowingAppend: true,
             checkCancellation: checkCancellation
         ) == expectedFingerprint
+    }
+
+    final class CodexReadSnapshot {
+        let url: URL
+        init(url: URL) { self.url = url }
+        deinit { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+    }
+
+    /// Read a fixed prefix, never chase a live writer to EOF. Keep the private
+    /// copy on disk to bound memory even for multi-GB session logs.
+    static func codexReadSnapshot(
+        input: CodexFileScanInput, checkCancellation: CancellationCheck?
+    ) throws -> CodexReadSnapshot {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-read-snapshot-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        let snapshot = CodexReadSnapshot(url: directory.appendingPathComponent("session.jsonl"))
+        let source = try FileHandle(forReadingFrom: input.fileURL)
+        defer { try? source.close() }
+        let opened = Self.codexFileMetadata(fileDescriptor: source.fileDescriptor, path: input.metadata.path)
+        guard opened.fileId != nil, opened.fileId == input.metadata.fileId,
+              opened.size >= input.metadata.size else {
+            throw Self.codexChangedDuringScanError(path: input.metadata.path)
+        }
+        // APFS clones avoid copying the full history on each incremental scan.
+        #if canImport(Darwin)
+        if fclonefileat(source.fileDescriptor, AT_FDCWD, snapshot.url.path, 0) == 0 {
+            let handle = try FileHandle(forWritingTo: snapshot.url)
+            defer { try? handle.close() }
+            guard try handle.seekToEnd() >= UInt64(input.metadata.size) else {
+                throw Self.codexChangedDuringScanError(path: input.metadata.path)
+            }
+            try handle.truncate(atOffset: UInt64(input.metadata.size))
+            return snapshot
+        }
+        #endif
+        guard FileManager.default.createFile(
+            atPath: snapshot.url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let destination = try FileHandle(forWritingTo: snapshot.url)
+        defer { try? destination.close() }
+        var remaining = input.metadata.size
+        while remaining > 0 {
+            try checkCancellation?()
+            let count = Int(min(remaining, 256 * 1024))
+            guard let bytes = try source.read(upToCount: count), bytes.count == count else {
+                throw Self.codexChangedDuringScanError(path: input.metadata.path)
+            }
+            try destination.write(contentsOf: bytes)
+            remaining -= Int64(count)
+        }
+        return snapshot
+    }
+
+    static func verifiedCodexSnapshotPrefix(
+        snapshot: CodexReadSnapshot, input: CodexFileScanInput,
+        parsedBytes: Int64, checkCancellation: CancellationCheck?
+    ) throws -> String? {
+        let current = Self.codexFileMetadata(fileURL: input.fileURL)
+        guard current.fileId == input.metadata.fileId, current.size >= input.metadata.size else {
+            throw Self.codexChangedDuringScanError(path: input.metadata.path)
+        }
+        guard parsedBytes > 0 else { return nil }
+        let expected = try Self.codexCommittedPrefixFingerprint(
+            fileURL: snapshot.url, throughOffset: parsedBytes, checkCancellation: checkCancellation)
+        let actual = try Self.codexCommittedPrefixFingerprint(
+            fileURL: input.fileURL, throughOffset: parsedBytes,
+            allowingAppend: true, checkCancellation: checkCancellation)
+        guard let expected, actual == expected,
+              Self.codexFileMetadata(fileURL: input.fileURL).fileId == input.metadata.fileId else {
+            throw Self.codexChangedDuringScanError(path: input.metadata.path)
+        }
+        return expected
     }
 
     static func hasDifferentCodexSessionOwner(
@@ -972,8 +1055,14 @@ extension CostUsageScanner {
             return false
         }
 
+        let readSnapshot = try Self.codexReadSnapshot(input: input, checkCancellation: context.checkCancellation)
+        // Revalidate the inherited numeric baseline against the exact bytes
+        // parsed below, not just the live file checked before the copy.
+        guard try Self.codexFileMatchesCommittedFrontier(
+            fileURL: readSnapshot.url, cached: cached, checkCancellation: context.checkCancellation
+        ) else { return false }
         let delta = try Self.parseCodexFileCancellable(
-            fileURL: input.fileURL,
+            fileURL: readSnapshot.url,
             range: context.range,
             through: context.through,
             startOffset: startOffset,
@@ -986,19 +1075,11 @@ extension CostUsageScanner {
         if delta.forkedFromId != nil {
             return false
         }
-        guard let committedPrefixFingerprint = try Self.codexCommittedPrefixFingerprint(
-            fileURL: input.fileURL,
-            throughOffset: delta.parsedBytes,
+        context.resources.beforeSnapshotValidation?(input.fileURL)
+        guard let committedPrefixFingerprint = try Self.verifiedCodexSnapshotPrefix(
+            snapshot: readSnapshot, input: input, parsedBytes: delta.parsedBytes,
             checkCancellation: context.checkCancellation
         ) else {
-            throw Self.codexChangedDuringScanError(path: input.metadata.path)
-        }
-        let committedMetadata = Self.codexFileMetadata(fileURL: input.fileURL)
-        guard committedMetadata.fileId == input.metadata.fileId,
-              committedMetadata.statFingerprint == input.metadata.statFingerprint,
-              committedMetadata.mtimeUnixMs == input.metadata.mtimeUnixMs,
-              committedMetadata.size == input.metadata.size
-        else {
             throw Self.codexChangedDuringScanError(path: input.metadata.path)
         }
         let sessionId = delta.sessionId ?? cached.sessionId
@@ -1102,25 +1183,18 @@ extension CostUsageScanner {
             ? [:]
             : Self.fileDaysOutsideScanWindow(migratedCached?.days ?? [:], range: context.range)
 
+        let readSnapshot = try Self.codexReadSnapshot(input: input, checkCancellation: context.checkCancellation)
         let parsed = try Self.parseCodexFileCancellable(
-            fileURL: input.fileURL,
+            fileURL: readSnapshot.url,
             range: context.range,
             through: context.through,
             inheritedTotalsResolver: context.resources.inheritedResolver.inheritedTotals(for:atOrBefore:),
             checkCancellation: context.checkCancellation)
-        let committedPrefixFingerprint = try Self.codexCommittedPrefixFingerprint(
-            fileURL: input.fileURL,
-            throughOffset: parsed.parsedBytes,
+        context.resources.beforeSnapshotValidation?(input.fileURL)
+        let committedPrefixFingerprint = try Self.verifiedCodexSnapshotPrefix(
+            snapshot: readSnapshot, input: input, parsedBytes: parsed.parsedBytes,
             checkCancellation: context.checkCancellation
         )
-        let committedMetadata = Self.codexFileMetadata(fileURL: input.fileURL)
-        guard committedMetadata.fileId == input.metadata.fileId,
-              committedMetadata.statFingerprint == input.metadata.statFingerprint,
-              committedMetadata.mtimeUnixMs == input.metadata.mtimeUnixMs,
-              committedMetadata.size == input.metadata.size
-        else {
-            throw Self.codexChangedDuringScanError(path: input.metadata.path)
-        }
         if parsed.sessionId == nil,
            let cached = input.cached,
            cached.codexInventoryOnly != true,

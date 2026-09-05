@@ -531,6 +531,7 @@ final class CodexAccountManager: CodexAccountManaging, CodexRefreshedCredentialP
     func authenticateManagedAccount(timeout: TimeInterval = 120) async throws -> CodexAccountProfile {
         let homeURL = makeManagedHomeURL()
         try fileManager.createDirectory(at: homeURL, withIntermediateDirectories: true)
+        defer { try? removeManagedHomeIfSafe(at: homeURL) }
         try? fileManager.setAttributes(
             [.posixPermissions: NSNumber(value: Int16(0o700))],
             ofItemAtPath: homeURL.path
@@ -542,13 +543,11 @@ final class CodexAccountManager: CodexAccountManaging, CodexRefreshedCredentialP
             environment: environment
         )
         guard case .success = result.outcome else {
-            try? removeManagedHomeIfSafe(at: homeURL)
             throw error(from: result)
         }
 
         let authURL = homeURL.appendingPathComponent("auth.json", isDirectory: false)
         guard fileManager.fileExists(atPath: authURL.path) else {
-            try? removeManagedHomeIfSafe(at: homeURL)
             throw CodexAccountManagerError.missingManagedAuth(authURL.path)
         }
 
@@ -556,7 +555,6 @@ final class CodexAccountManager: CodexAccountManaging, CodexRefreshedCredentialP
         do {
             data = try Data(contentsOf: authURL)
         } catch {
-            try? removeManagedHomeIfSafe(at: homeURL)
             throw CodexAccountManagerError.unreadableAuthFile(authURL.path)
         }
 
@@ -609,7 +607,6 @@ final class CodexAccountManager: CodexAccountManaging, CodexRefreshedCredentialP
             return (account, existingManagedHomeToRemove)
         }
 
-        try? removeManagedHomeIfSafe(at: homeURL)
         if let existingManagedHomeToRemove {
             try? removeManagedHomeIfSafe(at: existingManagedHomeToRemove)
         }
@@ -634,12 +631,19 @@ final class CodexAccountManager: CodexAccountManaging, CodexRefreshedCredentialP
         let nextActiveAuthData = try removesActiveAccount ? filtered.first.map(storedAuthData(for:)) : nil
 
         try storeAccounts(filtered)
-        if removesActiveAccount {
-            if let nextActiveAuthData {
-                try writeActiveAuthData(nextActiveAuthData)
-            } else {
-                try removeActiveAuthData()
+        do {
+            if removesActiveAccount {
+                if let nextActiveAuthData {
+                    try writeActiveAuthData(nextActiveAuthData)
+                } else {
+                    try removeActiveAuthData()
+                }
             }
+        } catch {
+            // Auth writes are atomic. Roll back the list before deleting any
+            // credential if changing the active authentication fails.
+            try storeAccounts(accounts)
+            throw error
         }
         for account in removedAccounts {
             CodexActiveAuthFileCoordinator.clearRefreshedAuthData(
@@ -1248,10 +1252,10 @@ struct CodexAccountLoginRunner: CodexAccountLoginRunning {
         stdoutURL: URL,
         stderrURL: URL
     ) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadline = ProcessInfo.processInfo.systemUptime + max(0, timeout)
         var nextOutputScan = Date()
         var didOpenAuthenticationURL = false
-        while process.isRunning && Date() < deadline {
+        while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
             let now = Date()
             if !didOpenAuthenticationURL, now >= nextOutputScan {
                 let output = combinedOutput(stdoutURL: stdoutURL, stderrURL: stderrURL)
@@ -1270,8 +1274,7 @@ struct CodexAccountLoginRunner: CodexAccountLoginRunning {
             }
         }
         guard process.isRunning else { return false }
-        process.terminate()
-        process.waitUntilExit()
+        BoundedProcessTermination.terminate(process)
         return true
     }
 

@@ -79,13 +79,12 @@ final class CodexCLIStatusProbe: @unchecked Sendable {
     }
 
     private func waitForProcess(_ process: Process, timeout: TimeInterval) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline {
+        let deadline = ProcessInfo.processInfo.systemUptime + max(0, timeout)
+        while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
             Thread.sleep(forTimeInterval: 0.05)
         }
         guard process.isRunning else { return false }
-        process.terminate()
-        process.waitUntilExit()
+        BoundedProcessTermination.terminate(process)
         return true
     }
 

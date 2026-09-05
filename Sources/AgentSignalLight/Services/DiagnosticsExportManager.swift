@@ -77,14 +77,13 @@ struct DiagnosticsExportManager: Sendable {
     }
 
     private func waitForProcess(_ process: Process, timeout: TimeInterval) throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline {
+        let deadline = ProcessInfo.processInfo.systemUptime + max(0, timeout)
+        while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
             Thread.sleep(forTimeInterval: 0.05)
         }
 
         if process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
+            BoundedProcessTermination.terminate(process)
             throw DiagnosticsExportError.commandTimedOut(timeout)
         }
     }
