@@ -16,6 +16,7 @@ enum CostUsagePricing {
         let priorityInputCostPerToken: Double?
         let priorityOutputCostPerToken: Double?
         let priorityCacheReadInputCostPerToken: Double?
+        let priorityLongContextRateMultiplier: Double?
 
         init(
             inputCostPerToken: Double,
@@ -28,7 +29,8 @@ enum CostUsagePricing {
             cacheReadInputCostPerTokenAboveThreshold: Double? = nil,
             priorityInputCostPerToken: Double? = nil,
             priorityOutputCostPerToken: Double? = nil,
-            priorityCacheReadInputCostPerToken: Double? = nil)
+            priorityCacheReadInputCostPerToken: Double? = nil,
+            priorityLongContextRateMultiplier: Double? = nil)
         {
             self.inputCostPerToken = inputCostPerToken
             self.outputCostPerToken = outputCostPerToken
@@ -41,6 +43,7 @@ enum CostUsagePricing {
             self.priorityInputCostPerToken = priorityInputCostPerToken
             self.priorityOutputCostPerToken = priorityOutputCostPerToken
             self.priorityCacheReadInputCostPerToken = priorityCacheReadInputCostPerToken
+            self.priorityLongContextRateMultiplier = priorityLongContextRateMultiplier
         }
     }
 
@@ -66,6 +69,21 @@ enum CostUsagePricing {
     }
 
     private static let codex: [String: CodexPricing] = [
+        // Verified 2026-09-05: https://developers.openai.com/api/docs/pricing
+        // https://developers.openai.com/api/docs/models/gpt-6-astra
+        "gpt-6-astra": CodexPricing(
+            inputCostPerToken: 1e-5,
+            outputCostPerToken: 5e-5,
+            cacheReadInputCostPerToken: 1e-6,
+            displayLabel: nil,
+            thresholdTokens: 272_000,
+            inputCostPerTokenAboveThreshold: 2e-5,
+            outputCostPerTokenAboveThreshold: 7.5e-5,
+            cacheReadInputCostPerTokenAboveThreshold: 2e-6,
+            priorityInputCostPerToken: 2e-5,
+            priorityOutputCostPerToken: 1e-4,
+            priorityCacheReadInputCostPerToken: 2e-6,
+            priorityLongContextRateMultiplier: 2),
         "gpt-5": CodexPricing(
             inputCostPerToken: 1.25e-6,
             outputCostPerToken: 1e-5,
@@ -221,6 +239,7 @@ enum CostUsagePricing {
                 self.optionalPricingFingerprint(pricing.priorityInputCostPerToken),
                 self.optionalPricingFingerprint(pricing.priorityOutputCostPerToken),
                 self.optionalPricingFingerprint(pricing.priorityCacheReadInputCostPerToken),
+                self.optionalPricingFingerprint(pricing.priorityLongContextRateMultiplier),
             ].joined(separator: "|"))
         }
         return parts.joined(separator: "\n")
@@ -511,7 +530,12 @@ enum CostUsagePricing {
               let priorityOutputCostPerToken = pricing.priorityOutputCostPerToken
         else { return nil }
         if max(0, inputTokens) > self.codexPriorityInputTokenLimit {
-            return nil
+            guard let multiplier = pricing.priorityLongContextRateMultiplier else { return nil }
+            return self.codexCostUSD(
+                pricing: pricing,
+                inputTokens: inputTokens,
+                cachedInputTokens: cachedInputTokens,
+                outputTokens: outputTokens) * multiplier
         }
 
         let priorityPricing = CodexPricing(

@@ -32,6 +32,77 @@ final class AgentSignalLightCoreTests: XCTestCase {
         super.tearDown()
     }
 
+    func testCodexAstraPricingAndContextBoundary() throws {
+        let catalog = ModelsDevCatalog(providers: [:])
+        // Input includes cached tokens; a request above 272K uses long rates in full.
+        for (input, expected) in [(100_000, 1.32), (272_000, 3.04), (272_001, 5.83002)] {
+            let cost = try XCTUnwrap(CostUsagePricing.codexCostUSD(
+                model: "openai/gpt-6-astra-2026-09-05",
+                inputTokens: input, cachedInputTokens: 20_000, outputTokens: 10_000,
+                modelsDevCatalog: catalog))
+            XCTAssertEqual(cost, expected, accuracy: 0.000_001)
+        }
+    }
+
+    func testCodexAstraPriorityPricingAndContextBoundary() throws {
+        for (input, expected) in [(100_000, 2.64), (272_000, 6.08), (272_001, 11.66004)] {
+            let cost = try XCTUnwrap(CostUsagePricing.codexPriorityCostUSD(
+                model: "gpt-6-astra", inputTokens: input,
+                cachedInputTokens: 20_000, outputTokens: 10_000))
+            XCTAssertEqual(cost, expected, accuracy: 0.000_001)
+        }
+        // Existing models still reject unsupported long-context Priority rates.
+        XCTAssertNil(CostUsagePricing.codexPriorityCostUSD(
+            model: "gpt-5.5", inputTokens: 272_001, outputTokens: 10_000))
+    }
+
+    func testCodexAstraSessionScanProducesDollarCost() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-astra-cost-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheRoot = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines = [
+            #"{"timestamp":"2026-07-11T01:59:59.000Z","type":"session_meta","payload":{"id":"codex-astra-cost-session","originator":"Codex Desktop"}}"#,
+            #"{"timestamp":"2026-07-11T02:00:00.000Z","type":"turn_context","payload":{"model":"gpt-6-astra"}}"#,
+            #"{"timestamp":"2026-07-11T02:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":200000,"output_tokens":100000,"total_tokens":1100000},"last_token_usage":{"input_tokens":1000000,"cached_input_tokens":200000,"output_tokens":100000,"total_tokens":1100000}}}}"#,
+        ].joined(separator: "\n")
+        try lines.write(
+            to: sessionsRoot.appendingPathComponent("rollout-gpt-6-astra.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let calendar = Calendar(identifier: .gregorian)
+        let since = try XCTUnwrap(calendar.date(from: DateComponents(
+            timeZone: TimeZone(secondsFromGMT: 0),
+            year: 2026,
+            month: 7,
+            day: 11
+        )))
+        let until = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: since))
+        let now = try XCTUnwrap(calendar.date(byAdding: .hour, value: 12, to: since))
+        let report = CostUsageScanner.loadDailyReport(
+            provider: .codex,
+            since: since,
+            until: until,
+            now: now,
+            options: CostUsageScanner.Options(
+                codexSessionsRoot: sessionsRoot,
+                cacheRoot: cacheRoot,
+                forceRescan: true
+            )
+        )
+
+        let totalCost = try XCTUnwrap(report.summary?.totalCostUSD)
+        let modelCost = try XCTUnwrap(report.data.first?.modelBreakdowns?.first?.costUSD)
+        XCTAssertEqual(totalCost, 23.9, accuracy: 0.000_001)
+        XCTAssertEqual(report.data.first?.modelBreakdowns?.first?.modelName, "gpt-6-astra")
+        XCTAssertEqual(modelCost, 23.9, accuracy: 0.000_001)
+    }
+
     func testCodex56BuiltInPricingCoversAllVariantsAndDatedAliases() throws {
         let emptyCatalog = ModelsDevCatalog(providers: [:])
 
@@ -205,8 +276,31 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(releaseInfo.build, "42")
         XCTAssertEqual(releaseInfo.signingMode, "developer_id")
         XCTAssertEqual(releaseInfo.manifestURL?.standardizedFileURL, manifestURL.standardizedFileURL)
-        XCTAssertEqual(releaseInfo.releaseInfoURL?.standardizedFileURL, releaseInfoURL.standardizedFileURL)
+        XCTAssertNil(releaseInfo.releaseInfoURL)
         XCTAssertEqual(releaseInfo.releaseFileURL?.standardizedFileURL, manifestURL.standardizedFileURL)
+    }
+
+    func testReleaseInfoRejectsStaleManifestForRunningBundle() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("release-identity-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manifest = root.appendingPathComponent("manifest.json")
+        let bundled = root.appendingPathComponent("release.json")
+        try releaseMetadataJSON(version: "1.5.9", build: "19", signingMode: "developer_id")
+            .write(to: manifest, atomically: true, encoding: .utf8)
+        try releaseMetadataJSON(version: "1.5.10", build: "20", signingMode: "ad_hoc")
+            .write(to: bundled, atomically: true, encoding: .utf8)
+        let info = ["CFBundleShortVersionString": "1.5.10", "CFBundleVersion": "20"]
+        let result = ReleaseInfo.resolve(bundleInfo: info, manifestURL: manifest, releaseInfoURL: bundled)
+        XCTAssertEqual(result.version, "1.5.10")
+        XCTAssertEqual(result.build, "20")
+        XCTAssertEqual(result.signingMode, "ad_hoc")
+        XCTAssertNil(result.manifestURL)
+        XCTAssertEqual(result.releaseFileURL, bundled)
+        let missing = ReleaseInfo.resolve(bundleInfo: info, manifestURL: manifest, releaseInfoURL: nil)
+        XCTAssertEqual(missing.version, "1.5.10")
+        XCTAssertEqual(missing.build, "20")
+        XCTAssertNil(missing.releaseFileURL)
     }
 
     func testFloatingSignalGeometryTracksLayout() {

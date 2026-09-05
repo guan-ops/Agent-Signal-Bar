@@ -4,6 +4,7 @@ enum CostUsageCacheIO {
     private enum RequiredLoadError: Error {
         case incompatibleVersion
         case producerMismatch
+        case dayContextMismatch
     }
 
     private static let compatibleCodexProducerKeys: Set<String> = [
@@ -58,6 +59,9 @@ enum CostUsageCacheIO {
         let data = try Data(contentsOf: url)
         let decoded = try JSONDecoder().decode(CostUsageCache.self, from: data)
         guard decoded.version == 1 else { throw RequiredLoadError.incompatibleVersion }
+        guard decoded.dayContext == CostUsageDayContext.current else {
+            throw RequiredLoadError.dayContextMismatch
+        }
         if let expectedProducerKey {
             guard decoded.producerKey == expectedProducerKey
                 || decoded.producerKey.map(compatibleProducerKeys.contains) == true
@@ -105,6 +109,7 @@ enum CostUsageCacheIO {
 
 struct CostUsageCache: Codable {
     var version: Int = 1
+    var dayContext: CostUsageDayContext? = .current
     var producerKey: String?
     var lastScanUnixMs: Int64 = 0
     var scanSinceKey: String?
@@ -129,6 +134,21 @@ struct CostUsageCache: Codable {
 
     /// rootPath -> mtime (for Claude roots)
     var roots: [String: Int64]?
+}
+
+/// Context used to assign timestamps to daily buckets. Legacy caches without
+/// this information must be rebuilt rather than guessed to be local.
+struct CostUsageDayContext: Codable, Equatable {
+    let calendarIdentifier: String
+    let timeZoneIdentifier: String
+
+    static var current: Self {
+        let calendar = Calendar.current
+        return Self(
+            calendarIdentifier: String(describing: calendar.identifier),
+            timeZoneIdentifier: calendar.timeZone.identifier
+        )
+    }
 }
 
 struct CostUsageFileUsage: Codable {

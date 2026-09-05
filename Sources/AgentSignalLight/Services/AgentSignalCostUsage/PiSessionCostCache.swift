@@ -21,7 +21,8 @@ enum PiSessionCostCacheIO {
         let url = self.cacheFileURL(cacheRoot: cacheRoot)
         guard let data = try? Data(contentsOf: url),
               let decoded = try? JSONDecoder().decode(PiSessionCostCache.self, from: data),
-              decoded.version == Self.artifactVersion
+              decoded.version == Self.artifactVersion,
+              decoded.dayContext == CostUsageDayContext.current
         else {
             return PiSessionCostCache(version: Self.artifactVersion)
         }
@@ -51,6 +52,7 @@ enum PiSessionCostCacheIO {
 
 struct PiSessionCostCache: Codable {
     var version: Int
+    var dayContext: CostUsageDayContext? = .current
     var lastScanUnixMs: Int64 = 0
     var scanSinceKey: String?
     var scanUntilKey: String?

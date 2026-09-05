@@ -30,6 +30,25 @@ final class TokenActivityPresentationTests: XCTestCase {
         XCTAssertFalse(fixture.model.hasCompletedTokenActivityScan)
     }
 
+    func testConcurrentWriteShowsSyncStatusAndRetainsHistory() async throws {
+        let deferred = expectation(description: "source change retries")
+        let scanner = PresentationTokenScanner(result: .failure(
+            days: [], error: CostUsageScanner.codexChangedDuringScanError(path: "/private/fixture.jsonl")))
+        let fixture = try makeFixture(scanner: scanner, history: [CodexTokenActivityDay(
+            day: now, totalTokens: 100, estimatedCostUSD: 0.01
+        )]) {
+            if $0 == .deferredWithRetryPending { deferred.fulfill() }
+        }
+        defer { fixture.cleanUp() }
+        fixture.model.refreshTokenActivityIfNeeded(force: true)
+        await fulfillment(of: [deferred], timeout: 3)
+        XCTAssertEqual(fixture.model.tokenActivityDisplayTotal(for: .today, now: now), 100)
+        let issue = try XCTUnwrap(fixture.model.tokenActivityIssue)
+        XCTAssertTrue(issue.contains("同步") || issue.contains("Syncing"))
+        XCTAssertFalse(issue.contains("扫描失败"))
+        XCTAssertFalse(issue.contains("/private/"))
+    }
+
     func testFailureRetainsConfirmedHistoryAndUnpricedLiveCounters() async throws {
         let failed = expectation(description: "failure preserves existing data")
         let scanner = PresentationTokenScanner(result: CodexTokenActivityScanResult(

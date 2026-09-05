@@ -83,6 +83,7 @@ struct CodexTokenActivityScanResult: Equatable, Sendable {
     /// Those sources never contribute days or absorbing watermarks.
     let isComplete: Bool
     let failureDescription: String?
+    let isSourceChanging: Bool
     let warningDescription: String?
     let excludedSourceIDs: Set<String>
     let excludedSessionIDs: Set<String>
@@ -92,6 +93,7 @@ struct CodexTokenActivityScanResult: Equatable, Sendable {
         watermarks: [CodexTokenActivityScanWatermark],
         isComplete: Bool = true,
         failureDescription: String? = nil,
+        isSourceChanging: Bool = false,
         warningDescription: String? = nil,
         excludedSourceIDs: Set<String> = [],
         excludedSessionIDs: Set<String> = []
@@ -100,9 +102,24 @@ struct CodexTokenActivityScanResult: Equatable, Sendable {
         self.watermarks = watermarks
         self.isComplete = isComplete
         self.failureDescription = failureDescription
+        self.isSourceChanging = isSourceChanging
         self.warningDescription = warningDescription
         self.excludedSourceIDs = excludedSourceIDs
         self.excludedSessionIDs = excludedSessionIDs
+    }
+
+    static func failure(days: [CodexTokenActivityDay], error: Error) -> Self {
+        let nsError = error as NSError
+        let changing = (nsError.domain == "AgentSignalCostUsage.CodexConsistency" && nsError.code == 3)
+            || (error as? CostUsageScanner.CodexInventoryError).map {
+                if case .changedDuringEnumeration = $0 { return true }
+                return false
+            } == true
+            || nsError.domain == "AgentSignalCostUsage.CodexCheckpoint"
+        return Self(
+            days: days, watermarks: [], isComplete: false,
+            failureDescription: changing ? nil : "Local session history could not be read.",
+            isSourceChanging: changing)
     }
 }
 
@@ -168,7 +185,7 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
     init(
         sessionRootURLs: [URL]? = nil,
         fileManager: FileManager = .default,
-        calendar: Calendar = .current,
+        calendar: Calendar = .autoupdatingCurrent,
         readChunkBytes: Int = 4 * 1024 * 1024,
         cacheURL: URL? = nil,
         costUsageCacheRootURL: URL? = nil,
@@ -233,12 +250,7 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
         } catch {
             // Preserve the last known-good aggregate. The model will retry with
             // backoff, but an I/O/enumeration failure cannot flash usage to zero.
-            return CodexTokenActivityScanResult(
-                days: cachedDailyActivity(now: now, days: days) ?? [],
-                watermarks: (try? agentSignalCostUsageScanWatermarks(through: now)) ?? [],
-                isComplete: false,
-                failureDescription: String(describing: error)
-            )
+            return .failure(days: cachedDailyActivity(now: now, days: days) ?? [], error: error)
         }
     }
 

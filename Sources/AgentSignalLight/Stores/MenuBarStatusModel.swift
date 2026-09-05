@@ -3360,7 +3360,10 @@ final class MenuBarStatusModel: ObservableObject {
                     }
 
                     guard scanResult.isComplete else {
-                        self.tokenActivityIssue = self.text(
+                        self.tokenActivityIssue = scanResult.isSourceChanging ? self.text(
+                            "正在同步最新用量；已确认用量和实时计数已保留，将自动重试。",
+                            "Syncing latest usage; confirmed usage and live counters are retained. Retrying automatically."
+                        ) : self.text(
                             "Token 历史扫描失败；已确认用量和实时计数已保留。",
                             "Token history scan failed; confirmed usage and live counters are retained."
                         ) + (scanResult.failureDescription.map { " \($0)" } ?? "")

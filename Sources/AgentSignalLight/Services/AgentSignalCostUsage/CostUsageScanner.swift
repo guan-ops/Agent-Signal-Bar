@@ -38,6 +38,7 @@ enum CostUsageScanner {
         /// Test seam used to mutate an existing file after inventory metadata
         /// has been captured but before the inventory is validated.
         var codexInventoryAfterMetadataHook: (() -> Void)?
+        var codexFileBeforeSnapshotValidationHook: ((URL) -> Void)?
 
         init(
             codexSessionsRoot: URL? = nil,
@@ -186,6 +187,7 @@ enum CostUsageScanner {
         let modelsDevCatalog: ModelsDevCatalog?
         let modelsDevCacheRoot: URL?
         let priorityTurns: [String: CodexPriorityTurnMetadata]
+        var beforeSnapshotValidation: ((URL) -> Void)? = nil
     }
 
     struct CodexFileScanContext {
@@ -4013,7 +4015,8 @@ enum CostUsageScanner {
                 inheritedResolver: inheritedResolver,
                 modelsDevCatalog: plan.modelsDevCatalog,
                 modelsDevCacheRoot: options.cacheRoot,
-                priorityTurns: plan.priorityTurns)
+                priorityTurns: plan.priorityTurns,
+                beforeSnapshotValidation: options.codexFileBeforeSnapshotValidationHook)
             for fileURL in files {
                 try Self.scanCodexFile(
                     fileURL: fileURL,

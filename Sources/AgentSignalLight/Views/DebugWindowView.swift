@@ -2367,6 +2367,10 @@ struct DebugWindowView: View {
     private func tokenUsageModelSortRank(_ modelName: String) -> Int {
         let modelName = modelName.lowercased()
         if modelName == "__other__" { return 900 }
+        if modelName.contains("gpt-6-astra") { return 0 }
+        if modelName.contains("gpt-5.6-sol") { return 1 }
+        if modelName.contains("gpt-5.6-terra") { return 2 }
+        if modelName.contains("gpt-5.6-luna") { return 3 }
         if modelName.contains("5.5") { return 10 }
         if modelName.contains("5.4") { return 20 }
         if modelName.contains("5.3") { return 30 }
@@ -2385,7 +2389,15 @@ struct DebugWindowView: View {
     ) -> Color {
         let modelName = modelName.lowercased()
         let baseColor: Color
-        if modelName.contains("5.5") {
+        if modelName.contains("gpt-6-astra") {
+            baseColor = Color(red: 0.86, green: 0.30, blue: 0.54)
+        } else if modelName.contains("gpt-5.6-sol") {
+            baseColor = Color(red: 0.18, green: 0.38, blue: 0.82)
+        } else if modelName.contains("gpt-5.6-terra") {
+            baseColor = Color(red: 0.26, green: 0.70, blue: 0.40)
+        } else if modelName.contains("gpt-5.6-luna") {
+            baseColor = Color(red: 0.96, green: 0.62, blue: 0.28)
+        } else if modelName.contains("5.5") {
             baseColor = Color(red: 0.10, green: 0.48, blue: 0.95)
         } else if modelName.contains("5.4") {
             baseColor = Color(red: 0.95, green: 0.52, blue: 0.18)
@@ -2423,7 +2435,12 @@ struct DebugWindowView: View {
     }
 
     private func tokenUsageModelDisplayName(_ modelName: String) -> String {
-        modelName == "__other__" ? model.text("其他", "Other") : modelName
+        if modelName == "__other__" { return model.text("其他", "Other") }
+        if modelName.lowercased() == "gpt-6-astra" { return "GPT-6 Astra" }
+        if modelName.lowercased() == "gpt-5.6-sol" { return "GPT-5.6 Sol" }
+        if modelName.lowercased() == "gpt-5.6-terra" { return "GPT-5.6 Terra" }
+        if modelName.lowercased() == "gpt-5.6-luna" { return "GPT-5.6 Luna" }
+        return modelName
     }
 
     private func tokenUsageDaySummaryText(for day: CodexTokenActivityDay) -> String {
