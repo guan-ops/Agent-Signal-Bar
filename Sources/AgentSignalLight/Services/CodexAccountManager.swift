@@ -419,22 +419,9 @@ final class CodexAccountManager: CodexAccountManaging, CodexRefreshedCredentialP
             guard let account = accounts.first(where: { $0.id == id }) else {
                 throw CodexAccountManagerError.accountNotFound
             }
-            let pendingRefreshedData = pendingRefreshedAuthData(
-                replacingAuthFingerprint: account.authFingerprint
-            )
-            let data = try pendingRefreshedData ?? storedAuthData(for: account)
-            guard !data.isEmpty else {
-                throw CodexAccountManagerError.emptyStoredAuth
-            }
-            try writeActiveAuthData(data)
-            if pendingRefreshedData != nil {
-                // Switching must remain usable even while Keychain authorization
-                // is temporarily unavailable. A successful retry clears pending.
-                try? persistRefreshedAuthData(
-                    data,
-                    replacingAuthFingerprint: account.authFingerprint
-                )
-            }
+            let credential = try activationCredential(for: account)
+            try writeActiveAuthData(credential.data)
+            retryPendingCredentialPersistence(credential, for: account)
             return account
         }
     }
@@ -628,13 +615,14 @@ final class CodexAccountManager: CodexAccountManaging, CodexRefreshedCredentialP
 
         let current = try? currentAccount()
         let removesActiveAccount = current.flatMap { activeAccountID(for: $0, in: accounts) } == id
-        let nextActiveAuthData = try removesActiveAccount ? filtered.first.map(storedAuthData(for:)) : nil
+        let nextAccount = removesActiveAccount ? filtered.first : nil
+        let nextCredential = try nextAccount.map(activationCredential(for:))
 
         try storeAccounts(filtered)
         do {
             if removesActiveAccount {
-                if let nextActiveAuthData {
-                    try writeActiveAuthData(nextActiveAuthData)
+                if let nextCredential {
+                    try writeActiveAuthData(nextCredential.data)
                 } else {
                     try removeActiveAuthData()
                 }
@@ -644,6 +632,9 @@ final class CodexAccountManager: CodexAccountManaging, CodexRefreshedCredentialP
             // credential if changing the active authentication fails.
             try storeAccounts(accounts)
             throw error
+        }
+        if let nextAccount, let nextCredential {
+            retryPendingCredentialPersistence(nextCredential, for: nextAccount)
         }
         for account in removedAccounts {
             CodexActiveAuthFileCoordinator.clearRefreshedAuthData(
@@ -742,6 +733,28 @@ final class CodexAccountManager: CodexAccountManaging, CodexRefreshedCredentialP
             try storeAccounts(accounts)
         }
         return accounts
+    }
+
+    private struct ActivationCredential {
+        let data: Data
+        let isPendingRefresh: Bool
+    }
+
+    private func activationCredential(for account: CodexAccountProfile) throws -> ActivationCredential {
+        let pending = pendingRefreshedAuthData(replacingAuthFingerprint: account.authFingerprint)
+        let data = try pending ?? storedAuthData(for: account)
+        guard !data.isEmpty else { throw CodexAccountManagerError.emptyStoredAuth }
+        return ActivationCredential(data: data, isPendingRefresh: pending != nil)
+    }
+
+    private func retryPendingCredentialPersistence(
+        _ credential: ActivationCredential, for account: CodexAccountProfile
+    ) {
+        guard credential.isPendingRefresh else { return }
+        // Activation remains usable while Keychain is unavailable. Only retry
+        // after the active auth transaction succeeds, keeping rollback intact.
+        try? persistRefreshedAuthData(
+            credential.data, replacingAuthFingerprint: account.authFingerprint)
     }
 
     private func storedAuthData(for account: CodexAccountProfile) throws -> Data {

@@ -78,7 +78,8 @@ extension CostUsageScanner {
         startOffset: Int64 = 0,
         modelsDevCatalog: ModelsDevCatalog? = nil,
         modelsDevCacheRoot: URL? = nil,
-        checkCancellation: CancellationCheck? = nil) throws -> ClaudeParseResult
+        checkCancellation: CancellationCheck? = nil,
+        sourceFileURL: URL? = nil) throws -> ClaudeParseResult
     {
         func add(dayKey: String, model: String, tokens: ClaudeTokens, days: inout [String: [String: [Int]]]) {
             guard CostUsageDayRange.isInRange(dayKey: dayKey, since: range.scanSinceKey, until: range.scanUntilKey)
@@ -109,7 +110,7 @@ extension CostUsageScanner {
             return false
         }
 
-        let pathRole = Self.claudePathRole(fileURL: fileURL)
+        let pathRole = Self.claudePathRole(fileURL: sourceFileURL ?? fileURL)
         var keyedRows: [String: ClaudeUsageRow] = [:]
         var unkeyedRows: [ClaudeUsageRow] = []
 
@@ -222,7 +223,8 @@ extension CostUsageScanner {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            parsedBytes = startOffset
+            // An I/O failure is not an empty session. Abort before committing a partial cache.
+            throw error
         }
 
         let rows = keyedRows.keys.sorted().compactMap { keyedRows[$0] } + unkeyedRows
@@ -491,6 +493,7 @@ extension CostUsageScanner {
         let modelsDevCatalog: ModelsDevCatalog?
         let modelsDevCacheRoot: URL?
         let checkCancellation: CancellationCheck?
+        let beforeSnapshotValidation: ((URL) -> Void)?
 
         init(
             cache: CostUsageCache,
@@ -499,7 +502,8 @@ extension CostUsageScanner {
             forceFullScan: Bool,
             modelsDevCatalog: ModelsDevCatalog?,
             modelsDevCacheRoot: URL?,
-            checkCancellation: CancellationCheck?)
+            checkCancellation: CancellationCheck?,
+            beforeSnapshotValidation: ((URL) -> Void)?)
         {
             self.cache = cache
             self.touched = []
@@ -509,63 +513,76 @@ extension CostUsageScanner {
             self.modelsDevCatalog = modelsDevCatalog
             self.modelsDevCacheRoot = modelsDevCacheRoot
             self.checkCancellation = checkCancellation
+            self.beforeSnapshotValidation = beforeSnapshotValidation
         }
     }
 
     private static func processClaudeFile(
         url: URL,
-        size: Int64,
-        mtimeMs: Int64,
         state: ClaudeScanState) throws
     {
         try state.checkCancellation?()
         let path = url.path
         state.touched.insert(path)
+        let metadata = Self.codexFileMetadata(fileURL: url)
+        guard metadata.fileId != nil else { throw CocoaError(.fileReadUnknown) }
+        let cached = state.cache.files[path]
 
-        if let cached = state.cache.files[path],
-           cached.mtimeUnixMs == mtimeMs,
-           cached.size == size,
-           !state.forceFullScan
-        {
+        // These byte-level snapshot primitives are shared with Codex. Legacy
+        // Claude entries lack identity/proof fields and must be parsed again.
+        if let cached, !state.forceFullScan,
+           cached.sourceGeneration == metadata.fileId,
+           cached.sourceStatFingerprint != nil,
+           cached.sourceStatFingerprint == metadata.statFingerprint,
+           cached.mtimeUnixMs == metadata.mtimeUnixMs,
+           cached.size == metadata.size,
+           cached.claudeRows != nil,
+           cached.parsedBytes == 0 || cached.committedPrefixFingerprint != nil {
             return
         }
 
-        if let cached = state.cache.files[path], !state.forceFullScan {
-            let startOffset = cached.parsedBytes ?? cached.size
-            let canIncremental = size > cached.size && startOffset > 0 && startOffset <= size
-                && cached.claudeRows != nil
-            if canIncremental {
-                let delta = try Self.parseClaudeFileCancellable(
-                    fileURL: url,
-                    range: state.range,
-                    providerFilter: state.providerFilter,
-                    startOffset: startOffset,
-                    modelsDevCatalog: state.modelsDevCatalog,
-                    modelsDevCacheRoot: state.modelsDevCacheRoot,
-                    checkCancellation: state.checkCancellation)
-                let mergedRows = Self.mergeClaudeRows(existing: cached.claudeRows ?? [], delta: delta.rows)
-                state.cache.files[path] = Self.makeClaudeFileUsage(
-                    mtimeMs: mtimeMs,
-                    size: size,
-                    rows: mergedRows,
-                    parsedBytes: delta.parsedBytes)
-                return
+        do {
+            let input = CodexFileScanInput(fileURL: url, metadata: metadata, cached: cached)
+            let snapshot = try Self.codexReadSnapshot(input: input, checkCancellation: state.checkCancellation)
+            var startOffset: Int64 = 0
+            var previousRows: [ClaudeUsageRow] = []
+            if let cached, !state.forceFullScan,
+               cached.sourceGeneration == metadata.fileId,
+               metadata.size > cached.size,
+               let offset = cached.parsedBytes, offset > 0, offset <= metadata.size,
+               let rows = cached.claudeRows,
+               try Self.codexFileMatchesCommittedFrontier(
+                   fileURL: snapshot.url, cached: cached, checkCancellation: state.checkCancellation) {
+                startOffset = offset
+                previousRows = rows
             }
+            let parsed = try Self.parseClaudeFileCancellable(
+                fileURL: snapshot.url,
+                range: state.range,
+                providerFilter: state.providerFilter,
+                startOffset: startOffset,
+                modelsDevCatalog: state.modelsDevCatalog,
+                modelsDevCacheRoot: state.modelsDevCacheRoot,
+                checkCancellation: state.checkCancellation,
+                sourceFileURL: url)
+            state.beforeSnapshotValidation?(url)
+            let fingerprint = try Self.verifiedCodexSnapshotPrefix(
+                snapshot: snapshot, input: input, parsedBytes: parsed.parsedBytes,
+                checkCancellation: state.checkCancellation)
+            var usage = Self.makeClaudeFileUsage(
+                mtimeMs: metadata.mtimeUnixMs,
+                size: metadata.size,
+                rows: Self.mergeClaudeRows(existing: previousRows, delta: parsed.rows),
+                parsedBytes: parsed.parsedBytes)
+            usage.sourceGeneration = metadata.fileId
+            usage.sourceStatFingerprint = metadata.statFingerprint
+            usage.sourceChangeTimeNanoseconds = metadata.changeTimeNanoseconds
+            usage.committedPrefixFingerprint = fingerprint
+            state.cache.files[path] = usage
+        } catch let error as NSError where error.domain == "AgentSignalCostUsage.CodexConsistency" {
+            throw NSError(domain: "AgentSignalCostUsage.ClaudeConsistency", code: error.code,
+                          userInfo: [NSLocalizedDescriptionKey: "Claude session changed while being scanned"])
         }
-
-        let parsed = try Self.parseClaudeFileCancellable(
-            fileURL: url,
-            range: state.range,
-            providerFilter: state.providerFilter,
-            modelsDevCatalog: state.modelsDevCatalog,
-            modelsDevCacheRoot: state.modelsDevCacheRoot,
-            checkCancellation: state.checkCancellation)
-        let usage = Self.makeClaudeFileUsage(
-            mtimeMs: mtimeMs,
-            size: size,
-            rows: parsed.rows,
-            parsedBytes: parsed.parsedBytes)
-        state.cache.files[path] = usage
     }
 
     private static func scanClaudeRoot(
@@ -603,29 +620,29 @@ extension CostUsageScanner {
             .fileSizeKey,
         ]
 
+        guard try root.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        var enumerationError: Error?
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants])
-        else { return }
+            options: [.skipsHiddenFiles, .skipsPackageDescendants],
+            errorHandler: { _, error in enumerationError = error; return false })
+        else { throw CocoaError(.fileReadUnknown) }
 
         for case let url as URL in enumerator {
             try state.checkCancellation?()
             guard url.pathExtension.lowercased() == "jsonl" else { continue }
-            guard let values = try? url.resourceValues(forKeys: Set(keys)) else { continue }
+            let values = try url.resourceValues(forKeys: Set(keys))
             guard values.isRegularFile == true else { continue }
             let size = Int64(values.fileSize ?? 0)
             if size <= 0 { continue }
 
-            let mtime = values.contentModificationDate?.timeIntervalSince1970 ?? 0
-            let mtimeMs = Int64(mtime * 1000)
-            try Self.processClaudeFile(
-                url: url,
-                size: size,
-                mtimeMs: mtimeMs,
-                state: state)
+            try Self.processClaudeFile(url: url, state: state)
         }
 
+        if let enumerationError { throw enumerationError }
         // Root mtime caching removed — see comment above.
     }
 
@@ -665,7 +682,8 @@ extension CostUsageScanner {
                 forceFullScan: options.forceRescan || windowExpanded,
                 modelsDevCatalog: modelsDevCatalog,
                 modelsDevCacheRoot: options.cacheRoot,
-                checkCancellation: checkCancellation)
+                checkCancellation: checkCancellation,
+                beforeSnapshotValidation: options.claudeFileBeforeSnapshotValidationHook)
 
             for root in roots {
                 try Self.scanClaudeRoot(

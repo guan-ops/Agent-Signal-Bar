@@ -3,6 +3,29 @@ import XCTest
 @testable import AgentSignalLight
 
 final class CodexNoncontributingDuplicateTests: XCTestCase {
+    func testChangedPrefixOnlyCopyIsReinventoriedWithoutRestartingEveryScan() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let owner = try fixture.writeUsage("owner", id: "duplicate", total: 300)
+        let copy = fixture.sessions.appendingPathComponent("rollout-2026-09-02T08-00-00-copy.jsonl").standardizedFileURL.resolvingSymlinksInPath()
+        let header = try XCTUnwrap(String(contentsOf: owner, encoding: .utf8).split(separator: "\n").first)
+        try (String(header) + "\n").write(to: copy, atomically: true, encoding: .utf8)
+        XCTAssertEqual(try fixture.scan().summary?.totalTokens, 300)
+        let initialCopy = try XCTUnwrap(fixture.cache().files.first { URL(fileURLWithPath: $0.key).lastPathComponent == copy.lastPathComponent }?.value)
+        XCTAssertTrue(initialCopy.codexInventoryOnly == true)
+        XCTAssertFalse(initialCopy.codexNoncontributingDuplicate == true)
+
+        // An append leaves the directory inventory unchanged but invalidates
+        // the old prefix relationship. It still contributes no numeric usage.
+        try fixture.append(#"{"type":"event_msg","payload":{"type":"turn_aborted"}}"# + "\n", to: copy)
+        for _ in 0..<2 {
+            let report = try fixture.scan()
+            XCTAssertEqual(report.summary?.totalTokens, 300)
+            XCTAssertTrue(report.warnings.isEmpty)
+            XCTAssertTrue(try fixture.cache().files.first { URL(fileURLWithPath: $0.key).lastPathComponent == copy.lastPathComponent }?.value.codexNoncontributingDuplicate == true)
+        }
+    }
+
     func testInterruptedNullUsageCopyDoesNotHideTheContributingCopy() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

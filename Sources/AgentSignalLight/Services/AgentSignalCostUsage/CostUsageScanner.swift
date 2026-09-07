@@ -22,6 +22,7 @@ enum CostUsageScanner {
     }
 
     struct Options {
+        var codexScanProgress: (@Sendable (TokenScanProgress) -> Void)?
         var codexSessionsRoot: URL?
         var codexSessionsRoots: [URL]?
         var claudeProjectsRoots: [URL]?
@@ -39,6 +40,7 @@ enum CostUsageScanner {
         /// has been captured but before the inventory is validated.
         var codexInventoryAfterMetadataHook: (() -> Void)?
         var codexFileBeforeSnapshotValidationHook: ((URL) -> Void)?
+        var claudeFileBeforeSnapshotValidationHook: ((URL) -> Void)?
 
         init(
             codexSessionsRoot: URL? = nil,
@@ -3450,7 +3452,10 @@ enum CostUsageScanner {
             || rootsChanged
             || directoryFingerprintsChanged
             || cache.files.contains { path, usage in
-                guard usage.codexIdentityConflict == true || usage.codexNoncontributingDuplicate == true
+                // A changed duplicate must go through the same ownership and
+                // no-usage proof policy as a newly discovered copy. Reusing
+                // its old role can otherwise fail every incremental scan.
+                guard usage.codexInventoryOnly == true || usage.codexNoncontributingDuplicate == true
                 else { return false }
                 let metadata = Self.codexFileMetadata(fileURL: URL(fileURLWithPath: path))
                 return metadata.fileId != usage.sourceGeneration
@@ -3546,6 +3551,7 @@ enum CostUsageScanner {
         options: Options,
         checkCancellation: CancellationCheck?) throws -> CostUsageDailyReport
     {
+        options.codexScanProgress?(.init(phase: .discovering))
         var checkpointGeneration = options.codexScanCheckpoint?.currentGeneration
         let checkpointScopeBeforeRead = options.codexScanCheckpoint.flatMap { _ in
             Self.codexCheckpointScope(options: options)
@@ -4017,7 +4023,8 @@ enum CostUsageScanner {
                 modelsDevCacheRoot: options.cacheRoot,
                 priorityTurns: plan.priorityTurns,
                 beforeSnapshotValidation: options.codexFileBeforeSnapshotValidationHook)
-            for fileURL in files {
+            options.codexScanProgress?(.init(phase: .scanning, totalFiles: files.count))
+            for (fileNumber, fileURL) in files.enumerated() {
                 try Self.scanCodexFile(
                     fileURL: fileURL,
                     context: CodexFileScanContext(
@@ -4035,7 +4042,9 @@ enum CostUsageScanner {
                         checkCancellation: checkCancellation),
                     cache: &cache,
                     state: &scanState)
+                options.codexScanProgress?(.init(phase: .scanning, completedFiles: fileNumber + 1, totalFiles: files.count))
             }
+            options.codexScanProgress?(.init(phase: .validating, completedFiles: files.count, totalFiles: files.count))
             try checkCancellation?()
 
             Self.pruneForceRescanFilesOutsideWindow(

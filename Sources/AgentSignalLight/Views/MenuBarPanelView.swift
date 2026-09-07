@@ -5,17 +5,26 @@ import Combine
 import SwiftUI
 
 struct MenuBarPanelView: View {
-    static let panelWidth: CGFloat = 304
-    static let panelHeight: CGFloat = 372
+    static let panelWidth: CGFloat = 360
+    static let panelHeight: CGFloat = 560
     private static let contentInset: CGFloat = 16
     private static let actionColumnSpacing: CGFloat = 8
 
     let model: MenuBarStatusModel
     var onOpenSettings: (() -> Void)?
+    let claudeSupport: ClaudeSupportModel
+    let usageNavigation: UsageMenuNavigation
+    var onOpenUsage: (UsageMenuNavigation.Provider) -> Void
     @StateObject private var viewState: MenuBarPanelViewState
     @Environment(\.colorScheme) private var colorScheme
 
-    init(model: MenuBarStatusModel, onOpenSettings: (() -> Void)? = nil) {
+    init(model: MenuBarStatusModel, claudeSupport: ClaudeSupportModel? = nil,
+         usageNavigation: UsageMenuNavigation? = nil,
+         onOpenUsage: @escaping (UsageMenuNavigation.Provider) -> Void = { _ in },
+         onOpenSettings: (() -> Void)? = nil) {
+        self.claudeSupport = claudeSupport ?? ClaudeSupportModel()
+        self.usageNavigation = usageNavigation ?? UsageMenuNavigation()
+        self.onOpenUsage = onOpenUsage
         self.model = model
         self.onOpenSettings = onOpenSettings
         _viewState = StateObject(wrappedValue: MenuBarPanelViewState(model: model))
@@ -28,17 +37,17 @@ struct MenuBarPanelView: View {
                 .zIndex(0)
 
             VStack(spacing: 0) {
-                ScrollView {
+                Group {
                     VStack(alignment: .leading, spacing: 14) {
                         header
-                        statusSummary
-                        codexResetCreditsSummary
+                        MenuUsageSummaryView(model: model, claude: claudeSupport,
+                                             navigation: usageNavigation, onOpenSettings: onOpenUsage)
 
                         if let lastError = viewState.lastError {
                             Text(lastError)
                                 .font(.caption)
                                 .foregroundStyle(.red)
-                                .fixedSize(horizontal: false, vertical: true)
+                                .lineLimit(2)
                         }
                     }
                     .padding(.horizontal, Self.contentInset)
@@ -47,8 +56,7 @@ struct MenuBarPanelView: View {
                     .frame(width: Self.panelWidth, alignment: .leading)
                 }
                 .contentShape(Rectangle())
-                .scrollIndicators(.hidden)
-                .frame(maxHeight: .infinity)
+
                 .zIndex(0)
 
                 Divider()
@@ -63,35 +71,27 @@ struct MenuBarPanelView: View {
                     .zIndex(1)
             }
         }
-        .frame(width: Self.panelWidth, height: Self.panelHeight)
+        .frame(width: Self.panelWidth)
+        .fixedSize(horizontal: false, vertical: true)
         .preferredColorScheme(viewState.appTheme.colorScheme)
-        .onAppear {
-            model.pollCodexRateLimitsIfNeeded()
-        }
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            PanelTrafficSignalView(model: model)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Agent Signal Bar")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(model.displayName(for: viewState.lightSnapshot.aggregate))
-                    .font(.title2.weight(.semibold))
-                    .lineLimit(1)
-                    .allowsTightening(true)
-                    .minimumScaleFactor(0.80)
-                Text(model.humanAction(for: viewState.lightSnapshot.aggregate))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .allowsTightening(true)
-                    .minimumScaleFactor(0.80)
-            }
-
+        HStack(spacing: 8) {
+            Circle().fill(statusColor)
+                .frame(width: 7, height: 7)
+            Text("Agent Signal Bar").fontWeight(.semibold)
             Spacer()
+            Text(model.displayName(for: viewState.lightSnapshot.aggregate))
+                .foregroundStyle(.secondary).lineLimit(1)
+        }.font(.caption)
+    }
+
+    private var statusColor: Color {
+        switch viewState.lightSnapshot.aggregate.displayState {
+        case .ready, .active, .completed: return .green
+        case .needsReview, .stale, .paused: return .yellow
+        case .permission, .blocked: return .red
         }
     }
 
@@ -140,37 +140,6 @@ struct MenuBarPanelView: View {
                         EventRowView(model: model, event: event)
                     }
                 }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var codexResetCreditsSummary: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            if let presentation = model.codexResetCreditsPresentation(now: context.date) {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(presentation.title)
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                        Spacer(minLength: 8)
-                        Text(presentation.availableText)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-
-                    Label(presentation.expirySummaryText, systemImage: "clock")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(9)
-                .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .help(presentation.helpText)
-                .accessibilityElement(children: .combine)
             }
         }
     }

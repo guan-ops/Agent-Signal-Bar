@@ -31,6 +31,10 @@ public final class SignalStateStore: @unchecked Sendable {
     public let eventLimit: Int
     private static let duplicateEventWindow: TimeInterval = 4
     private static let transientAlertHoldWindow: TimeInterval = 5
+    // fcntl record locks are process-owned, not thread-owned. Serialize all
+    // instances before opening the lock file: closing another descriptor for
+    // that file can also release this process's record lock.
+    private static let processLock = NSLock()
 
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
@@ -645,6 +649,8 @@ private extension SignalStateStore {
     }
 
     func withStateLock<T>(_ body: () throws -> T) throws -> T {
+        Self.processLock.lock()
+        defer { Self.processLock.unlock() }
         try prepareStateDirectory()
         let directory = stateFileURL.deletingLastPathComponent()
         let lockURL = directory.appendingPathComponent("state.lock")

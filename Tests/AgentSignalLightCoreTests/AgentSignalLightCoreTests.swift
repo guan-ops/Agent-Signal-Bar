@@ -8157,6 +8157,48 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testConfirmedUsageDetailsAppearWhileLiveTotalsStillNeedReconciliation() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let suite = "usage-details-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date()
+        let details = CodexUsageDetails(sessions: [.init(id: "history", projectPath: "/Fixture",
+            lastActivity: now, inputTokens: 50, cachedTokens: 20, outputTokens: 0,
+            totalTokens: 50, costUSD: nil, hasUnpricedUsage: true, models: ["fixture"])], updatedAt: now)
+        let scanner = ControlledCodexTokenActivityScanner(cachedDays: { _ in nil },
+            scannedResultsByCall: { _, index in
+                if index > 1 { return .init(days: [], watermarks: [], isComplete: false) }
+                return .init(days: [.init(day: Calendar.current.startOfDay(for: now), totalTokens: 50)],
+                             watermarks: [], details: details)
+            })
+        defer { scanner.finishScan() }
+        let retrying = expectation(description: "live usage still requires reconciliation")
+        let deferred = expectation(description: "failed retry preserves confirmed detail")
+        let model = MenuBarStatusModel(store: fixture.store, userDefaults: defaults, startsMonitoring: false,
+            codexAccountManager: EmptyCodexAccountManager(),
+            codexUsageSnapshotStore: CodexAccountUsageSnapshotStore(fileURL: fixture.directory.appendingPathComponent("usage.json")),
+            codexTokenActivityScanner: scanner,
+            tokenActivityScanObserver: { disposition in
+                if disposition == .retryingAfterUnabsorbedUsage { retrying.fulfill() }
+                if disposition == .deferredWithRetryPending { deferred.fulfill() }
+            }, nowProvider: { now })
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+        model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 100), sessionID: "live", updatedAt: now)
+        model.refreshTokenActivityIfNeeded(force: true)
+        scanner.finishScan()
+        await fulfillment(of: [retrying], timeout: 3)
+        XCTAssertEqual(model.tokenActivityDetails, details)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 100)
+        scanner.finishScan()
+        await fulfillment(of: [deferred], timeout: 3)
+        XCTAssertEqual(model.tokenActivityDetails, details)
+        XCTAssertEqual(model.tokenActivityTotal(for: .today, now: now), 100)
+    }
+
+    @MainActor
     func testOrdinaryTokenRefreshKeepsLiveUsageWhileCachedHistoryIsDisplayed() async throws {
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }

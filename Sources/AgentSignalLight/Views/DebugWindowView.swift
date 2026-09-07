@@ -8,10 +8,14 @@ struct DebugWindowView: View {
     @ObservedObject var model: MenuBarStatusModel
     @ObservedObject var updater: SparkleUpdaterService
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var selectedSettingsTab: SettingsTab = .activity
     @State private var expandedSettingsDropdown: SettingsDropdownID?
     @State private var hoveredTokenActivityDayID: TimeInterval?
     @State private var selectedUsagePlatform: UsagePlatform = .codex
+    @StateObject private var claudeSupport: ClaudeSupportModel
+    @ObservedObject private var usageNavigation: UsageMenuNavigation
     @State private var selectedDebugProvider: DebugProvider = .codex
     @State private var selectedDebugFetchProvider: DebugProvider = .codex
     @State private var debugProbeLogText: String = ""
@@ -22,34 +26,60 @@ struct DebugWindowView: View {
     @State private var isShowingDiagnosticsExportConfirmation = false
     private let activityRecentEventLimit = 50
 
-    var body: some View {
-        ZStack {
-            settingsWindowBackground
-                .ignoresSafeArea()
+    init(model: MenuBarStatusModel, updater: SparkleUpdaterService,
+         claudeSupport: ClaudeSupportModel? = nil, usageNavigation: UsageMenuNavigation? = nil) {
+        self.model = model
+        self.updater = updater
+        _claudeSupport = StateObject(wrappedValue: claudeSupport ?? ClaudeSupportModel())
+        self.usageNavigation = usageNavigation ?? UsageMenuNavigation()
+    }
 
-            VStack(spacing: 0) {
-                header
-                    .padding(.horizontal, 18)
-                    .padding(.top, 12)
-                    .padding(.bottom, 10)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .layoutPriority(2)
-                    .overlay {
-                        SettingsWindowDragRegionView()
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+                .padding(.horizontal, 18)
+                .padding(.top, 12)
+                .padding(.bottom, 10)
+                .fixedSize(horizontal: false, vertical: true)
+                .background { settingsPaneBackground(isSidebar: false).ignoresSafeArea() }
+                .overlay { SettingsWindowDragRegionView() }
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(Color(nsColor: .separatorColor).opacity(0.7))
+                        .frame(height: 1 / displayScale)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+
+            HStack(spacing: 0) {
+                settingsSidebar
+                    .padding(.top, 8)
+                    .frame(width: SettingsWindowMetrics.sidebarWidth)
+                    .background {
+                        settingsPaneBackground(isSidebar: true)
+                            .ignoresSafeArea()
+                    }
+                    .overlay(alignment: .trailing) {
+                        Rectangle()
+                            .fill(Color(nsColor: .separatorColor).opacity(0.7))
+                            .frame(width: 1 / displayScale)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
                     }
 
-                Divider()
-
-                settingsMenu
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 6)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .layoutPriority(2)
-
-                Divider()
-
                 settingsContentArea
+                    .id(selectedSettingsTab)
+                    .background {
+                        settingsPaneBackground(isSidebar: false)
+                            .ignoresSafeArea()
+                    }
             }
+        }
+        .onReceive(usageNavigation.$request) { request in
+            guard let request else { return }
+            selectedSettingsTab = .usage
+            selectedUsagePlatform = request.provider == .claude ? .claude : .codex
+            closeSettingsDropdown()
         }
         .frame(width: SettingsWindowMetrics.width, height: SettingsWindowMetrics.height)
         .preferredColorScheme(model.appTheme.colorScheme)
@@ -75,50 +105,48 @@ struct DebugWindowView: View {
         }
     }
 
-    private var settingsMenu: some View {
-        HStack(spacing: 4) {
-            ForEach(visibleSettingsTabs) { tab in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.14)) {
-                        closeSettingsDropdown()
-                        selectedSettingsTab = tab
-                    }
-                } label: {
-                    VStack(spacing: 2) {
-                        Image(systemName: tab.systemImage)
-                            .font(settingsTabIconFont)
-                            .frame(width: 16, height: 16)
-                        Text(menuTitle(for: tab))
-                            .font(settingsTabTitleFont)
-                            .lineLimit(1)
-                            .allowsTightening(true)
-                            .minimumScaleFactor(0.85)
-                            .frame(height: 12)
-                    }
-                    .foregroundStyle(selectedSettingsTab == tab ? Color.accentColor : Color.secondary)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 36)
-                    .contentShape(Rectangle())
-                    .background {
-                        if selectedSettingsTab == tab {
-                            glassSelectedMenuItemBackground(cornerRadius: 6)
-                        }
-                    }
+    private var settingsSidebar: some View {
+        VStack(spacing: 0) {
+            List(selection: $selectedSettingsTab) {
+                ForEach(visibleSettingsTabs.filter { $0 != .about }) { tab in
+                    settingsSidebarRow(tab)
                 }
-                .buttonStyle(.plain)
-                .help(menuTitle(for: tab))
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+
+            VStack(spacing: 0) {
+                List(selection: $selectedSettingsTab) {
+                    settingsSidebarRow(.about)
+                }
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
+                .scrollDisabled(true)
+                .frame(height: 48)
+
             }
         }
-        .padding(3)
-        .frame(height: 43)
-        .background {
-            glassMenuBarBackground(cornerRadius: 10)
+        .onChange(of: selectedSettingsTab) { _, _ in
+            closeSettingsDropdown()
+            hoveredTokenActivityDayID = nil
         }
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(glassMenuBarStroke, lineWidth: 0.6)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(model.text("设置页面", "Settings pages"))
+    }
+
+    private func settingsSidebarRow(_ tab: SettingsTab) -> some View {
+        Label {
+            Text(menuTitle(for: tab))
+                .lineLimit(1)
+        } icon: {
+            Image(systemName: tab.systemImage)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 18)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .font(.system(size: 13, weight: .medium))
+        .padding(.vertical, 5)
+        .tag(tab)
+        .accessibilityIdentifier("settings.sidebar.\(tab.rawValue)")
     }
 
     private var visibleSettingsTabs: [SettingsTab] {
@@ -390,10 +418,6 @@ struct DebugWindowView: View {
 
     private var settingsTabIconFont: Font {
         .system(size: 12, weight: .medium)
-    }
-
-    private var settingsTabTitleFont: Font {
-        .system(size: usesCompactLatinLayout ? 9.5 : 10, weight: .medium)
     }
 
     private var settingsSectionTitleFont: Font {
@@ -902,13 +926,20 @@ struct DebugWindowView: View {
             .zIndex(expandedSettingsDropdown == .usagePlatform ? 1000 : 0)
 
             VStack(alignment: .leading, spacing: 8) {
-                usageAccountCard
-
-                agentQuotaSummaryCard
-
-                codexResetCreditsCard
-
-                usageTokenSummaryCard
+                if selectedUsagePlatform == .claude {
+                    ClaudeUsageSettingsView(model: model, support: claudeSupport) {
+                        closeSettingsDropdown()
+                        selectedSettingsTab = .connections
+                    }
+                } else {
+                    usageAccountCard
+                    agentQuotaSummaryCard
+                    codexResetCreditsCard
+                    usageTokenSummaryCard
+                    CodexUsageDetailsView(details: model.tokenActivityDetails,
+                                          isLoading: model.isTokenActivityLoading,
+                                          text: model.text, tokens: model.compactTokenCountText)
+                }
             }
         }
         .onAppear {
@@ -953,7 +984,7 @@ struct DebugWindowView: View {
     }
 
     private func refreshSelectedUsagePlatform() {
-        guard selectedUsagePlatform == .codex else { return }
+        guard selectedUsagePlatform == .codex else { claudeSupport.refresh(); return }
         model.refreshCodexAccounts()
         model.pollCodexRateLimitsIfNeeded(force: model.latestAgentQuota == nil)
         model.refreshTokenActivityIfNeeded()
@@ -961,7 +992,7 @@ struct DebugWindowView: View {
     }
 
     private func refreshSelectedUsagePlatform(force: Bool) {
-        guard selectedUsagePlatform == .codex else { return }
+        guard selectedUsagePlatform == .codex else { claudeSupport.refresh(force: force); return }
         model.refreshCodexAccounts()
         model.pollCodexRateLimitsIfNeeded(force: force)
         model.refreshTokenActivityIfNeeded(force: force)
@@ -2017,7 +2048,9 @@ struct DebugWindowView: View {
             .lineLimit(1)
             .truncationMode(.tail)
 
-            Text(model.text("等待刷新", "Waiting to refresh"))
+            Text(selectedUsagePlatform == .codex && model.codexUsageRequiresLogin
+                ? model.text("请先登录 Codex", "Sign in to Codex first")
+                : model.text("等待刷新", "Waiting to refresh"))
                 .font(settingsDetailFont)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -2040,11 +2073,6 @@ struct DebugWindowView: View {
 
                 Spacer(minLength: 12)
 
-                if model.isTokenActivityLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.72)
-                }
             }
 
             if selectedUsagePlatform == .codex {
@@ -2067,6 +2095,7 @@ struct DebugWindowView: View {
                     .foregroundStyle(model.tokenActivityIssue == nil ? Color.secondary : Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
                 }
+                CodexTokenScanProgressView(model: model)
                 VStack(alignment: .leading, spacing: 8) {
                     LazyVGrid(
                         columns: [
@@ -2181,14 +2210,29 @@ struct DebugWindowView: View {
         let hoveredDay = hoveredTokenActivityDay(in: days)
 
         return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .bottom, spacing: 3) {
-                ForEach(days) { day in
-                    tokenUsageBar(
-                        day: day,
-                        peakTokens: peakTokens,
-                        prominent: prominent,
-                        isSelected: hoveredTokenActivityDayID == day.id
-                    )
+            GeometryReader { geometry in
+                HStack(alignment: .bottom, spacing: 3) {
+                    ForEach(days) { day in
+                        tokenUsageBar(
+                            day: day,
+                            peakTokens: peakTokens,
+                            prominent: prominent,
+                            isSelected: hoveredTokenActivityDayID == day.id
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case let .active(location):
+                        guard !days.isEmpty, geometry.size.width > 0 else { return }
+                        let stride = (geometry.size.width + 3) / CGFloat(days.count)
+                        let index = min(max(Int(location.x / stride), 0), days.count - 1)
+                        hoveredTokenActivityDayID = days[index].id
+                    case .ended:
+                        hoveredTokenActivityDayID = nil
+                    }
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 48, maxHeight: 48, alignment: .bottom)
@@ -2210,9 +2254,15 @@ struct DebugWindowView: View {
                 }
             }
 
-            tokenUsageDetailSlot(days: days, hoveredDay: hoveredDay)
+            TokenUsageInlineDetail {
+                if let hoveredDay {
+                    tokenUsageDayDetail(for: hoveredDay)
+                } else {
+                    tokenUsageHoverHint()
+                }
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 122, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private struct TokenUsageBarSegment: Identifiable {
@@ -2277,14 +2327,7 @@ struct DebugWindowView: View {
         }
         .frame(maxWidth: .infinity, minHeight: 48, maxHeight: 48, alignment: .bottom)
         .contentShape(Rectangle())
-            .onHover { isHovering in
-                if isHovering {
-                    hoveredTokenActivityDayID = day.id
-                } else if hoveredTokenActivityDayID == day.id {
-                    hoveredTokenActivityDayID = nil
-                }
-            }
-            .help(tokenUsageHelpText(for: day))
+        .accessibilityLabel(tokenUsageHelpText(for: day))
     }
 
     private func tokenUsageBarSlices(
@@ -2488,34 +2531,12 @@ struct DebugWindowView: View {
         .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
     }
 
-    private func tokenUsageDetailSlot(
-        days: [CodexTokenActivityDay],
-        hoveredDay: CodexTokenActivityDay?
-    ) -> some View {
-        ZStack(alignment: .topLeading) {
-            tokenUsageHoverHint()
-                .opacity(hoveredDay == nil ? 1 : 0)
-                .accessibilityHidden(hoveredDay != nil)
-
-            ForEach(days) { day in
-                let isVisible = hoveredDay?.id == day.id
-
-                tokenUsageDayDetail(for: day)
-                    .opacity(isVisible ? 1 : 0)
-                    .accessibilityHidden(!isVisible)
-            }
-        }
-        // Keep the ScrollView content size stable while the pointer moves between bars.
-        // Every day participates in layout, while only the hovered day is visible.
-        .allowsHitTesting(false)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-
     private func tokenUsageHoverHint() -> some View {
         Text(model.text("悬停在柱形图上查看详情", "Hover over a bar to view details"))
             .font(settingsDetailFont)
             .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .allowsHitTesting(false)
     }
 
     private func tokenUsageModelDetailRow(
@@ -2898,7 +2919,7 @@ struct DebugWindowView: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
-            settingRow(model.text("状态栏菜单", "Status bar menu")) {
+            settingRow(model.text("菜单栏展示方式", "Menu bar presentation")) {
                 compactSegmentedControl(
                     options: StatusMenuMode.allCases,
                     selection: statusMenuModeBinding
@@ -3130,7 +3151,7 @@ struct DebugWindowView: View {
             settingRow(model.text("显示调试设置", "Show debug settings")) {
                 settingsSwitch(debugSettingsVisibleBinding)
                     .help(model.text(
-                        "打开后会在顶部菜单中显示调试页面。",
+                        "打开后会在侧边栏中显示调试页面。",
                         "Shows a Debug page in the top settings menu."
                     ))
             }
@@ -4200,107 +4221,68 @@ struct DebugWindowView: View {
             .fill(model.isSettingsGlassEnabled ? glassControlTint : solidControlFill)
     }
 
+    @ViewBuilder
     private func glassDropdownBackground(cornerRadius: CGFloat) -> some View {
-        ZStack {
-            if model.isSettingsGlassEnabled {
+        if model.isSettingsGlassEnabled && !reduceTransparency {
+            if #available(macOS 26.0, *) {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(glassDropdownTint)
+                    .fill(.clear)
+                    .glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
             } else {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(solidDropdownFill)
+                    .fill(.regularMaterial)
             }
-        }
-    }
-
-    private func glassMenuBarBackground(cornerRadius: CGFloat) -> some View {
-        ZStack {
+        } else {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(settingsPanelFill)
+                .fill(solidDropdownFill)
         }
     }
 
-    private func glassSelectedMenuItemBackground(cornerRadius: CGFloat) -> some View {
-        ZStack {
-            if model.isSettingsGlassEnabled {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.ultraThinMaterial)
-            } else {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color.clear)
+    @ViewBuilder
+    private func settingsPaneBackground(isSidebar: Bool) -> some View {
+        if !isSidebar {
+            // CodexBar 0.56.6 links against SDK 14; SDK 26 renders the same material
+            // darker. Preserve its native material and compensate only the page tone.
+            SettingsGlassBackdropView(material: .windowBackground)
+            .overlay {
+                if #available(macOS 26.0, *) {
+                    if colorScheme == .dark {
+                        Color.white.opacity(0.04)
+                    } else {
+                        Color(nsColor: .windowBackgroundColor).opacity(0.35)
+                    }
+                }
             }
-
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .stroke(selectedMenuItemStroke, lineWidth: 0.7)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        } else if isSidebar && model.isSettingsGlassEnabled && !reduceTransparency {
+            SettingsGlassBackdropView(
+                material: .sidebar
+            )
+            .overlay {
+                // The Standard UI option is persisted as `reduced`.
+                // Both strengths keep glass in the sidebar and use a solid header and page.
+                if model.settingsGlassEffect == .reduced {
+                    solidSettingsPaneBackground(isSidebar: isSidebar)
+                        .opacity(0.35)
+                }
+            }
+        } else {
+            solidSettingsPaneBackground(isSidebar: isSidebar)
         }
     }
 
-    private var settingsWindowBackground: some View {
-        ZStack {
-            if model.isSettingsGlassEnabled {
-                SettingsGlassBackdropView(effect: model.settingsGlassEffect, colorScheme: colorScheme)
-                Rectangle()
-                    .fill(glassWindowTint)
-            } else {
-                Color(nsColor: NSColor.windowBackgroundColor)
+    private func solidSettingsPaneBackground(isSidebar: Bool) -> some View {
+        Color(nsColor: .windowBackgroundColor)
+            .overlay {
+                if isSidebar {
+                    Color.white.opacity(colorScheme == .dark ? 0.12 : 0.75)
+                }
             }
-        }
     }
 
     private var glassControlTint: Color {
-        switch (colorScheme, model.settingsGlassEffect) {
-        case (.dark, .reduced):
-            return Color.white.opacity(0.10)
-        case (.dark, .standard):
-            return Color.white.opacity(0.075)
-        case (_, .reduced):
-            return Color.white.opacity(0.34)
-        case (_, .standard):
-            return Color.white.opacity(0.24)
-        }
-    }
-
-    private var glassDropdownTint: Color {
-        switch (colorScheme, model.settingsGlassEffect) {
-        case (.dark, .reduced):
-            return Color.white.opacity(0.09)
-        case (.dark, .standard):
-            return Color.white.opacity(0.065)
-        case (_, .reduced):
-            return Color.white.opacity(0.26)
-        case (_, .standard):
-            return Color.white.opacity(0.18)
-        }
-    }
-
-    private var glassWindowTint: Color {
-        switch (colorScheme, model.settingsGlassEffect) {
-        case (.dark, .reduced):
-            return Color.black.opacity(0.24)
-        case (.dark, .standard):
-            return Color.black.opacity(0.14)
-        case (_, .reduced):
-            return Color.white.opacity(0.28)
-        case (_, .standard):
-            return Color.white.opacity(0.14)
-        }
-    }
-
-    private var glassMenuBarStroke: Color {
-        model.isSettingsGlassEnabled
-            ? Color.white.opacity(colorScheme == .dark ? 0.12 : 0.42)
-            : solidControlStroke
-    }
-
-    private var settingsPanelFill: some ShapeStyle {
-        .tertiary.opacity(0.08)
-    }
-
-    private var selectedMenuItemStroke: Color {
-        model.isSettingsGlassEnabled
-            ? Color.white.opacity(colorScheme == .dark ? 0.18 : 0.46)
-            : solidControlStroke
+        Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05)
     }
 
     private var solidControlFill: Color {
@@ -5061,8 +5043,7 @@ struct DebugWindowView: View {
 }
 
 private struct SettingsGlassBackdropView: NSViewRepresentable {
-    let effect: SettingsGlassEffect
-    let colorScheme: ColorScheme
+    let material: NSVisualEffectView.Material
 
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
@@ -5077,19 +5058,10 @@ private struct SettingsGlassBackdropView: NSViewRepresentable {
     private func configure(_ view: NSVisualEffectView) {
         view.material = material
         view.blendingMode = .behindWindow
-        view.state = .active
-        view.isEmphasized = true
-        view.appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
+        view.state = .followsWindowActiveState
     }
 
-    private var material: NSVisualEffectView.Material {
-        switch effect {
-        case .reduced:
-            return .sidebar
-        case .standard:
-            return .popover
-        }
-    }
+
 }
 
 private struct SettingsWindowDragRegionView: NSViewRepresentable {

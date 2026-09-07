@@ -465,9 +465,13 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var lastError: String?
     @Published private(set) var floatingSignalSoundTestTick = 0
     @Published private(set) var floatingSignalWaitingSoundTestTick = 0
+    @Published private(set) var tokenActivityDetails: CodexUsageDetails?
     @Published private(set) var tokenActivityDays: [CodexTokenActivityDay] = []
     @Published private(set) var tokenUsageReconciliationRevision = 0
     @Published private(set) var isTokenActivityLoading = false
+    @Published private(set) var tokenActivityScanProgress: TokenScanProgress?
+    @Published private(set) var tokenActivityCompletedAt: Date?
+    private var completedTokenActivityRevision: Int?
     @Published private(set) var tokenActivityIssue: String?
     @Published private(set) var tokenActivityIsPartial = false
     @Published private(set) var hasCompletedTokenActivityScan = false
@@ -574,6 +578,9 @@ final class MenuBarStatusModel: ObservableObject {
     private static let codexRateLimitRefreshInterval: TimeInterval = 60
     private static let codexProviderDetailsRefreshInterval: TimeInterval = 60
     private static let tokenActivityRefreshInterval: TimeInterval = 60
+    // Continue periodic discovery for CLI-only/new files, without a minute-by-minute
+    // scan of unchanged history. Live token changes retain the normal 60-second interval.
+    private static let tokenActivityIdleRefreshInterval: TimeInterval = 300
     private static let tokenActivityRetryBaseInterval: TimeInterval = 5
     private static let unknownLiveTokenSessionKey = "__unknown__"
     private static let cachedLatestAgentQuotaKey = "cachedLatestAgentQuota"
@@ -1047,7 +1054,9 @@ final class MenuBarStatusModel: ObservableObject {
             let state = try codexAccountManager.loadMetadataState()
             if applyCodexAccountState(state) {
                 prepareCodexUsageAfterAccountChange()
-            } else if state.currentAccount == nil, state.savedAccounts.isEmpty {
+            } else if state.currentAccount == nil,
+                      latestAgentQuota != nil || latestCodexCredits != nil || latestCodexResetCredits != nil,
+                      codexUsageRequiresLogin {
                 // Startup initially has no account identity, so applying the
                 // empty discovered state is not an identity transition. Any
                 // quota restored before discovery is nevertheless account-
@@ -3265,7 +3274,7 @@ final class MenuBarStatusModel: ObservableObject {
         if !force, let lastTokenActivityScanAt {
             let refreshInterval = wasRetryPending
                 ? tokenActivityPendingRetryInterval
-                : Self.tokenActivityRefreshInterval
+                : (completedTokenActivityRevision == liveTokenUsageRevision && tokenActivityCompletedAt != nil ? Self.tokenActivityIdleRefreshInterval : Self.tokenActivityRefreshInterval)
             if now.timeIntervalSince(lastTokenActivityScanAt) < refreshInterval {
                 return
             }
@@ -3297,6 +3306,7 @@ final class MenuBarStatusModel: ObservableObject {
     ) {
         isTokenActivityScanInFlight = true
         isTokenActivityLoading = true
+        tokenActivityScanProgress = .init(phase: .discovering)
         tokenActivityIssue = nil
         lastTokenActivityScanAt = now
         tokenActivityScanGeneration += 1
@@ -3339,7 +3349,14 @@ final class MenuBarStatusModel: ObservableObject {
 
             // Cached days are only a fast UI bootstrap. Every admitted refresh must
             // continue into the incremental scan so today's appended events are found.
-            let scanResult = scanner.scanDailyActivityResult(now: now, days: 30, progress: nil)
+            let delivery = TokenScanProgressDelivery { [weak self] value in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.tokenActivityScanGeneration == scanGeneration,
+                          self.isTokenActivityScanInFlight else { return }
+                    self.tokenActivityScanProgress = value
+                }
+            }
+            let scanResult = scanner.scanDailyActivityResult(now: now, days: 30, scanProgress: { delivery.send($0) })
 
             DispatchQueue.main.async { [weak self] in
                 Task { @MainActor in
@@ -3371,6 +3388,13 @@ final class MenuBarStatusModel: ObservableObject {
                             allowsImmediateRetry: allowsImmediateRetry
                         )
                         return
+                    }
+
+                    // Details describe a committed historical snapshot. They do
+                    // not absorb live counters and can be shown while totals reconcile.
+                    if Calendar.current.isDate(now, inSameDayAs: self.nowProvider()),
+                       let details = scanResult.details {
+                        self.tokenActivityDetails = details
                     }
 
                     // Timestamp-only observations cannot prove which numeric
@@ -3409,6 +3433,12 @@ final class MenuBarStatusModel: ObservableObject {
                     )
                     self.tokenActivityDays = scanResult.days
                     self.hasCompletedTokenActivityScan = true
+                    self.tokenActivityCompletedAt = self.nowProvider()
+                    self.lastTokenActivityScanAt = self.tokenActivityCompletedAt
+                    self.completedTokenActivityRevision = self.liveTokenUsageRevision
+                    self.tokenActivityScanProgress = .init(phase: .complete,
+                        completedFiles: self.tokenActivityScanProgress?.totalFiles ?? 0,
+                        totalFiles: self.tokenActivityScanProgress?.totalFiles ?? 0)
                     self.tokenActivityIsPartial = scanResult.warningDescription != nil
                     self.tokenActivityExcludedSessionCount = self.tokenActivityIsPartial
                         ? scanResult.excludedSessionIDs.count : nil
@@ -4129,12 +4159,23 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
+    var codexUsageRequiresLogin: Bool {
+        guard codexCurrentAccount == nil else { return false }
+        return codexUsageDataSource.resolvedSelectableValue == .oauthAPI
+            || codexOpenAICookieMode == .off
+    }
+
     func pollCodexRateLimitsIfNeeded(force: Bool = false) {
         guard isCodexDesktopMonitoringEnabled,
               !isMonitoringPaused
         else {
             return
         }
+
+        // Account discovery and quota requests must agree about identity.
+        // Do not let the fetcher discover unrelated credentials when the model
+        // has no account. Explicit Cookie routing remains available.
+        guard !codexUsageRequiresLogin else { return }
 
         let now = Date()
         if !force,
@@ -5223,7 +5264,7 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private var shouldApplyLocalCodexQuotaUpdates: Bool {
-        codexUsageDataSource == .cliRPCPTY
+        codexUsageDataSource == .cliRPCPTY && !codexUsageRequiresLogin
     }
 
     private func clearLatestAgentQuotaCache() {
@@ -5250,17 +5291,24 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private func clearTokenActivityCache() {
+        tokenActivityDetails = nil
         tokenActivityDays = []
         hasCompletedTokenActivityScan = false
         tokenActivityIssue = nil
         tokenActivityIsPartial = false
         tokenActivityExcludedSessionCount = nil
         lastTokenActivityScanAt = nil
+        tokenActivityScanProgress = nil
+        tokenActivityCompletedAt = nil
+        completedTokenActivityRevision = nil
         isTokenActivityLoading = false
     }
 
     private func invalidateTokenActivityScan() {
         tokenActivityScanGeneration &+= 1
+        tokenActivityScanProgress = nil
+        tokenActivityCompletedAt = nil
+        completedTokenActivityRevision = nil
         isTokenActivityScanInFlight = false
         isTokenActivityLoading = false
         tokenActivityScanRetryPending = false

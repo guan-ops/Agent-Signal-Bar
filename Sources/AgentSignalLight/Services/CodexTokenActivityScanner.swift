@@ -1,5 +1,6 @@
 import AgentSignalLightCore
 import Foundation
+import OSLog
 #if canImport(SQLite3)
 import SQLite3
 #endif
@@ -78,6 +79,7 @@ struct CodexTokenActivityScanWatermark: Equatable, Sendable {
 
 struct CodexTokenActivityScanResult: Equatable, Sendable {
     let days: [CodexTokenActivityDay]
+    let details: CodexUsageDetails?
     let watermarks: [CodexTokenActivityScanWatermark]
     /// A complete transaction can still exclude explicitly ambiguous sources.
     /// Those sources never contribute days or absorbing watermarks.
@@ -96,9 +98,11 @@ struct CodexTokenActivityScanResult: Equatable, Sendable {
         isSourceChanging: Bool = false,
         warningDescription: String? = nil,
         excludedSourceIDs: Set<String> = [],
-        excludedSessionIDs: Set<String> = []
+        excludedSessionIDs: Set<String> = [],
+        details: CodexUsageDetails? = nil
     ) {
         self.days = days
+        self.details = details
         self.watermarks = watermarks
         self.isComplete = isComplete
         self.failureDescription = failureDescription
@@ -110,6 +114,8 @@ struct CodexTokenActivityScanResult: Equatable, Sendable {
 
     static func failure(days: [CodexTokenActivityDay], error: Error) -> Self {
         let nsError = error as NSError
+        Logger(subsystem: "com.agentsignallight.AgentSignalLight", category: "TokenScan")
+            .error("History scan failed: domain=\(nsError.domain, privacy: .public) code=\(nsError.code)")
         let changing = (nsError.domain == "AgentSignalCostUsage.CodexConsistency" && nsError.code == 3)
             || (error as? CostUsageScanner.CodexInventoryError).map {
                 if case .changedDuringEnumeration = $0 { return true }
@@ -124,6 +130,9 @@ struct CodexTokenActivityScanResult: Equatable, Sendable {
 }
 
 protocol CodexTokenActivityScanning: Sendable {
+    func scanDailyActivityResult(now: Date, days: Int,
+        scanProgress: @escaping @Sendable (TokenScanProgress) -> Void) -> CodexTokenActivityScanResult
+
     func cachedDailyActivity(now: Date, days: Int) -> [CodexTokenActivityDay]?
 
     func clearCache()
@@ -144,6 +153,14 @@ protocol CodexTokenActivityScanning: Sendable {
 }
 
 extension CodexTokenActivityScanning {
+    func scanDailyActivityResult(now: Date, days: Int,
+        scanProgress: @escaping @Sendable (TokenScanProgress) -> Void) -> CodexTokenActivityScanResult {
+        scanProgress(.init(phase: .discovering))
+        let result = scanDailyActivityResult(now: now, days: days, progress: nil)
+        scanProgress(.init(phase: .validating))
+        return result
+    }
+
     func clearCache() {}
 
     func scanDailyActivityResult(
@@ -230,14 +247,29 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
         days: Int,
         progress: (([CodexTokenActivityDay]) -> Void)? = nil
     ) -> CodexTokenActivityScanResult {
+        performDailyActivityScan(now: now, days: days, progress: progress, scanProgress: nil)
+    }
+
+    func scanDailyActivityResult(now: Date, days: Int,
+        scanProgress: @escaping @Sendable (TokenScanProgress) -> Void) -> CodexTokenActivityScanResult {
+        performDailyActivityScan(now: now, days: days, progress: nil, scanProgress: scanProgress)
+    }
+
+    private func performDailyActivityScan(now: Date, days: Int,
+        progress: (([CodexTokenActivityDay]) -> Void)?,
+        scanProgress: (@Sendable (TokenScanProgress) -> Void)?) -> CodexTokenActivityScanResult {
         guard usesAgentSignalCostUsageScanner else {
             let activity = scanDailyActivity(now: now, days: days, progress: progress)
             return CodexTokenActivityScanResult(days: activity, watermarks: [])
         }
         do {
-            let report = try agentSignalCostUsageDailyActivityResult(now: now, days: days)
+            let report = try agentSignalCostUsageDailyActivityResult(now: now, days: days, scanProgress: scanProgress)
             let activity = codexTokenActivityDays(from: report)
-            let watermarks = try agentSignalCostUsageScanWatermarks(through: now)
+            let cache = try CostUsageCacheIO.loadRequired(provider: .codex, cacheRoot: costUsageCacheRoot)
+            let watermarks = try agentSignalCostUsageScanWatermarks(through: now, committedCache: cache)
+            let details = CodexUsageDetails.build(cache: cache, now: now,
+                modelsDevCatalog: CostUsagePricing.modelsDevCatalog(cacheRoot: costUsageCacheRoot)
+                    ?? ModelsDevCatalog(providers: [:]))
             progress?(activity)
             return CodexTokenActivityScanResult(
                 days: activity,
@@ -245,7 +277,8 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
                 warningDescription: report.warnings.isEmpty ? nil
                     : "Excluded \(report.warnings.count) ambiguous session group(s).",
                 excludedSourceIDs: Set(report.warnings.flatMap(\.sourcePaths).map(Self.canonicalTokenSourceID)),
-                excludedSessionIDs: Set(report.warnings.map(\.sessionID))
+                excludedSessionIDs: Set(report.warnings.map(\.sessionID)),
+                details: details
             )
         } catch {
             // Preserve the last known-good aggregate. The model will retry with
@@ -543,10 +576,12 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
 
     private func agentSignalCostUsageDailyActivityResult(
         now: Date,
-        days: Int
+        days: Int,
+        scanProgress: (@Sendable (TokenScanProgress) -> Void)? = nil
     ) throws -> CostUsageDailyReport {
         let range = agentSignalCostUsageDateRange(now: now, days: days)
-        let options = agentSignalCostUsageOptions(forceRefresh: true)
+        var options = agentSignalCostUsageOptions(forceRefresh: true)
+        options.codexScanProgress = scanProgress
         let codexReport = try CostUsageScanner.loadDailyReportCancellable(
             provider: .codex,
             since: range.since,
@@ -611,13 +646,14 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
     }
 
     func agentSignalCostUsageScanWatermarks(
-        through: Date
+        through: Date,
+        committedCache: CostUsageCache? = nil
     ) throws -> [CodexTokenActivityScanWatermark] {
         let options = agentSignalCostUsageOptions(forceRefresh: false)
         // A complete scan promises both an aggregate and the exact frontier
         // that produced it. Treat a failed cache read as an incomplete scan;
         // returning an empty/old frontier here can double-count the next poll.
-        let cache = try CostUsageCacheIO.loadRequired(
+        let cache = try committedCache ?? CostUsageCacheIO.loadRequired(
             provider: .codex,
             cacheRoot: options.cacheRoot
         )
