@@ -276,6 +276,31 @@ final class TokenActivityPresentationTests: XCTestCase {
         XCTAssertEqual(scanner.scanCount, 1)
     }
 
+    func testLoggedOutQuotaRefreshRemainsUnavailableWithoutStartingRequests() throws {
+        let fixture = try makeFixture(scanner: PresentationTokenScanner(result: .init(
+            days: [], watermarks: [], isComplete: true))) { _ in }
+        defer { fixture.cleanUp() }
+        fixture.model.codexOpenAICookieMode = .off
+        for _ in 0..<5 {
+            fixture.model.refreshCodexAccounts()
+            fixture.model.pollCodexRateLimitsIfNeeded(force: true)
+            XCTAssertTrue(fixture.model.codexUsageRequiresLogin)
+            XCTAssertNil(fixture.model.latestAgentQuota)
+            XCTAssertFalse(fixture.model.isCodexRateLimitFetchInFlight)
+        }
+    }
+
+    func testExplicitCookieRouteRemainsAvailableWithoutCLIAccount() throws {
+        let fixture = try makeFixture(scanner: PresentationTokenScanner(result: .init(
+            days: [], watermarks: [], isComplete: true))) { _ in }
+        defer { fixture.cleanUp() }
+        fixture.model.codexUsageDataSource = .automatic
+        fixture.model.codexOpenAICookieMode = .manual
+        XCTAssertFalse(fixture.model.codexUsageRequiresLogin)
+        fixture.model.codexUsageDataSource = .oauthAPI
+        XCTAssertTrue(fixture.model.codexUsageRequiresLogin)
+    }
+
     private func cursor(offset: UInt64, source: String = "/fixture/session.jsonl") -> CodexTokenObservationCursor {
         CodexTokenObservationCursor(
             sourceID: source, sourceGeneration: "fixture-generation",
@@ -292,9 +317,62 @@ final class TokenActivityPresentationTests: XCTestCase {
         )
     }
 
+    func testLongSuccessfulScanCooldownStartsAtCompletionAndUnchangedHistoryWaits() async throws {
+        let applied = expectation(description: "first applied")
+        let reapplied = expectation(description: "idle discovery")
+        var appliedCount = 0
+        let clock = ProgressTestClock(now)
+        let scanner = PresentationTokenScanner(result: .init(days: [], watermarks: []), blocksFirstScan: true)
+        let fixture = try makeFixture(scanner: scanner, clock: { clock.now }) {
+            if $0 == .applied {
+                appliedCount += 1
+                if appliedCount == 1 { applied.fulfill() } else { reapplied.fulfill() }
+            }
+        }
+        defer { scanner.release(); fixture.cleanUp() }
+        fixture.model.refreshTokenActivityIfNeeded(force: true)
+        XCTAssertTrue(scanner.waitUntilStarted())
+        XCTAssertTrue(fixture.model.isTokenActivityLoading)
+        clock.advance(120)
+        scanner.release()
+        await fulfillment(of: [applied], timeout: 3)
+        XCTAssertFalse(fixture.model.isTokenActivityLoading)
+        XCTAssertEqual(fixture.model.tokenActivityScanProgress?.phase, .complete)
+        XCTAssertEqual(fixture.model.tokenActivityScanProgress?.fraction, 1)
+        XCTAssertEqual(fixture.model.tokenActivityCompletedAt, clock.now)
+        fixture.model.refreshTokenActivityIfNeeded()
+        clock.advance(299)
+        fixture.model.refreshTokenActivityIfNeeded()
+        XCTAssertEqual(scanner.scanCount, 1)
+        clock.advance(1)
+        fixture.model.refreshTokenActivityIfNeeded()
+        await fulfillment(of: [reapplied], timeout: 3)
+        XCTAssertEqual(scanner.scanCount, 2)
+    }
+
+    func testNewLiveUsageUsesNormalIntervalAfterCompletion() async throws {
+        let applied = expectation(description: "first applied")
+        let clock = ProgressTestClock(now)
+        let scanner = PresentationTokenScanner(result: .init(days: [], watermarks: []))
+        let fixture = try makeFixture(scanner: scanner, clock: { clock.now }) { if $0 == .applied { applied.fulfill() } }
+        defer { fixture.cleanUp() }
+        fixture.model.refreshTokenActivityIfNeeded(force: true)
+        await fulfillment(of: [applied], timeout: 3)
+        fixture.model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: 10), sessionID: "new", updatedAt: clock.now)
+        clock.advance(59)
+        fixture.model.refreshTokenActivityIfNeeded()
+        XCTAssertEqual(scanner.scanCount, 1)
+        clock.advance(1)
+        fixture.model.refreshTokenActivityIfNeeded()
+        XCTAssertTrue(fixture.model.isTokenActivityLoading)
+        for _ in 0..<200 where fixture.model.isTokenActivityLoading { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(fixture.model.isTokenActivityLoading)
+    }
+
     private func makeFixture(
         scanner: PresentationTokenScanner,
         history: [CodexTokenActivityDay] = [],
+        clock: (@Sendable () -> Date)? = nil,
         observer: @escaping (TokenActivityScanDisposition) -> Void
     ) throws -> Fixture {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("token-presentation-\(UUID().uuidString)")
@@ -312,7 +390,7 @@ final class TokenActivityPresentationTests: XCTestCase {
             userDefaults: defaults, startsMonitoring: false,
             codexAccountManager: PresentationEmptyAccountManager(), codexUsageSnapshotStore: usageStore,
             codexTokenActivityScanner: scanner, tokenActivityScanObserver: observer,
-            performsAccountSwitchBackgroundRefreshes: false, nowProvider: { fixedNow }
+            performsAccountSwitchBackgroundRefreshes: false, nowProvider: { clock?() ?? fixedNow }
         )
         model.isCodexDesktopMonitoringEnabled = true
         model.isMonitoringPaused = false
@@ -369,4 +447,12 @@ private final class PresentationEmptyAccountManager: CodexAccountManaging, @unch
     func authenticateManagedAccount(timeout: TimeInterval) async throws -> CodexAccountProfile { throw CodexAccountManagerError.accountNotFound }
     func removeAccount(id: UUID) throws {}
     func refreshSavedCurrentAccountIfPossible() throws -> CodexAccountProfile? { nil }
+}
+
+private final class ProgressTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+    init(_ value: Date) { self.value = value }
+    var now: Date { lock.withLock { value } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { value = value.addingTimeInterval(seconds) } }
 }

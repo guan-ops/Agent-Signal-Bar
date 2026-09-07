@@ -8,6 +8,8 @@ import SwiftUI
 final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NSWindowDelegate {
     private let model: MenuBarStatusModel
     private let updater: SparkleUpdaterService
+    private let claudeSupport = ClaudeSupportModel()
+    private let usageNavigation = UsageMenuNavigation()
     private var statusItem: NSStatusItem?
     private lazy var nativeStatusMenu: NSMenu = {
         let menu = NSMenu()
@@ -359,8 +361,12 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         model.reload()
-        model.pollCodexRateLimitsIfNeeded()
         rebuildNativeStatusMenu(menu)
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        // Release the hosting view so its polling task stops while the menu is closed.
+        menu.removeAllItems()
     }
 
     private func rebuildNativeStatusMenu(_ menu: NSMenu) {
@@ -371,23 +377,14 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         menu.addItem(infoMenuItem(title: "Agent Signal Bar", image: nativeStatusDotImage(for: model.statusBarLightSnapshot)))
         menu.addItem(infoMenuItem(title: "\(model.displayName(for: snapshot.aggregate)) · \(model.humanAction(for: snapshot.aggregate))"))
 
-        if let updatedAt = snapshot.updatedAt {
-            menu.addItem(infoMenuItem(title: "\(model.text("实时", "Live")) \(updatedAt.formatted(date: .omitted, time: .shortened))"))
-        } else {
-            menu.addItem(infoMenuItem(title: model.text("等待状态", "Waiting for status")))
-        }
-
-        let currentEvents = nativeCurrentEvents(from: activitySnapshot)
-        if !currentEvents.isEmpty {
-            menu.addItem(.separator())
-            menu.addItem(infoMenuItem(title: model.text("当前", "Current")))
-            for event in currentEvents {
-                menu.addItem(infoMenuItem(title: nativeSessionMenuTitle(event)))
-            }
-        }
-
         menu.addItem(.separator())
-        addNativeQuotaMenuItems(to: menu)
+        menu.addItem(MenuUsageSummaryView.nativeMenuItem(model: model, claude: claudeSupport,
+                                                       navigation: usageNavigation) { [weak self] provider in
+            self?.openUsageSettings(provider)
+        })
+        menu.addItem(MenuUsageSummaryView.nativeAccountMenuItem(model: model, claude: claudeSupport) { [weak self] provider in
+            self?.openUsageSettings(provider)
+        })
 
         menu.addItem(.separator())
         addOpenAgentMenuItems(to: menu, snapshot: activitySnapshot)
@@ -409,48 +406,6 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         menu.addItem(.separator())
         menu.addItem(actionMenuItem(model.text("设置", "Settings"), imageName: "gearshape", action: #selector(openSettingsFromMenu)))
         menu.addItem(actionMenuItem(model.text("退出", "Quit"), imageName: "power", action: #selector(quitFromMenu)))
-    }
-
-    private func addNativeQuotaMenuItems(to menu: NSMenu) {
-        if let quota = model.latestAgentQuota {
-            let identity = model.codexQuotaIdentityPresentation(for: quota)
-            menu.addItem(infoMenuItem(title: identity.title))
-            menu.addItem(infoMenuItem(title: identity.context))
-            if let limitID = identity.limitID {
-                menu.addItem(infoMenuItem(title: "ID · \(limitID)"))
-            }
-            for badgeWindow in model.quotaBadgeWindows(for: quota) {
-                menu.addItem(infoMenuItem(title: model.quotaTitleLine(for: badgeWindow, quota: quota)))
-            }
-        } else {
-            menu.addItem(infoMenuItem(title: model.text("Codex 配额", "Codex quota")))
-            menu.addItem(infoMenuItem(title: model.text("暂无会话数据", "No session data yet")))
-        }
-
-        if let localObservation = model.recentLocalQuotaObservation() {
-            let identity = model.codexQuotaIdentityPresentation(for: localObservation)
-            menu.addItem(infoMenuItem(
-                title: model.text("本地会话观察（未合并）", "Local session observation (not merged)")
-            ))
-            menu.addItem(infoMenuItem(title: identity.title))
-            menu.addItem(infoMenuItem(title: identity.context))
-            if let limitID = identity.limitID {
-                menu.addItem(infoMenuItem(title: "ID · \(limitID)"))
-            }
-            for badgeWindow in model.quotaBadgeWindows(for: localObservation) {
-                menu.addItem(infoMenuItem(
-                    title: model.quotaTitleLine(for: badgeWindow, quota: localObservation)
-                ))
-            }
-        }
-
-        if let resetCredits = model.codexResetCreditsPresentation() {
-            menu.addItem(infoMenuItem(title: "\(resetCredits.title) · \(resetCredits.availableText)"))
-            menu.addItem(infoMenuItem(
-                title: resetCredits.expirySummaryText,
-                image: NSImage(systemSymbolName: "clock", accessibilityDescription: resetCredits.title)
-            ))
-        }
     }
 
     private func infoMenuItem(
@@ -826,7 +781,8 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         popover.contentSize = NSSize(width: MenuBarPanelView.panelWidth, height: MenuBarPanelView.panelHeight)
         popoverOpenedAt = Date()
         popover.contentViewController = NSHostingController(
-            rootView: MenuBarPanelView(model: model) { [weak self] in
+            rootView: MenuBarPanelView(model: model, claudeSupport: claudeSupport, usageNavigation: usageNavigation,
+                                      onOpenUsage: { [weak self] provider in self?.openUsageSettings(provider) }) { [weak self] in
                 guard let self else { return }
                 guard Date().timeIntervalSince(self.popoverOpenedAt) >= self.settingsOpenClickDebounce else {
                     return
@@ -835,6 +791,9 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
                 self.showDebugWindow()
             }
         )
+        if let view = popover.contentViewController?.view {
+            popover.contentSize = view.fittingSize
+        }
         popover.contentViewController?.view.appearance = model.appTheme.nsAppearance
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         self.popover = popover
@@ -950,6 +909,13 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         return window.convertPoint(toScreen: event.locationInWindow)
     }
 
+    private func openUsageSettings(_ provider: UsageMenuNavigation.Provider) {
+        usageNavigation.openSettings(for: provider)
+        nativeStatusMenu.cancelTracking()
+        closePopover()
+        showDebugWindow()
+    }
+
     func showDebugWindow() {
         showRecoveryWindow()
     }
@@ -979,7 +945,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
         window.contentViewController = NSHostingController(
-            rootView: DebugWindowView(model: model, updater: updater)
+            rootView: DebugWindowView(model: model, updater: updater, claudeSupport: claudeSupport, usageNavigation: usageNavigation)
         )
         window.delegate = self
         window.center()
@@ -995,8 +961,10 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = false
-        window.backgroundColor = .clear
-        window.isOpaque = false
+        // Settings use a regular opaque window backing, like CodexBar. Individual
+        // sidebar visual-effect views still handle their own behind-window blending.
+        window.backgroundColor = .windowBackgroundColor
+        window.isOpaque = true
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {

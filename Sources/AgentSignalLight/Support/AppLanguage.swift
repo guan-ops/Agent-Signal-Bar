@@ -264,9 +264,9 @@ extension MenuBarStatusModel {
     func displayName(for mode: StatusMenuMode) -> String {
         switch mode {
         case .detailed:
-            return text("复杂", "Detailed")
+            return text("卡片面板", "Card Panel")
         case .simple:
-            return text("简约", "Simple")
+            return text("系统菜单", "System Menu")
         }
     }
 
@@ -1289,9 +1289,9 @@ private enum AppLocalization {
         "Light": localized(zhHant: "淺色", ja: "ライト", ko: "밝게", es: "Claro", fr: "Clair", de: "Hell", pt: "Claro"),
         "Dark": localized(zhHant: "深色", ja: "ダーク", ko: "어둡게", es: "Oscuro", fr: "Sombre", de: "Dunkel", pt: "Escuro"),
         "Status bar style": localized(zhHant: "狀態列風格", ja: "表示スタイル", ko: "상태 막대 스타일", es: "Estilo de barra", fr: "Style de barre", de: "Statusleistenstil", pt: "Estilo da barra"),
-        "Status bar menu": localized(zhHant: "狀態列選單", ja: "ステータスメニュー", ko: "상태 막대 메뉴", es: "Menu de barra", fr: "Menu de barre", de: "Statusleistenmenue", pt: "Menu da barra"),
-        "Simple": localized(zhHant: "簡約", ja: "シンプル", ko: "간단", es: "Simple", fr: "Simple", de: "Einfach", pt: "Simples"),
-        "Detailed": localized(zhHant: "複雜", ja: "詳細", ko: "상세", es: "Detallado", fr: "Detaille", de: "Detailliert", pt: "Detalhado"),
+        "Menu bar presentation": localized(zhHant: "選單列顯示方式", ja: "メニューバーの表示", ko: "메뉴 막대 표시 방식", es: "Vista de la barra de menús", fr: "Affichage de la barre des menus", de: "Menüleistendarstellung", pt: "Apresentação da barra de menus"),
+        "System Menu": localized(zhHant: "系統選單", ja: "システムメニュー", ko: "시스템 메뉴", es: "Menú del sistema", fr: "Menu système", de: "Systemmenü", pt: "Menu do sistema"),
+        "Card Panel": localized(zhHant: "卡片面板", ja: "カードパネル", ko: "카드 패널", es: "Panel de tarjetas", fr: "Panneau de cartes", de: "Kartenansicht", pt: "Painel de cartões"),
         "Direction": localized(zhHant: "方向", ja: "方向", ko: "방향", es: "Direccion", fr: "Direction", de: "Richtung", pt: "Direcao"),
         "Dot breathing": localized(zhHant: "圓點呼吸強度", ja: "ドットの呼吸", ko: "점 호흡", es: "Respiracion del punto", fr: "Respiration du point", de: "Punkt Atmung", pt: "Respiracao do ponto"),
         "Effect Customization": localized(zhHant: "燈效自訂", ja: "効果設定", ko: "등 효과 사용자화", es: "Personalizacion de efectos", fr: "Personnalisation des effets", de: "Effektanpassung", pt: "Personalizacao de efeitos"),
