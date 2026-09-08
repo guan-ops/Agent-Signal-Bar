@@ -87,14 +87,6 @@ Agent Signal Bar 把本地 AI Agent 活动转换成一套简单的红黄绿灯�
     <td align="center"><a href="docs/assets/settings-activity-zh-CN.png?v=20260908-1"><img src="docs/assets/settings-activity-zh-CN.png?v=20260908-1" alt="显示 Codex CLI 演示会话和最近事件的 Agent Signal Bar 运行页" width="100%"></a></td>
     <td align="center"><a href="docs/assets/settings-usage-zh-CN.png?v=20260908-1"><img src="docs/assets/settings-usage-zh-CN.png?v=20260908-1" alt="显示 Codex 额度、限额重置额度和模型 Token 数量、估算费用和占比的 Agent Signal Bar 用量页" width="100%"></a></td>
   </tr>
-  <tr>
-    <td align="center" width="50%"><strong>Codex 账号</strong></td>
-    <td align="center" width="50%"><strong>深色 · 标准 Liquid Glass</strong></td>
-  </tr>
-  <tr>
-    <td align="center"><a href="docs/assets/settings-account-zh-CN.png?v=20260908-1"><img src="docs/assets/settings-account-zh-CN.png?v=20260908-1" alt="演示 Codex 账号与额度" width="100%"></a></td>
-    <td align="center"><a href="docs/assets/settings-glass-zh-CN.png?v=20260908-1"><img src="docs/assets/settings-glass-zh-CN.png?v=20260908-1" alt="开启 Liquid Glass 并选择标准效果的深色设置" width="100%"></a></td>
-  </tr>
 </table>
 
 截图中的账号、活动、额度和 Token 数值均为合成演示数据，演示邮箱为 `demo@agentsignalbar.app`。用量图展开所悬停日期的 GPT-6 Astra 与 gpt-5.6 Token 数量、估算费用和占比，不包含个人账号或凭据数据。Claude 专属截图暂不展示，待真实账号验证完成后补充。

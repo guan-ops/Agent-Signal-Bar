@@ -87,14 +87,6 @@ These are captures of the v1.6.0 app UI with synthetic demo data. Screenshots us
     <td align="center"><a href="docs/assets/settings-activity-en.png?v=20260908-1"><img src="docs/assets/settings-activity-en.png?v=20260908-1" alt="Agent Signal Bar Activity page showing a demo Codex CLI session and recent events" width="100%"></a></td>
     <td align="center"><a href="docs/assets/settings-usage-en.png?v=20260908-1"><img src="docs/assets/settings-usage-en.png?v=20260908-1" alt="Agent Signal Bar Usage page showing Codex quota, reset credits, and model token counts, estimated costs, and shares" width="100%"></a></td>
   </tr>
-  <tr>
-    <td align="center" width="50%"><strong>Codex account</strong></td>
-    <td align="center" width="50%"><strong>Dark · Standard Liquid Glass</strong></td>
-  </tr>
-  <tr>
-    <td align="center"><a href="docs/assets/settings-account-en.png?v=20260908-1"><img src="docs/assets/settings-account-en.png?v=20260908-1" alt="Demo Codex account and quota" width="100%"></a></td>
-    <td align="center"><a href="docs/assets/settings-glass-en.png?v=20260908-1"><img src="docs/assets/settings-glass-en.png?v=20260908-1" alt="Dark settings with Liquid Glass enabled and Standard selected" width="100%"></a></td>
-  </tr>
 </table>
 
 All account, activity, quota, and token values shown are synthetic. The demo email is `demo@agentsignalbar.app`. The Usage capture shows the hovered day with GPT-6 Astra and gpt-5.6 token counts, estimated costs, and shares. No personal account or credential data is included. Claude-specific captures are omitted pending real-account validation.
