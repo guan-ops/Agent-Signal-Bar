@@ -68,13 +68,13 @@ The green **Code → Download ZIP** button downloads source code, not an app ins
     <td align="center" width="37%"><strong>Simple menu</strong></td>
   </tr>
   <tr>
-    <td align="center"><a href="docs/assets/floating-signal-light.png"><img src="docs/assets/floating-signal-light.png" alt="Floating Agent Signal Bar light with quota, active-agent, and token badges" width="250"></a></td>
-    <td align="center"><a href="docs/assets/menu-bar-panel-detailed-en.png"><img src="docs/assets/menu-bar-panel-detailed-en.png" alt="Detailed Agent Signal Bar menu bar panel with a live Codex session and recent events" width="100%"></a></td>
-    <td align="center"><a href="docs/assets/menu-bar-simple-en.png"><img src="docs/assets/menu-bar-simple-en.png" alt="Simple Agent Signal Bar menu with a live Codex session, quota, and quick actions" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/floating-signal-light.png?v=20260908-1"><img src="docs/assets/floating-signal-light.png?v=20260908-1" alt="Floating Agent Signal Bar light with quota, active-agent, and token badges" width="180"></a></td>
+    <td align="center"><a href="docs/assets/menu-bar-panel-detailed-en.png?v=20260908-1"><img src="docs/assets/menu-bar-panel-detailed-en.png?v=20260908-1" alt="Detailed Agent Signal Bar menu with a demo Codex account, quota, and token history" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/menu-bar-simple-en.png?v=20260908-1"><img src="docs/assets/menu-bar-simple-en.png?v=20260908-1" alt="Simple Agent Signal Bar menu with demo Codex quota, token history, and quick actions" width="100%"></a></td>
   </tr>
 </table>
 
-All three are screen-region captures with the desktop left in context. The floating signal stays above your desktop, follows the menu bar state, and supports dragging, free resizing, size presets, horizontal or vertical layouts, and compact session and usage popovers.
+These are captures of the v1.6.0 app UI with synthetic demo data. Screenshots use Dark appearance; settings use Liquid Glass with the Standard effect. The floating signal stays above your desktop, follows the menu bar state, and supports dragging, free resizing, size presets, horizontal or vertical layouts, and compact session and usage popovers.
 
 ### Activity and usage
 
@@ -84,12 +84,20 @@ All three are screen-region captures with the desktop left in context. The float
     <td align="center" width="50%"><strong>Usage</strong></td>
   </tr>
   <tr>
-    <td align="center"><a href="docs/assets/settings-activity-en.png"><img src="docs/assets/settings-activity-en.png" alt="Agent Signal Bar Activity page showing a running Codex Desktop session and recent events" width="100%"></a></td>
-    <td align="center"><a href="docs/assets/settings-usage-en.png"><img src="docs/assets/settings-usage-en.png" alt="Agent Signal Bar Usage page showing Codex quota, reset credits, and GPT-5.6 token estimates" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/settings-activity-en.png?v=20260908-1"><img src="docs/assets/settings-activity-en.png?v=20260908-1" alt="Agent Signal Bar Activity page showing a demo Codex CLI session and recent events" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/settings-usage-en.png?v=20260908-1"><img src="docs/assets/settings-usage-en.png?v=20260908-1" alt="Agent Signal Bar Usage page showing Codex quota, reset credits, and model token counts, estimated costs, and shares" width="100%"></a></td>
+  </tr>
+  <tr>
+    <td align="center" width="50%"><strong>Codex account</strong></td>
+    <td align="center" width="50%"><strong>Dark · Standard Liquid Glass</strong></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="docs/assets/settings-account-en.png?v=20260908-1"><img src="docs/assets/settings-account-en.png?v=20260908-1" alt="Demo Codex account and quota" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/settings-glass-en.png?v=20260908-1"><img src="docs/assets/settings-glass-en.png?v=20260908-1" alt="Dark settings with Liquid Glass enabled and Standard selected" width="100%"></a></td>
   </tr>
 </table>
 
-The Activity capture shows a real local Codex Desktop session. The Usage page combines Codex quota windows, limit-reset credits, local token and estimated-cost history, and saved-account switching; its values are synthetic local demo data, and the token chart uses GPT-5.6 data—no personal account or credential data is included.
+All account, activity, quota, and token values shown are synthetic. The demo email is `demo@agentsignalbar.app`. The Usage capture shows the hovered day with GPT-6 Astra and gpt-5.6 token counts, estimated costs, and shares. No personal account or credential data is included. Claude-specific captures are omitted pending real-account validation.
 
 ### Choose your look
 
