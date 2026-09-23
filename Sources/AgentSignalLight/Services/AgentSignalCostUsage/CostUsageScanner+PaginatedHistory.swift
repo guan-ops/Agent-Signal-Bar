@@ -60,7 +60,11 @@ extension CostUsageScanner {
                 for (path, page) in pages where !linked.contains(path) {
                     guard let base = page.base,
                           linked.contains(where: {
-                              pages[$0]?.boundaries[base.ordinal] == base.offset
+                              guard let parent = pages[$0],
+                                    parent.boundaries[base.ordinal] == base.offset else { return false }
+                              guard let initial = page.initialRecord else { return true }
+                              guard let inherited = parent.confirmedTotals[base.ordinal] else { return false }
+                              return initial.total.isSum(of: inherited, plus: initial.usage)
                           }) else { continue }
                     linked.insert(path)
                 }
@@ -118,6 +122,8 @@ extension CostUsageScanner {
     private struct PaginatedPage {
         let base: (ordinal: Int, offset: Int64)?
         let boundaries: [Int: Int64]
+        let confirmedTotals: [Int: PageTokens]
+        let initialRecord: (usage: PageTokens, total: PageTokens)?
         let responseIDs: Set<String>
         let usage: CostUsageFileUsage
     }
@@ -147,6 +153,14 @@ extension CostUsageScanner {
         let cached: Int
         let output: Int
         var total: Int { input + output }
+
+        func isSum(of baseline: PageTokens, plus usage: PageTokens) -> Bool {
+            // Parsed components are bounded to Int.max / 4, so sums are safe.
+            input == baseline.input + usage.input
+                && cached == baseline.cached + usage.cached
+                && output == baseline.output + usage.output
+        }
+
         init?(_ value: Any?, allowZeroCompactionSummary: Bool = false) {
             guard let fields = value as? [String: Any],
                   let input = pageInteger(fields["input_tokens"]),
@@ -185,6 +199,8 @@ extension CostUsageScanner {
         var base: (ordinal: Int, offset: Int64)?
         var previousOrdinal: Int?
         var boundaries: [Int: Int64] = [:]
+        var confirmedTotals: [Int: PageTokens] = [:]
+        var initialRecord: (usage: PageTokens, total: PageTokens)?
         var responseIDs = Set<String>()
         var model: String?
         var lastRecord: PageTokens?
@@ -211,6 +227,7 @@ extension CostUsageScanner {
                     // history_base points to the next record's byte offset;
                     // token cursors instead end before the newline delimiter.
                     boundaries[ordinal] = line.startOffset
+                    if !newRecord { confirmedTotals[ordinal] = lastToken }
                     let payload = object["payload"] as? [String: Any] ?? [:]
                     if !sawMetadata {
                         guard type == "session_meta", payload["id"] as? String == sessionID,
@@ -248,6 +265,16 @@ extension CostUsageScanner {
                               let day = dayKeyFromTimestamp(timestamp) ?? dayKeyFromParsedISO(timestamp)
                         else { valid = false; return }
                         guard date <= through else { hasDeferredTail = true; return }
+                        if let baseline = newRecord ? lastRecordTotal : lastToken {
+                            guard recordTotal.isSum(of: baseline, plus: usage) else {
+                                valid = false; return
+                            }
+                        } else if base == nil {
+                            guard recordTotal == usage else { valid = false; return }
+                        } else {
+                            guard initialRecord == nil else { valid = false; return }
+                            initialRecord = (usage, recordTotal)
+                        }
                         var packed = days[day]?[model] ?? [0, 0, 0]
                         for (index, amount) in [usage.input, usage.cached, usage.output].enumerated() {
                             let sum = packed[index].addingReportingOverflow(amount)
@@ -285,7 +312,10 @@ extension CostUsageScanner {
                     }
                 }
             })
-        if let previousOrdinal { boundaries[previousOrdinal + 1] = parsed }
+        if let previousOrdinal {
+            boundaries[previousOrdinal + 1] = parsed
+            if !newRecord { confirmedTotals[previousOrdinal + 1] = lastToken }
+        }
         if valid, sawMetadata, hasDeferredTail || newRecord || parsed != before.size {
             throw PaginatedReadError.deferredTail
         }
@@ -305,6 +335,7 @@ extension CostUsageScanner {
         guard paginatedSnapshotMatches(path: path, usage: usage) else {
             throw PaginatedReadError.deferredTail
         }
-        return PaginatedPage(base: base, boundaries: boundaries, responseIDs: responseIDs, usage: usage)
+        return PaginatedPage(base: base, boundaries: boundaries, confirmedTotals: confirmedTotals,
+            initialRecord: initialRecord, responseIDs: responseIDs, usage: usage)
     }
 }

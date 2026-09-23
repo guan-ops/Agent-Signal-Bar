@@ -622,7 +622,7 @@ extension MenuBarStatusModel {
         )
     }
 
-    func tokenUsageCostText(_ cost: Double?, isLoading: Bool = false) -> String {
+    func tokenUsageCostText(_ cost: Double?, isLoading: Bool = false, partial: Bool = false) -> String {
         guard let cost else {
             if isLoading {
                 return text("正在计算…", "calculating…")
@@ -630,8 +630,8 @@ extension MenuBarStatusModel {
             return text("费用未知", "cost unavailable")
         }
         return text(
-            "费用 \(estimatedCostText(cost))",
-            "cost \(estimatedCostText(cost))"
+            "费用 \(estimatedCostText(cost, partial: partial))",
+            "cost \(estimatedCostText(cost, partial: partial))"
         )
     }
 

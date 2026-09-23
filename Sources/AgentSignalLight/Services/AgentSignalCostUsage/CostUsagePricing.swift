@@ -271,7 +271,7 @@ enum CostUsagePricing {
 
     static func codexBuiltInPricingFingerprint() -> String {
         var parts = [
-            "costPolicyVersion=4", // Preserve mode-specific unpriced counts and revalidate paginated totals.
+            "costPolicyVersion=5", // Preserve mode-specific unpriced counts and revalidate paginated totals.
             "priorityInputTokenLimit=\(self.codexPriorityInputTokenLimit)",
             "officialPricingModels=\(self.codexOfficialPricingModels.sorted().joined(separator: ","))",
         ]

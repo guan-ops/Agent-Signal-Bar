@@ -57,6 +57,23 @@ final class TokenActivityPresentationTests: XCTestCase {
         }
     }
 
+    func testFloatingPopoverRetainsPartialCostMarker() throws {
+        let fixture = try makeFixture(scanner: PresentationTokenScanner(result: .init(days: [], watermarks: []))) { _ in }
+        defer { fixture.cleanUp() }
+        XCTAssertTrue(fixture.model.tokenUsageCostText(0.035, partial: true).contains("≥"))
+    }
+
+    func testClaudeMixedPricingRetainsPartialStateInMenuAndChart() throws {
+        let entry = CostUsageDailyReport.Entry(date: "2026-09-22", inputTokens: 200, outputTokens: 0,
+            totalTokens: 200, costUSD: 0.01, modelsUsed: ["known", "unknown"], modelBreakdowns: [
+                .init(modelName: "known", costUSD: 0.01, totalTokens: 100),
+                .init(modelName: "unknown", costUSD: nil, totalTokens: 100),
+            ])
+        let day = try XCTUnwrap(MenuUsageSummaryView.activityDay(for: entry))
+        XCTAssertEqual(day.estimatedCostUSD, 0.01)
+        XCTAssertTrue(day.costIsPartial)
+    }
+
     func testFailedFirstScanIsUnavailableInsteadOfMeasuredZero() async throws {
         let failed = expectation(description: "failed scan visibly defers")
         let scanner = PresentationTokenScanner(result: CodexTokenActivityScanResult(

@@ -175,6 +175,42 @@ final class CodexPaginatedHistoryTests: XCTestCase {
         XCTAssertEqual(try fixture.scan().summary?.totalTokens, 190)
     }
 
+    func testContiguousBilledRecordsCanShareALaterConfirmation() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.append([
+            Fixture.record(ordinal: 9, response: "batched-one", usage: 40, total: 170),
+            Fixture.record(ordinal: 10, response: "batched-two", usage: 20, total: 190),
+            Fixture.token(ordinal: 11, usage: 20, total: 190),
+        ], to: fixture.page)
+        let report = try fixture.scan()
+        XCTAssertTrue(report.warnings.isEmpty)
+        XCTAssertEqual(report.summary?.totalTokens, 210)
+    }
+
+    func testContinuationMustContinueTheInheritedBoundaryTotal() throws {
+        for total in [99, 999] {
+            let fixture = try Fixture(initialPageTotal: total)
+            defer { fixture.remove() }
+            let report = try fixture.scan()
+            XCTAssertEqual(report.warnings.count, 1)
+            XCTAssertEqual(report.summary?.totalTokens ?? 0, 0)
+        }
+    }
+
+    func testBrokenCumulativeChainRevokesPreviouslyRecoveredHistory() throws {
+        for total in [999, 120] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            XCTAssertEqual(try fixture.scan().summary?.totalTokens, 150)
+            try fixture.appendResponse(to: fixture.page, ordinal: 9, response: "broken-chain", usage: 40, total: total)
+            let report = try fixture.scan()
+            XCTAssertEqual(report.warnings.count, 1)
+            XCTAssertEqual(report.summary?.totalTokens ?? 0, 0)
+            XCTAssertTrue(try fixture.scanner().agentSignalCostUsageScanWatermarks(through: fixture.now).isEmpty)
+        }
+    }
+
     func testMismatchedCumulativeTotalCannotPublishHistoryOrWatermark() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -331,7 +367,7 @@ final class CodexPaginatedHistoryTests: XCTestCase {
             .init(since: Calendar.current.startOfDay(for: now), until: now)
         }
 
-        init(response: String = "page-response", boundaryAdjustment: Int = 0) throws {
+        init(response: String = "page-response", boundaryAdjustment: Int = 0, initialPageTotal: Int = 130) throws {
             root = URL(fileURLWithPath: "/private/tmp/asb-paginated-\(UUID().uuidString)")
                 .standardizedFileURL.resolvingSymlinksInPath()
             sessions = root.appendingPathComponent("sessions")
@@ -350,9 +386,9 @@ final class CodexPaginatedHistoryTests: XCTestCase {
             try append([
                 Self.metadata(ordinal: 4, boundary: boundary + boundaryAdjustment),
                 Self.context(ordinal: 5),
-                Self.record(ordinal: 6, response: response, usage: 30, total: 130),
-                Self.token(ordinal: 7, usage: 30, total: 130),
-                Self.token(ordinal: 8, usage: 30, total: 130),
+                Self.record(ordinal: 6, response: response, usage: 30, total: initialPageTotal),
+                Self.token(ordinal: 7, usage: 30, total: initialPageTotal),
+                Self.token(ordinal: 8, usage: 30, total: initialPageTotal),
             ], to: page)
         }
 

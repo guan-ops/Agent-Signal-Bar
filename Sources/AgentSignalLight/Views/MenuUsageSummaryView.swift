@@ -223,8 +223,8 @@ struct MenuUsageSummaryView: View {
     private var tokens: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .top, spacing: 16) {
-                metricColumn(title: model.text("今日", "Today"), tokens: todayTokens, cost: todayCost, partial: !isClaude && model.tokenActivityCostIsPartial(for: .today))
-                metricColumn(title: model.text("近 30 天", "30 days"), tokens: monthTokens, cost: monthCost, partial: !isClaude && model.tokenActivityCostIsPartial(for: .last30Days))
+                metricColumn(title: model.text("今日", "Today"), tokens: todayTokens, cost: todayCost, partial: isClaude ? todayClaudeEntry?.hasUnpricedUsage == true : model.tokenActivityCostIsPartial(for: .today))
+                metricColumn(title: model.text("近 30 天", "30 days"), tokens: monthTokens, cost: monthCost, partial: isClaude ? historyDays.contains { $0.costIsPartial } : model.tokenActivityCostIsPartial(for: .last30Days))
             }
             MenuTokenHistoryChart(model: model, days: historyDays, isClaude: isClaude)
                 .id(navigation.provider)
@@ -285,15 +285,17 @@ struct MenuUsageSummaryView: View {
         let today = calendar.startOfDay(for: Date())
         let start = calendar.date(byAdding: .day, value: -29, to: today) ?? today
         let end = calendar.date(byAdding: .day, value: 1, to: today) ?? today
-        let records: [CodexTokenActivityDay] = isClaude ? claude.days.compactMap { entry in
-            guard let day = CostUsageDateParser.parse(entry.date) else { return nil }
-            return CodexTokenActivityDay(day: day, totalTokens: entry.totalTokens ?? 0,
-                                         estimatedCostUSD: entry.costUSD,
-                                         modelTokenTotals: Dictionary((entry.modelBreakdowns ?? []).map {
-                                             ($0.modelName, $0.totalTokens ?? 0)
-                                         }, uniquingKeysWith: +))
-        } : model.tokenActivityDays
+        let records: [CodexTokenActivityDay] = isClaude ? claude.days.compactMap(Self.activityDay(for:)) : model.tokenActivityDays
         return records.filter { $0.day >= start && $0.day < end }
+    }
+
+    static func activityDay(for entry: CostUsageDailyReport.Entry) -> CodexTokenActivityDay? {
+        guard let day = CostUsageDateParser.parse(entry.date) else { return nil }
+        return CodexTokenActivityDay(day: day, totalTokens: entry.totalTokens ?? 0,
+            estimatedCostUSD: entry.costUSD,
+            modelTokenTotals: Dictionary((entry.modelBreakdowns ?? []).map {
+                ($0.modelName, $0.totalTokens ?? 0)
+            }, uniquingKeysWith: +), hasUnpricedUsage: entry.hasUnpricedUsage)
     }
 
     private var todayTokens: Int? {

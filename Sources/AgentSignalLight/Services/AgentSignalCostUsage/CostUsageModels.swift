@@ -191,6 +191,11 @@ public struct CostUsageDailyReport: Sendable, Decodable {
         public let modelsUsed: [String]?
         public let modelBreakdowns: [ModelBreakdown]?
 
+        public var hasUnpricedUsage: Bool {
+            modelBreakdowns?.contains(where: \.hasUnpricedUsage) == true
+                || ((totalTokens ?? 0) > 0 && costUSD == nil)
+        }
+
         private enum CodingKeys: String, CodingKey {
             case date
             case inputTokens
