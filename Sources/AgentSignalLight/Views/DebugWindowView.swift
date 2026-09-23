@@ -394,6 +394,7 @@ struct DebugWindowView: View {
     private enum SettingsDropdownID: Hashable {
         case language
         case theme
+        case currency
         case signalLightAgents
         case usagePlatform
         case thinkingEffect
@@ -515,8 +516,12 @@ struct DebugWindowView: View {
                 }
                 .zIndex(expandedSettingsDropdown == .theme ? 1000 : 0)
 
-                CostCurrencySettingsView(store: model.costCurrency, text: model.text,
-                                         locale: Locale(identifier: model.appLanguage.localeIdentifier))
+                CostCurrencySettingsView(store: model.costCurrency, text: model.text) {
+                    settingRow(model.text("费用显示货币", "Cost display currency")) {
+                        currencyMenu
+                    }
+                }
+                .zIndex(expandedSettingsDropdown == .currency ? 1000 : 0)
 
                 settingRow(model.text("液态玻璃效果", "Liquid glass")) {
                     settingsSwitch(settingsGlassEnabledBinding)
@@ -569,7 +574,7 @@ struct DebugWindowView: View {
 
     private var isGeneralDropdownExpanded: Bool {
         switch expandedSettingsDropdown {
-        case .language, .theme, .completionSound, .waitingSound:
+        case .language, .theme, .currency, .completionSound, .waitingSound:
             return true
         default:
             return false
@@ -614,6 +619,44 @@ struct DebugWindowView: View {
                 }
             }
         }
+    }
+
+    private var currencyMenu: some View {
+        inlineDropdown(
+            id: .currency,
+            title: currencyTitle(model.costCurrency.preferredCode),
+            width: settingsPickerWidth
+        ) {
+            dropdownOptions(width: settingsPickerWidth) {
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        VStack(spacing: 0) {
+                            ForEach(CostCurrencyStore.supportedCodes, id: \.self) { code in
+                                dropdownOption(
+                                    currencyTitle(code),
+                                    isSelected: model.costCurrency.preferredCode == code,
+                                    width: settingsPickerWidth
+                                ) {
+                                    model.costCurrency.select(code)
+                                }
+                                .id(code)
+                            }
+                        }
+                    }
+                    .frame(height: dropdownOptionHeight * 8)
+                    .onAppear { proxy.scrollTo(model.costCurrency.preferredCode, anchor: .center) }
+                }
+            }
+        }
+        .accessibilityIdentifier("costDisplayCurrency")
+        .accessibilityLabel(model.text("费用显示货币", "Cost display currency"))
+        .accessibilityValue(currencyTitle(model.costCurrency.preferredCode))
+        .help(currencyTitle(model.costCurrency.preferredCode))
+    }
+
+    private func currencyTitle(_ code: String) -> String {
+        let locale = Locale(identifier: model.appLanguage.localeIdentifier)
+        return "\(code) · \(locale.localizedString(forCurrencyCode: code) ?? code)"
     }
 
     private var completionSoundMenu: some View {

@@ -1,25 +1,14 @@
 import SwiftUI
 
-struct CostCurrencySettingsView: View {
+struct CostCurrencySettingsView<CurrencyRow: View>: View {
     @ObservedObject var store: CostCurrencyStore
     let text: (String, String) -> String
-    let locale: Locale
+    @ViewBuilder var currencyRow: CurrencyRow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(text("费用显示货币", "Cost display currency"))
-                Spacer()
-                Picker(text("费用显示货币", "Cost display currency"), selection: Binding(
-                    get: { store.preferredCode }, set: { store.select($0) }
-                )) {
-                    ForEach(CostCurrencyStore.supportedCodes, id: \.self) { code in
-                        Text("\(code) · \(locale.localizedString(forCurrencyCode: code) ?? code)").tag(code)
-                    }
-                }
-                .labelsHidden().pickerStyle(.menu).frame(width: 210)
-                .accessibilityIdentifier("costDisplayCurrency")
-            }
+            currencyRow
+                .zIndex(1)
             Text(text("今日与历史费用均按最新可用汇率估算。账号额外用量保留账单币种。",
                       "Today’s and historical costs use the latest available rate. Account extra usage keeps its billing currency."))
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
