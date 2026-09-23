@@ -117,7 +117,8 @@ final class CodexUnknownFastCostTests: XCTestCase {
         XCTAssertEqual(first.summary?.totalTokens, 301_000)
         XCTAssertNil(first.summary?.totalCostUSD)
         var cache = try CostUsageCacheIO.loadRequired(provider: .codex, cacheRoot: cacheRoot)
-        XCTAssertEqual(cache.files[log.path]?.codexUnpricedTokens?[day]?["gpt-5.5"], 301_000)
+        XCTAssertEqual(cache.files.count, 1)
+        XCTAssertEqual(cache.files.values.first?.codexUnpricedTokens?[day]?["gpt-5.5"], 301_000)
         let details = CodexUsageDetails.build(cache: cache, now: date, modelsDevCatalog: catalog) { _, _ in nil }
         XCTAssertEqual(details.sessions.first?.hasUnpricedUsage, true)
         let currentPricingKey = try XCTUnwrap(cache.codexPricingKey)
