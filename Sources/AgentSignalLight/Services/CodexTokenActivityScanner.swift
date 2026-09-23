@@ -18,6 +18,8 @@ struct CodexTokenActivityDay: Codable, Identifiable, Equatable, Sendable {
     // Optional so snapshots written by older versions remain decodable.
     let hasUnpricedUsage: Bool?
     let modelUnpricedTokenTotals: [String: Int]?
+    let modelStandardUnpricedTokenTotals: [String: Int]?
+    let modelPriorityUnpricedTokenTotals: [String: Int]?
 
     var costIsPartial: Bool {
         hasUnpricedUsage == true || (totalTokens > 0 && estimatedCostUSD == nil)
@@ -34,7 +36,9 @@ struct CodexTokenActivityDay: Codable, Identifiable, Equatable, Sendable {
         modelStandardEstimatedCostTotals: [String: Double] = [:],
         modelPriorityEstimatedCostTotals: [String: Double] = [:],
         hasUnpricedUsage: Bool? = nil,
-        modelUnpricedTokenTotals: [String: Int]? = nil
+        modelUnpricedTokenTotals: [String: Int]? = nil,
+        modelStandardUnpricedTokenTotals: [String: Int]? = nil,
+        modelPriorityUnpricedTokenTotals: [String: Int]? = nil
     ) {
         self.day = day
         self.totalTokens = totalTokens
@@ -47,6 +51,8 @@ struct CodexTokenActivityDay: Codable, Identifiable, Equatable, Sendable {
         self.modelPriorityEstimatedCostTotals = modelPriorityEstimatedCostTotals
         self.hasUnpricedUsage = hasUnpricedUsage
         self.modelUnpricedTokenTotals = modelUnpricedTokenTotals
+        self.modelStandardUnpricedTokenTotals = modelStandardUnpricedTokenTotals
+        self.modelPriorityUnpricedTokenTotals = modelPriorityUnpricedTokenTotals
     }
 
     var id: TimeInterval {
@@ -206,7 +212,7 @@ extension CodexTokenActivityScanning {
 final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Sendable {
     private typealias ModelContext = (lineNumber: Int, model: String, turnID: String?)
 
-    static let currentCacheVersion = 26
+    static let currentCacheVersion = 27
 
     private static let newlineNeedle = Data([0x0A])
     private static let tokenCountNeedle = Data("token_count".utf8)
@@ -1057,8 +1063,16 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
             var modelStandardCostTotals: [String: Double] = [:]
             var modelPriorityCostTotals: [String: Double] = [:]
             var modelUnpricedTokens: [String: Int] = [:]
+            var modelStandardUnpricedTokens: [String: Int] = [:]
+            var modelPriorityUnpricedTokens: [String: Int] = [:]
 
             for breakdown in entry.modelBreakdowns ?? [] {
+                if let tokens = breakdown.standardUnpricedTokens, tokens > 0 {
+                    modelStandardUnpricedTokens[breakdown.modelName, default: 0] += tokens
+                }
+                if let tokens = breakdown.priorityUnpricedTokens, tokens > 0 {
+                    modelPriorityUnpricedTokens[breakdown.modelName, default: 0] += tokens
+                }
                 if breakdown.hasUnpricedUsage {
                     modelUnpricedTokens[breakdown.modelName, default: 0] += max(breakdown.unpricedTokens ?? breakdown.totalTokens ?? 0, 1)
                 }
@@ -1093,7 +1107,9 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
                 modelStandardEstimatedCostTotals: modelStandardCostTotals,
                 modelPriorityEstimatedCostTotals: modelPriorityCostTotals,
                 hasUnpricedUsage: !modelUnpricedTokens.isEmpty,
-                modelUnpricedTokenTotals: modelUnpricedTokens
+                modelUnpricedTokenTotals: modelUnpricedTokens,
+                modelStandardUnpricedTokenTotals: modelStandardUnpricedTokens,
+                modelPriorityUnpricedTokenTotals: modelPriorityUnpricedTokens
             )
         }
         .sorted { $0.day < $1.day }

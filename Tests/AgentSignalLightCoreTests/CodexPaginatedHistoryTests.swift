@@ -175,6 +175,19 @@ final class CodexPaginatedHistoryTests: XCTestCase {
         XCTAssertEqual(try fixture.scan().summary?.totalTokens, 190)
     }
 
+    func testMismatchedCumulativeTotalCannotPublishHistoryOrWatermark() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.append([
+            Fixture.record(ordinal: 9, response: "mismatch", usage: 40, total: 170),
+            Fixture.token(ordinal: 10, usage: 40, total: 171),
+        ], to: fixture.page)
+        let report = try fixture.scan()
+        XCTAssertEqual(report.warnings.count, 1)
+        XCTAssertEqual(report.summary?.totalTokens ?? 0, 0)
+        XCTAssertTrue(try fixture.scanner().agentSignalCostUsageScanWatermarks(through: fixture.now).isEmpty)
+    }
+
     func testRecoveredSourcesExportSeparateExactWatermarks() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

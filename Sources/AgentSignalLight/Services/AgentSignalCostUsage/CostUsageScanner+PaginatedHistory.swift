@@ -188,6 +188,7 @@ extension CostUsageScanner {
         var responseIDs = Set<String>()
         var model: String?
         var lastRecord: PageTokens?
+        var lastRecordTotal: PageTokens?
         var lastToken: PageTokens?
         var newRecord = false
         var compacted = false
@@ -240,7 +241,7 @@ extension CostUsageScanner {
                               let response = payload["response_id"] as? String, !response.isEmpty,
                               responseIDs.insert(response).inserted,
                               let usage = PageTokens(payload["usage"]),
-                              PageTokens(payload["thread_token_usage"]) != nil,
+                              let recordTotal = PageTokens(payload["thread_token_usage"]),
                               let model,
                               let timestamp = object["timestamp"] as? String,
                               let date = dateFromTimestamp(timestamp),
@@ -257,6 +258,7 @@ extension CostUsageScanner {
                         rows.append(CodexUsageRow(day: day, model: model, turnID: payload["turn_id"] as? String,
                             input: usage.input, cached: usage.cached, output: usage.output))
                         lastRecord = usage
+                        lastRecordTotal = recordTotal
                         newRecord = true
                     case "event_msg" where payload["type"] as? String == "token_count":
                         guard let infoValue = payload["info"], !(infoValue is NSNull) else { return }
@@ -266,7 +268,7 @@ extension CostUsageScanner {
                               let total = PageTokens(info["total_token_usage"]),
                               let timestamp = object["timestamp"] as? String,
                               let date = dateFromTimestamp(timestamp),
-                              (usage == lastRecord && (newRecord || total == lastToken))
+                              (usage == lastRecord && total == (newRecord ? lastRecordTotal : lastToken))
                                 || (usage.total == 0 && compacted)
                         else { valid = false; return }
                         guard date <= through else { hasDeferredTail = true; return }

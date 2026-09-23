@@ -191,6 +191,8 @@ extension CostUsageScanner {
         var standardTokens: Int = 0
         var priorityTokens: Int = 0
         var unpricedTokens: Int = 0
+        var standardUnpricedTokens: Int = 0
+        var priorityUnpricedTokens: Int = 0
         var sawStandardCost = false
         var sawPriorityCost = false
 
@@ -259,6 +261,11 @@ extension CostUsageScanner {
                 breakdown.sawStandardCost = true
             } else {
                 breakdown.unpricedTokens += tokenCount
+                if isPriority {
+                    breakdown.priorityUnpricedTokens += tokenCount
+                } else {
+                    breakdown.standardUnpricedTokens += tokenCount
+                }
             }
         }
         return breakdown
@@ -299,6 +306,8 @@ extension CostUsageScanner {
         codexStandardTokens: [String: [String: Int]]? = nil,
         codexPriorityTokens: [String: [String: Int]]? = nil,
         codexUnpricedTokens: [String: [String: Int]]? = nil,
+        codexStandardUnpricedTokens: [String: [String: Int]]? = nil,
+        codexPriorityUnpricedTokens: [String: [String: Int]]? = nil,
         codexTurnIDs: [String]? = nil,
         codexRows: [CodexUsageRow]? = nil,
         claudeRows: [ClaudeUsageRow]? = nil) -> CostUsageFileUsage
@@ -342,6 +351,8 @@ extension CostUsageScanner {
             codexStandardTokens: codexStandardTokens,
             codexPriorityTokens: codexPriorityTokens,
             codexUnpricedTokens: codexUnpricedTokens,
+            codexStandardUnpricedTokens: codexStandardUnpricedTokens,
+            codexPriorityUnpricedTokens: codexPriorityUnpricedTokens,
             codexTurnIDs: codexTurnIDs,
             codexRows: codexRows,
             claudeRows: claudeRows)
@@ -421,6 +432,8 @@ extension CostUsageScanner {
             usage.codexPriorityTokens,
             splitMaps.priorityTokens)
         updated.codexUnpricedTokens = Self.mergeMissingIntMaps(usage.codexUnpricedTokens, splitMaps.unpricedTokens)
+        updated.codexStandardUnpricedTokens = Self.mergeMissingIntMaps(usage.codexStandardUnpricedTokens, splitMaps.standardUnpricedTokens)
+        updated.codexPriorityUnpricedTokens = Self.mergeMissingIntMaps(usage.codexPriorityUnpricedTokens, splitMaps.priorityUnpricedTokens)
         updated.codexTurnIDs = Self.mergeCodexTurnIDs(usage.codexTurnIDs, rows: migratedRows)
         updated.codexRows = retainedRows.isEmpty ? nil : retainedRows
         return updated
@@ -510,13 +523,17 @@ extension CostUsageScanner {
         priorityCostNanos: [String: [String: Int64]]?,
         standardTokens: [String: [String: Int]]?,
         priorityTokens: [String: [String: Int]]?,
-        unpricedTokens: [String: [String: Int]]?)
+        unpricedTokens: [String: [String: Int]]?,
+        standardUnpricedTokens: [String: [String: Int]]?,
+        priorityUnpricedTokens: [String: [String: Int]]?)
     {
         var standardCostNanos: [String: [String: Int64]] = [:]
         var priorityCostNanos: [String: [String: Int64]] = [:]
         var standardTokens: [String: [String: Int]] = [:]
         var priorityTokens: [String: [String: Int]] = [:]
         var unpricedTokens: [String: [String: Int]] = [:]
+        var standardUnpricedTokens: [String: [String: Int]] = [:]
+        var priorityUnpricedTokens: [String: [String: Int]] = [:]
 
         for row in rows {
             guard CostUsageDayRange.isInRange(dayKey: row.day, since: range.sinceKey, until: range.untilKey)
@@ -555,6 +572,11 @@ extension CostUsageScanner {
                     (baseCost * Self.costScale).rounded())
             } else {
                 unpricedTokens[row.day, default: [:]][row.model, default: 0] += tokenCount
+                if isPriority {
+                    priorityUnpricedTokens[row.day, default: [:]][row.model, default: 0] += tokenCount
+                } else {
+                    standardUnpricedTokens[row.day, default: [:]][row.model, default: 0] += tokenCount
+                }
             }
         }
 
@@ -563,7 +585,9 @@ extension CostUsageScanner {
             priorityCostNanos.isEmpty ? nil : priorityCostNanos,
             standardTokens.isEmpty ? nil : standardTokens,
             priorityTokens.isEmpty ? nil : priorityTokens,
-            unpricedTokens.isEmpty ? nil : unpricedTokens)
+            unpricedTokens.isEmpty ? nil : unpricedTokens,
+            standardUnpricedTokens.isEmpty ? nil : standardUnpricedTokens,
+            priorityUnpricedTokens.isEmpty ? nil : priorityUnpricedTokens)
     }
 
     static func codexTurnIDs(rows: [CodexUsageRow]) -> [String]? {
@@ -1162,6 +1186,8 @@ extension CostUsageScanner {
                 migratedCached.codexPriorityTokens,
                 splitMaps.priorityTokens),
             codexUnpricedTokens: Self.mergeIntMaps(migratedCached.codexUnpricedTokens, splitMaps.unpricedTokens),
+            codexStandardUnpricedTokens: Self.mergeIntMaps(migratedCached.codexStandardUnpricedTokens, splitMaps.standardUnpricedTokens),
+            codexPriorityUnpricedTokens: Self.mergeIntMaps(migratedCached.codexPriorityUnpricedTokens, splitMaps.priorityUnpricedTokens),
             codexTurnIDs: Self.mergeCodexTurnIDs(migratedCached.codexTurnIDs, rows: delta.rows),
             codexRows: migratedCached.codexRows)
         Self.rememberScannedCodexFile(
@@ -1318,6 +1344,16 @@ extension CostUsageScanner {
                     ? nil
                     : Self.intMapOutsideScanWindow(migratedCached?.codexUnpricedTokens, range: context.range),
                 splitMaps.unpricedTokens),
+            codexStandardUnpricedTokens: Self.mergeIntMaps(
+                context.dropDeferredCodexRows
+                    ? nil
+                    : Self.intMapOutsideScanWindow(migratedCached?.codexStandardUnpricedTokens, range: context.range),
+                splitMaps.standardUnpricedTokens),
+            codexPriorityUnpricedTokens: Self.mergeIntMaps(
+                context.dropDeferredCodexRows
+                    ? nil
+                    : Self.intMapOutsideScanWindow(migratedCached?.codexPriorityUnpricedTokens, range: context.range),
+                splitMaps.priorityUnpricedTokens),
             codexTurnIDs: context.dropDeferredCodexRows
                 ? Self.codexTurnIDs(rows: parsed.rows)
                 : Self.mergeCodexTurnIDs(migratedCached?.codexTurnIDs, rows: parsed.rows),
@@ -1451,6 +1487,8 @@ extension CostUsageScanner {
         let standardTokensByDayModel = self.codexStandardTokensByDayModel(cache: cache, range: range)
         let priorityTokensByDayModel = self.codexPriorityTokensByDayModel(cache: cache, range: range)
         let unpricedTokensByDayModel = self.codexIntByDayModel(cache: cache, range: range) { $0.codexUnpricedTokens }
+        let standardUnpricedTokensByDayModel = self.codexIntByDayModel(cache: cache, range: range) { $0.codexStandardUnpricedTokens }
+        let priorityUnpricedTokensByDayModel = self.codexIntByDayModel(cache: cache, range: range) { $0.codexPriorityUnpricedTokens }
 
         let hasCodexRows = cache.files.values.contains {
             !($0.codexRows?.isEmpty ?? true)
@@ -1539,7 +1577,9 @@ extension CostUsageScanner {
                         priorityCostUSD: hasModeSplit ? priorityCost : nil,
                         standardTokens: hasModeSplit ? standardModeTokens : nil,
                         priorityTokens: hasModeSplit ? priorityModeTokens : nil,
-                        unpricedTokens: unpricedTokensByDayModel[day]?[model] ?? rowCostBreakdown?.unpricedTokens))
+                        unpricedTokens: unpricedTokensByDayModel[day]?[model] ?? rowCostBreakdown?.unpricedTokens,
+                        standardUnpricedTokens: standardUnpricedTokensByDayModel[day]?[model] ?? rowCostBreakdown?.standardUnpricedTokens,
+                        priorityUnpricedTokens: priorityUnpricedTokensByDayModel[day]?[model] ?? rowCostBreakdown?.priorityUnpricedTokens))
                 if let cost {
                     dayCost += cost
                     dayCostSeen = true

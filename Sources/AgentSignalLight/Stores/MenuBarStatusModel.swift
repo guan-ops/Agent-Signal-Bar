@@ -5609,8 +5609,8 @@ final class MenuBarStatusModel: ObservableObject {
         // Only a fully identified content epoch survives the parser correction.
         // An older cursor lacking stat/ctime can refer to a same-inode rewrite;
         // preserving it would reject a valid replacement line at the same offset.
-        (cacheVersion == 24 || cacheVersion == 25)
-            && CodexTokenActivityScanner.currentCacheVersion == 26
+        (cacheVersion == 24 || cacheVersion == 25 || cacheVersion == 26)
+            && CodexTokenActivityScanner.currentCacheVersion == 27
             && cursor?.sourceStatFingerprint != nil
             && cursor?.sourceChangeTimeNanoseconds != nil
     }

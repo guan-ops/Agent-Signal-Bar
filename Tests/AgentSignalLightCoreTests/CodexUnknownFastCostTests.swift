@@ -78,6 +78,17 @@ final class CodexUnknownFastCostTests: XCTestCase {
         XCTAssertTrue(model.hasUnpricedUsage)
     }
 
+    func testUnpricedFastTokensStaySeparateFromPricedStandardThroughReportMerge() throws {
+        let report = makeReport(rows: [standard, knownFast, unknownFast])
+        for candidate in [report, CostUsageDailyReport.merged([report])] {
+            let model = try XCTUnwrap(candidate.data.first?.modelBreakdowns?.first)
+            XCTAssertEqual(model.standardUnpricedTokens ?? 0, 0)
+            XCTAssertEqual(model.priorityUnpricedTokens, 301_000)
+            XCTAssertEqual(try XCTUnwrap(model.standardCostUSD), 0.035, accuracy: 0.000_000_001)
+            XCTAssertEqual(try XCTUnwrap(model.priorityCostUSD), 0.0875, accuracy: 0.000_000_001)
+        }
+    }
+
     func testFullyPricedModesAreNotMarkedPartial() throws {
         let report = makeReport(rows: [standard, knownFast])
         let model = try XCTUnwrap(report.data.first?.modelBreakdowns?.first)
@@ -127,6 +138,10 @@ final class CodexUnknownFastCostTests: XCTestCase {
         let activity = activityScanner.scanDailyActivity(now: date, days: 1)
         let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(activity)) as? [[String: Any]]
         XCTAssertEqual(encoded?.first?["hasUnpricedUsage"] as? Bool, true)
+        let priorityUnpriced = encoded?.first?["modelPriorityUnpricedTokenTotals"] as? [String: Int]
+        let standardUnpriced = encoded?.first?["modelStandardUnpricedTokenTotals"] as? [String: Int]
+        XCTAssertEqual(priorityUnpriced?["gpt-5.5"], 301_000)
+        XCTAssertEqual(standardUnpriced?["gpt-5.5"] ?? 0, 0)
         let currentPricingKey = try XCTUnwrap(cache.codexPricingKey)
         cache.codexPricingKey = "before-unknown-fast-cost-policy"
         for path in Array(cache.files.keys) {
@@ -155,7 +170,9 @@ final class CodexUnknownFastCostTests: XCTestCase {
             codexStandardCostNanos: maps.standardCostNanos,
             codexPriorityCostNanos: maps.priorityCostNanos,
             codexStandardTokens: maps.standardTokens, codexPriorityTokens: maps.priorityTokens,
-            codexUnpricedTokens: maps.unpricedTokens)
+            codexUnpricedTokens: maps.unpricedTokens,
+            codexStandardUnpricedTokens: maps.standardUnpricedTokens,
+            codexPriorityUnpricedTokens: maps.priorityUnpricedTokens)
         var cache = CostUsageCache()
         cache.days = days
         cache.files = ["fixture": usage]

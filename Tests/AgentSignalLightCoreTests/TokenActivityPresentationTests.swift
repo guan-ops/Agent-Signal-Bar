@@ -397,7 +397,7 @@ final class TokenActivityPresentationTests: XCTestCase {
     }
 
     func testLegacyCompleteSourceProofSurvivesDisplayCacheMigration() async throws {
-        for legacyVersion in [24, 25] {
+        for legacyVersion in [24, 25, 26] {
             let applied = expectation(description: "legacy fully proven cursor reconciles after relaunch")
             let scanner = PresentationTokenScanner(result: CodexTokenActivityScanResult(
                 days: [CodexTokenActivityDay(day: now, totalTokens: 100)],

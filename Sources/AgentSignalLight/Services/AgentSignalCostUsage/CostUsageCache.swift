@@ -198,6 +198,8 @@ struct CostUsageFileUsage: Codable {
     var codexStandardTokens: [String: [String: Int]]?
     var codexPriorityTokens: [String: [String: Int]]?
     var codexUnpricedTokens: [String: [String: Int]]?
+    var codexStandardUnpricedTokens: [String: [String: Int]]?
+    var codexPriorityUnpricedTokens: [String: [String: Int]]?
     var codexTurnIDs: [String]?
     var codexRows: [CostUsageScanner.CodexUsageRow]?
     var claudeRows: [CostUsageScanner.ClaudeUsageRow]?

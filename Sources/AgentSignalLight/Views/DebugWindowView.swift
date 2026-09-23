@@ -2610,13 +2610,13 @@ struct DebugWindowView: View {
             label: model.text("标准", "Std"),
             tokens: standardTokens,
             cost: day.modelStandardEstimatedCostTotals[modelName],
-            partial: (day.modelUnpricedTokenTotals?[modelName] ?? 0) > 0
+            partial: (day.modelStandardUnpricedTokenTotals?[modelName] ?? 0) > 0
         )
         let priority = tokenUsageModePiece(
             label: model.text("快速", "Fast"),
             tokens: priorityTokens,
             cost: day.modelPriorityEstimatedCostTotals[modelName],
-            partial: (day.modelUnpricedTokenTotals?[modelName] ?? 0) > 0
+            partial: (day.modelPriorityUnpricedTokenTotals?[modelName] ?? 0) > 0
         )
         return [standard, priority]
             .compactMap { $0 }
@@ -2659,9 +2659,17 @@ struct DebugWindowView: View {
             var modelStandardCostTotals: [String: Double] = [:]
             var modelPriorityCostTotals: [String: Double] = [:]
             var modelUnpricedTokens: [String: Int] = [:]
+            var modelStandardUnpricedTokens: [String: Int] = [:]
+            var modelPriorityUnpricedTokens: [String: Int] = [:]
             for day in days {
                 for (model, tokens) in day.modelUnpricedTokenTotals ?? [:] {
                     modelUnpricedTokens[model, default: 0] += tokens
+                }
+                for (model, tokens) in day.modelStandardUnpricedTokenTotals ?? [:] {
+                    modelStandardUnpricedTokens[model, default: 0] += tokens
+                }
+                for (model, tokens) in day.modelPriorityUnpricedTokenTotals ?? [:] {
+                    modelPriorityUnpricedTokens[model, default: 0] += tokens
                 }
                 for (model, tokens) in day.modelTokenTotals where tokens > 0 {
                     modelTotals[model, default: 0] += tokens
@@ -2693,7 +2701,9 @@ struct DebugWindowView: View {
                 modelStandardEstimatedCostTotals: modelStandardCostTotals,
                 modelPriorityEstimatedCostTotals: modelPriorityCostTotals,
                 hasUnpricedUsage: days.contains { $0.costIsPartial },
-                modelUnpricedTokenTotals: modelUnpricedTokens
+                modelUnpricedTokenTotals: modelUnpricedTokens,
+                modelStandardUnpricedTokenTotals: modelStandardUnpricedTokens,
+                modelPriorityUnpricedTokenTotals: modelPriorityUnpricedTokens
             )
         }
 
