@@ -1,8 +1,7 @@
 .build/
 .build-test/
 .swiftpm/
-.codex/hooks.json
-.codex/hooks.json.*
+.codex/
 dist/
 DerivedData/
 marketing/social/
@@ -10,3 +9,23 @@ marketing/social/
 .DS_Store
 __pycache__/
 *.pyc
+
+# Local development instructions and configuration.
+[Aa][Gg][Ee][Nn][Tt].[Mm][Dd]
+[Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd]
+[Aa][Gg][Ee][Nn][Tt][Ss].*.[Mm][Dd]
+[Cc][Ll][Aa][Uu][Dd][Ee].[Mm][Dd]
+[Cc][Ll][Aa][Uu][Dd][Ee].*.[Mm][Dd]
+[Gg][Ee][Mm][Ii][Nn][Ii].[Mm][Dd]
+[Ss][Kk][Ii][Ll][Ll].[Mm][Dd]
+**/.agents/**
+**/.codex/**/*.[Mm][Dd]
+**/.claude/**/*.[Mm][Dd]
+**/.gemini/**/*.[Mm][Dd]
+**/.cursor/**/*.[Mm][Dd]
+**/.cursor/**/*.mdc
+**/.windsurf/**/*.[Mm][Dd]
+**/.github/copilot-instructions.md
+**/.github/instructions/**
+**/.github/prompts/**
+**/.github/agents/**

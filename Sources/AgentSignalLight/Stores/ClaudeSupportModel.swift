@@ -4,6 +4,7 @@ import Combine
 
 @MainActor
 final class ClaudeSupportModel: ObservableObject {
+    typealias HistoryLoader = @Sendable (@escaping @Sendable () throws -> Void) throws -> CostUsageDailyReport
     @Published private(set) var snapshot: ClaudeUsageSnapshot?
     @Published private(set) var quotaIssue: String?
     @Published private(set) var historyIssue: String?
@@ -28,7 +29,7 @@ final class ClaudeSupportModel: ObservableObject {
     @Published private(set) var credentialConsent: Bool
     private let defaults: UserDefaults
     private let readCredentials: @Sendable (Bool) throws -> ClaudeCredential
-    private let historyLoader: @Sendable () throws -> CostUsageDailyReport
+    private let historyLoader: HistoryLoader
     private let service: ClaudeUsageService
     private var generation = UUID()
     private var lastRefresh: Date?
@@ -39,7 +40,7 @@ final class ClaudeSupportModel: ObservableObject {
          readCredentials: @escaping @Sendable (Bool) throws -> ClaudeCredential = { try ClaudeCredentialReader.read(allowPrompt: $0) },
          loginRunner: @escaping @Sendable (URL) async throws -> Void = { try await ClaudeLoginRunner.run($0) },
          installRunner: @escaping @Sendable () async throws -> URL = { try await ClaudeCLIInstaller.install() },
-         historyLoader: @escaping @Sendable () throws -> CostUsageDailyReport = { try ClaudeSupportModel.scanHistory() }) {
+         historyLoader: @escaping HistoryLoader = { try ClaudeSupportModel.scanHistory(checkCancellation: $0) }) {
         self.installRunner = installRunner
         self.loginRunner = loginRunner
         defaults.removeObject(forKey: "claude.usageSource")
@@ -93,7 +94,7 @@ final class ClaudeSupportModel: ObservableObject {
         let swapEnabled = swapEnabled
         let swapPath = swapPath
         refreshTask = Task { [weak self] in
-            guard let self else { return }
+            guard let self, self.generation == generation, !Task.isCancelled else { return }
             defer {
                 if self.generation == generation {
                     self.isRefreshing = false
@@ -140,7 +141,12 @@ final class ClaudeSupportModel: ObservableObject {
             self.isHistoryScanning = true
             self.historyIssue = nil
             do {
-                let report = try await Task.detached(priority: .utility) { try historyLoader() }.value
+                // Serialize disk/cache work and propagate reset cancellation into
+                // the scanner, including work still queued behind an older scan.
+                let report = try await CostUsageScanExecutor.run { checkCancellation in
+                    try checkCancellation()
+                    return try historyLoader(checkCancellation)
+                }
                 guard self.generation == generation, !Task.isCancelled else { return }
                 self.days = report.data
                 self.historyUpdatedAt = Date()
@@ -152,7 +158,10 @@ final class ClaudeSupportModel: ObservableObject {
         }
     }
 
-    nonisolated static func scanHistory(roots: [URL]? = nil, cacheRoot: URL? = nil, now: Date = Date()) throws -> CostUsageDailyReport {
+    nonisolated static func scanHistory(
+        roots: [URL]? = nil, cacheRoot: URL? = nil, now: Date = Date(),
+        checkCancellation: @escaping @Sendable () throws -> Void = { try Task.checkCancellation() }
+    ) throws -> CostUsageDailyReport {
         let calendar = Calendar.current
         let start = calendar.date(byAdding: .day, value: -29, to: calendar.startOfDay(for: now))!
         let cache = cacheRoot ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -161,7 +170,7 @@ final class ClaudeSupportModel: ObservableObject {
         options.claudeProjectsRoots = roots
         options.cacheRoot = cache
         return try CostUsageScanner.loadDailyReportCancellable(provider: .claude, since: start, until: now,
-            now: now, options: options, checkCancellation: { try Task.checkCancellation() })
+            now: now, options: options, checkCancellation: checkCancellation)
     }
 
     func switchAccount(_ number: Int) {

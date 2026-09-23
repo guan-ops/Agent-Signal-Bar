@@ -17,7 +17,8 @@ struct MenuTokenHistoryChart: View {
             let costs = entries.compactMap(\.estimatedCostUSD)
             return CodexTokenActivityDay(day: date,
                 totalTokens: entries.reduce(0) { $0 + max(0, $1.totalTokens) },
-                estimatedCostUSD: costs.isEmpty ? nil : costs.reduce(0, +))
+                estimatedCostUSD: costs.isEmpty ? nil : costs.reduce(0, +),
+                hasUnpricedUsage: entries.contains { $0.costIsPartial })
         }
     }
 
@@ -73,7 +74,7 @@ struct MenuTokenHistoryChart: View {
     }
 
     private func detail(_ day: CodexTokenActivityDay) -> String {
-        let cost = day.estimatedCostUSD.map { $0.formatted(.currency(code: "USD")) } ?? "—"
+        let cost = model.estimatedCostText(day.estimatedCostUSD, partial: day.costIsPartial)
         return "\(dateLabel(day.day)) · \(model.compactTokenCountText(day.totalTokens)) Token · \(cost)"
     }
 }

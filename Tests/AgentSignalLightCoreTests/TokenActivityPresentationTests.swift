@@ -1,4 +1,6 @@
 import Foundation
+import AppKit
+import SwiftUI
 import XCTest
 @testable import AgentSignalLight
 @testable import AgentSignalLightCore
@@ -8,6 +10,68 @@ import XCTest
 final class TokenActivityPresentationTests: XCTestCase {
     private var now: Date {
         Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 60 * 60)
+    }
+
+    func testPartialCostSurvivesSnapshotAndRespectsSelectedPeriod() async throws {
+        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now)!
+        let partial = CodexTokenActivityDay(day: yesterday, totalTokens: 303_000,
+            estimatedCostUSD: 0.035, hasUnpricedUsage: true)
+        let restored = try JSONDecoder().decode(CodexTokenActivityDay.self,
+            from: JSONEncoder().encode(partial))
+        let history = [restored, CodexTokenActivityDay(day: now, totalTokens: 2_000, estimatedCostUSD: 0.1)]
+        let fixture = try makeFixture(scanner: PresentationTokenScanner(result: .init(days: history, watermarks: [])),
+            history: history) { _ in }
+        defer { fixture.cleanUp() }
+        XCTAssertFalse(fixture.model.tokenActivityCostIsPartial(for: .today, now: now))
+        XCTAssertTrue(fixture.model.tokenActivityCostIsPartial(for: .last30Days, now: now))
+        let cost = try XCTUnwrap(fixture.model.tokenActivityEstimatedCost(for: .last30Days, now: now))
+        XCTAssertEqual(cost, 0.135, accuracy: 0.000_000_001)
+        XCTAssertTrue(fixture.model.estimatedCostText(cost,
+            partial: fixture.model.tokenActivityCostIsPartial(for: .last30Days, now: now)).hasPrefix("≥"))
+
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(partial)) as? [String: Any])
+        legacy.removeValue(forKey: "hasUnpricedUsage")
+        legacy.removeValue(forKey: "modelUnpricedTokenTotals")
+        let oldSnapshot = try JSONDecoder().decode(CodexTokenActivityDay.self,
+            from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertEqual(oldSnapshot.estimatedCostUSD, 0.035)
+        if let directory = ProcessInfo.processInfo.environment["ASB_PARTIAL_MENU_PREVIEW"] {
+            _ = NSApplication.shared
+            let host = NSHostingView(rootView: MenuUsageSummaryView(model: fixture.model,
+                claude: ClaudeSupportModel(defaults: fixture.defaults), navigation: UsageMenuNavigation(),
+                nativeMenu: true, onOpenSettings: { _ in }).padding(12).frame(width: 380)
+                    .background(Color(red: 0.12, green: 0.12, blue: 0.12)).preferredColorScheme(.dark))
+            let size = host.fittingSize
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                styleMask: [.titled], backing: .buffered, defer: false)
+            window.contentView = host
+            window.appearance = NSAppearance(named: .darkAqua)
+            window.orderFront(nil)
+            defer { window.orderOut(nil) }
+            try await Task.sleep(for: .milliseconds(200))
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("partial-menu.png"))
+        }
+    }
+
+    func testFloatingPopoverRetainsPartialCostMarker() throws {
+        let fixture = try makeFixture(scanner: PresentationTokenScanner(result: .init(days: [], watermarks: []))) { _ in }
+        defer { fixture.cleanUp() }
+        XCTAssertTrue(fixture.model.tokenUsageCostText(0.035, partial: true).contains("≥"))
+    }
+
+    func testClaudeMixedPricingRetainsPartialStateInMenuAndChart() throws {
+        let entry = CostUsageDailyReport.Entry(date: "2026-09-22", inputTokens: 200, outputTokens: 0,
+            totalTokens: 200, costUSD: 0.01, modelsUsed: ["known", "unknown"], modelBreakdowns: [
+                .init(modelName: "known", costUSD: 0.01, totalTokens: 100),
+                .init(modelName: "unknown", costUSD: nil, totalTokens: 100),
+            ])
+        let day = try XCTUnwrap(MenuUsageSummaryView.activityDay(for: entry))
+        XCTAssertEqual(day.estimatedCostUSD, 0.01)
+        XCTAssertTrue(day.costIsPartial)
     }
 
     func testFailedFirstScanIsUnavailableInsteadOfMeasuredZero() async throws {
@@ -219,6 +283,114 @@ final class TokenActivityPresentationTests: XCTestCase {
         XCTAssertEqual(fixture.model.tokenActivityDisplayTotal(for: .today, now: now), 100)
     }
 
+    func testRealAppendAfterCommittedScanAppliesHistoryWithoutRetryOrDoubleCounting() async throws {
+        try await assertRealAppendReconciliation()
+    }
+
+    func testAppendAfterPrefixVerificationStillDefersUnprovenLiveSnapshot() async throws {
+        try await assertRealAppendReconciliation(appendAfterProof: true)
+    }
+
+    func testRewriteBeforeAppendCannotObtainPrefixProof() async throws {
+        try await assertRealAppendReconciliation(rewriteBeforeProof: true)
+    }
+
+    private func assertRealAppendReconciliation(
+        appendAfterProof: Bool = false, rewriteBeforeProof: Bool = false
+    ) async throws {
+        let root = URL(fileURLWithPath: "/private/tmp/asb-live-append-\(UUID().uuidString)")
+        let sessions = root.appendingPathComponent("sessions")
+        let cache = root.appendingPathComponent("cache")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = sessions.appendingPathComponent("rollout-live-fixture.jsonl")
+        let eventAt = now.addingTimeInterval(-10)
+        let stamp = ISO8601DateFormatter().string(from: eventAt)
+        func event(_ total: Int, _ last: Int) -> String {
+            #"{"timestamp":"\#(stamp)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":\#(total),"output_tokens":0},"last_token_usage":{"input_tokens":\#(last),"output_tokens":0}}}}"#
+        }
+        let header = #"{"timestamp":"\#(stamp)","type":"session_meta","payload":{"id":"live-fixture"}}"#
+        try (header + "\n" + event(100, 100) + "\n").write(to: source, atomically: true, encoding: .utf8)
+        var options = CostUsageScanner.Options(codexSessionsRoots: [sessions], cacheRoot: cache,
+            codexTraceDatabaseURL: root.appendingPathComponent("missing.sqlite"))
+        options.refreshMinIntervalSeconds = 0
+        let report = try CostUsageScanner.loadDailyReportCancellable(provider: .codex,
+            since: Calendar.current.startOfDay(for: now), until: now, now: now,
+            options: options, checkCancellation: nil)
+        XCTAssertEqual(report.summary?.totalTokens, 100)
+        let exporter = CodexTokenActivityScanner(sessionRootURLs: [sessions],
+            cacheURL: root.appendingPathComponent("unused.json"), costUsageCacheRootURL: cache,
+            usesAgentSignalCostUsageScanner: true, priorityDatabaseURL: root.appendingPathComponent("missing.sqlite"))
+        let before = try XCTUnwrap(exporter.agentSignalCostUsageScanWatermarks(through: now).first)
+        let suffix = event(150, 50)
+        let handle = try FileHandle(forWritingTo: source)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((suffix + "\n").utf8))
+        try handle.close()
+        let metadata = CostUsageScanner.codexFileMetadata(fileURL: source)
+        XCTAssertNotEqual(metadata.changeTimeNanoseconds, before.sourceChangeTimeNanoseconds)
+        var cursor = CodexTokenObservationCursor(sourceID: before.sourceID,
+            sourceGeneration: try XCTUnwrap(metadata.fileId),
+            sourceStatFingerprint: metadata.statFingerprint,
+            sourceChangeTimeNanoseconds: metadata.changeTimeNanoseconds,
+            endOffset: UInt64(metadata.size - 1),
+            lineFingerprint: CodexTokenObservationCursor.fingerprint(for: Data(suffix.utf8)))
+        if rewriteBeforeProof {
+            let handle = try FileHandle(forWritingTo: source)
+            try handle.write(contentsOf: Data((header + "\n" + event(200, 200) + "\n").utf8))
+            try handle.close()
+            XCTAssertThrowsError(try exporter.agentSignalCostUsageScanWatermarks(through: now))
+            return
+        }
+        let watermarks = try exporter.agentSignalCostUsageScanWatermarks(through: now)
+        XCTAssertEqual(watermarks.first?.endOffset, before.endOffset)
+        XCTAssertEqual(watermarks.first?.totalTokens, 100)
+        XCTAssertEqual(watermarks.first?.sourceChangeTimeNanoseconds, before.sourceChangeTimeNanoseconds)
+        XCTAssertEqual(watermarks.first?.verifiedPrefixSnapshot?.matches(cursor), true)
+        XCTAssertEqual(watermarks.first?.sourceID, cursor.sourceID)
+        XCTAssertEqual(watermarks.first?.sourceGeneration, cursor.sourceGeneration)
+        XCTAssertNotNil(watermarks.first?.eventTimestamp)
+        if appendAfterProof {
+            let laterSuffix = event(180, 30)
+            let handle = try FileHandle(forWritingTo: source)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data((laterSuffix + "\n").utf8))
+            try handle.close()
+            let later = CostUsageScanner.codexFileMetadata(fileURL: source)
+            XCTAssertNotEqual(later.changeTimeNanoseconds, metadata.changeTimeNanoseconds)
+            cursor = CodexTokenObservationCursor(sourceID: before.sourceID,
+                sourceGeneration: try XCTUnwrap(later.fileId),
+                sourceStatFingerprint: later.statFingerprint,
+                sourceChangeTimeNanoseconds: later.changeTimeNanoseconds,
+                endOffset: UInt64(later.size - 1),
+                lineFingerprint: CodexTokenObservationCursor.fingerprint(for: Data(laterSuffix.utf8)))
+        }
+        let scanner = PresentationTokenScanner(result: .init(
+            days: [.init(day: now, totalTokens: 100)], watermarks: watermarks))
+        let finished = expectation(description: "scan completes or defers")
+        let fixture = try makeFixture(scanner: scanner) {
+            if $0 == .applied || $0 == .deferredWithRetryPending { finished.fulfill() }
+        }
+        defer { fixture.cleanUp() }
+        let liveTotal = appendAfterProof ? 180 : 150
+        fixture.model.updateLatestAgentTokenUsage(AgentTokenUsage(totalTokens: liveTotal),
+            sessionID: "live-fixture", updatedAt: eventAt, observationCursor: cursor)
+        fixture.model.refreshTokenActivityIfNeeded(force: true)
+        await fulfillment(of: [finished], timeout: 3)
+        if appendAfterProof {
+            XCTAssertEqual(scanner.scanCount, 2)
+            XCTAssertFalse(fixture.model.hasCompletedTokenActivityScan)
+            XCTAssertNotNil(fixture.model.tokenActivityIssue)
+            XCTAssertEqual(fixture.model.tokenActivityDisplayTotal(for: .today, now: now), 180)
+            return
+        }
+        XCTAssertEqual(scanner.scanCount, 1)
+        XCTAssertTrue(fixture.model.hasCompletedTokenActivityScan)
+        XCTAssertNil(fixture.model.tokenActivityIssue)
+        XCTAssertEqual(fixture.model.tokenActivityDays.map(\.totalTokens), [100])
+        XCTAssertEqual(fixture.model.tokenActivityDisplayTotal(for: .today, now: now), 150)
+    }
+
     func testExactGoodSourceOutranksAnExcludedLegacySessionLabel() async throws {
         let applied = expectation(description: "exact good child is not counted twice")
         let result = CodexTokenActivityScanResult(
@@ -241,39 +413,41 @@ final class TokenActivityPresentationTests: XCTestCase {
         XCTAssertEqual(fixture.model.tokenActivityDisplayTotal(for: .today, now: now), 100)
     }
 
-    func testV24CompleteSourceProofSurvivesParserIdentityMigration() async throws {
-        let applied = expectation(description: "v24 fully proven cursor reconciles after relaunch")
-        let scanner = PresentationTokenScanner(result: CodexTokenActivityScanResult(
-            days: [CodexTokenActivityDay(day: now, totalTokens: 100)],
-            watermarks: [watermark(offset: 10, total: 100, sessionID: "actual-child")]
-        ))
-        let fixture = try makeFixture(scanner: scanner) { _ in }
-        defer { fixture.cleanUp() }
-        let store = CodexAccountUsageSnapshotStore(fileURL: fixture.directory.appendingPathComponent("usage.json"))
-        store.storeDeviceTokenSnapshot(
-            tokenUsage: AgentTokenUsage(totalTokens: 100),
-            liveTokenCounters: [CodexLiveTokenCounterSnapshot(
-                key: "old-root-label", sessionID: "old-root-label", totalTokens: 100,
-                scannedBaseline: 100, day: now, updatedAt: now, observationCursor: cursor(offset: 10)
-            )],
-            tokenActivityCacheVersion: 24,
-            tokenActivityDays: [CodexTokenActivityDay(day: now, totalTokens: 999)]
-        )
-        let fixedNow = now
-        let restored = MenuBarStatusModel(
-            store: SignalStateStore(stateFileURL: fixture.directory.appendingPathComponent("migration-state.json")),
-            userDefaults: fixture.defaults, startsMonitoring: false,
-            codexAccountManager: PresentationEmptyAccountManager(), codexUsageSnapshotStore: store,
-            codexTokenActivityScanner: scanner,
-            tokenActivityScanObserver: { if $0 == .applied { applied.fulfill() } },
-            performsAccountSwitchBackgroundRefreshes: false, nowProvider: { fixedNow }
-        )
-        XCTAssertTrue(restored.tokenActivityDays.isEmpty)
-        restored.refreshTokenActivityIfNeeded(force: true)
-        await fulfillment(of: [applied], timeout: 3)
+    func testLegacyCompleteSourceProofSurvivesDisplayCacheMigration() async throws {
+        for legacyVersion in [24, 25, 26] {
+            let applied = expectation(description: "legacy fully proven cursor reconciles after relaunch")
+            let scanner = PresentationTokenScanner(result: CodexTokenActivityScanResult(
+                days: [CodexTokenActivityDay(day: now, totalTokens: 100)],
+                watermarks: [watermark(offset: 10, total: 100, sessionID: "actual-child")]
+            ))
+            let fixture = try makeFixture(scanner: scanner) { _ in }
+            defer { fixture.cleanUp() }
+            let store = CodexAccountUsageSnapshotStore(fileURL: fixture.directory.appendingPathComponent("usage.json"))
+            store.storeDeviceTokenSnapshot(
+                tokenUsage: AgentTokenUsage(totalTokens: 100),
+                liveTokenCounters: [CodexLiveTokenCounterSnapshot(
+                    key: "old-root-label", sessionID: "old-root-label", totalTokens: 100,
+                    scannedBaseline: 100, day: now, updatedAt: now, observationCursor: cursor(offset: 10)
+                )],
+                tokenActivityCacheVersion: legacyVersion,
+                tokenActivityDays: [CodexTokenActivityDay(day: now, totalTokens: 999)]
+            )
+            let fixedNow = now
+            let restored = MenuBarStatusModel(
+                store: SignalStateStore(stateFileURL: fixture.directory.appendingPathComponent("migration-state.json")),
+                userDefaults: fixture.defaults, startsMonitoring: false,
+                codexAccountManager: PresentationEmptyAccountManager(), codexUsageSnapshotStore: store,
+                codexTokenActivityScanner: scanner,
+                tokenActivityScanObserver: { if $0 == .applied { applied.fulfill() } },
+                performsAccountSwitchBackgroundRefreshes: false, nowProvider: { fixedNow }
+            )
+            XCTAssertTrue(restored.tokenActivityDays.isEmpty)
+            restored.refreshTokenActivityIfNeeded(force: true)
+            await fulfillment(of: [applied], timeout: 3)
 
-        XCTAssertEqual(restored.tokenActivityDisplayTotal(for: .today, now: now), 100)
-        XCTAssertEqual(scanner.scanCount, 1)
+            XCTAssertEqual(restored.tokenActivityDisplayTotal(for: .today, now: now), 100)
+            XCTAssertEqual(scanner.scanCount, 1)
+        }
     }
 
     func testLoggedOutQuotaRefreshRemainsUnavailableWithoutStartingRequests() throws {

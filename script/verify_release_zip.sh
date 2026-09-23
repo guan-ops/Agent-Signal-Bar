@@ -115,6 +115,7 @@ mkdir -p "$EXTRACT_DIR" "$INSTALL_ROOT"
 ditto -x -k --norsrc "$ZIP_PATH" "$EXTRACT_DIR"
 PAYLOAD="$EXTRACT_DIR/$APP_NAME"
 [[ -d "$PAYLOAD" ]] || die "zip did not extract $APP_NAME payload"
+[[ ! -e "$PAYLOAD/.codex" ]] || die "release zip contains local development configuration"
 pass "release zip extracts"
 
 [[ -f "$PAYLOAD/dist/.packaged-release" ]] || die "packaged release marker missing"
@@ -261,6 +262,17 @@ PY
 pass "release zip agent-signal-run preserves exit code and marks blocked"
 
 DIAGNOSTICS_DIR="$TMP_ROOT/diagnostics"
+if [[ -n "${AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME:-}" ]]; then
+  diagnostic_scripts=("$DIAGNOSTICS_EXPORTER")
+  if [[ -x "$APP_RESOURCES/script/doctor.sh" ]]; then
+    diagnostic_scripts+=("$APP_RESOURCES/script/doctor.sh")
+  fi
+  for diagnostic_script in "${diagnostic_scripts[@]}"; do
+    if ! "$diagnostic_script" --help | grep -Fq "AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME"; then
+      die "packaged diagnostics do not support isolated verification; rebuild release artifacts"
+    fi
+  done
+fi
 "$DIAGNOSTICS_EXPORTER" --output "$DIAGNOSTICS_DIR" >"$TMP_ROOT/diagnostics.out"
 /usr/bin/python3 - "$TMP_ROOT/diagnostics.out" <<'PY'
 import sys

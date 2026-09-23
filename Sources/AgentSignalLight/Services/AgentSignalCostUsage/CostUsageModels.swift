@@ -103,6 +103,19 @@ public struct CostUsageDailyReport: Sendable, Decodable {
         public let priorityCostUSD: Double?
         public let standardTokens: Int?
         public let priorityTokens: Int?
+        public let unpricedTokens: Int?
+        public let standardUnpricedTokens: Int?
+        public let priorityUnpricedTokens: Int?
+
+        /// A subtotal can exist even when another mode has no verified price.
+        public var hasUnpricedUsage: Bool {
+            (unpricedTokens ?? 0) > 0
+                || (standardUnpricedTokens ?? 0) > 0
+                || (priorityUnpricedTokens ?? 0) > 0
+                || ((totalTokens ?? 0) > 0 && costUSD == nil)
+                || ((standardTokens ?? 0) > 0 && standardCostUSD == nil)
+                || ((priorityTokens ?? 0) > 0 && priorityCostUSD == nil)
+        }
 
         private enum CodingKeys: String, CodingKey {
             case modelName
@@ -115,6 +128,9 @@ public struct CostUsageDailyReport: Sendable, Decodable {
             case priorityCostUSD
             case standardTokens
             case priorityTokens
+            case unpricedTokens
+            case standardUnpricedTokens
+            case priorityUnpricedTokens
         }
 
         public init(from decoder: Decoder) throws {
@@ -131,6 +147,9 @@ public struct CostUsageDailyReport: Sendable, Decodable {
             self.priorityCostUSD = try container.decodeIfPresent(Double.self, forKey: .priorityCostUSD)
             self.standardTokens = try container.decodeIfPresent(Int.self, forKey: .standardTokens)
             self.priorityTokens = try container.decodeIfPresent(Int.self, forKey: .priorityTokens)
+            self.unpricedTokens = try container.decodeIfPresent(Int.self, forKey: .unpricedTokens)
+            self.standardUnpricedTokens = try container.decodeIfPresent(Int.self, forKey: .standardUnpricedTokens)
+            self.priorityUnpricedTokens = try container.decodeIfPresent(Int.self, forKey: .priorityUnpricedTokens)
         }
 
         public init(
@@ -141,7 +160,10 @@ public struct CostUsageDailyReport: Sendable, Decodable {
             standardCostUSD: Double? = nil,
             priorityCostUSD: Double? = nil,
             standardTokens: Int? = nil,
-            priorityTokens: Int? = nil)
+            priorityTokens: Int? = nil,
+            unpricedTokens: Int? = nil,
+            standardUnpricedTokens: Int? = nil,
+            priorityUnpricedTokens: Int? = nil)
         {
             self.modelName = modelName
             self.costUSD = costUSD
@@ -151,6 +173,9 @@ public struct CostUsageDailyReport: Sendable, Decodable {
             self.priorityCostUSD = priorityCostUSD
             self.standardTokens = standardTokens
             self.priorityTokens = priorityTokens
+            self.unpricedTokens = unpricedTokens
+            self.standardUnpricedTokens = standardUnpricedTokens
+            self.priorityUnpricedTokens = priorityUnpricedTokens
         }
     }
 
@@ -165,6 +190,11 @@ public struct CostUsageDailyReport: Sendable, Decodable {
         public let costUSD: Double?
         public let modelsUsed: [String]?
         public let modelBreakdowns: [ModelBreakdown]?
+
+        public var hasUnpricedUsage: Bool {
+            modelBreakdowns?.contains(where: \.hasUnpricedUsage) == true
+                || ((totalTokens ?? 0) > 0 && costUSD == nil)
+        }
 
         private enum CodingKeys: String, CodingKey {
             case date
@@ -361,8 +391,14 @@ extension CostUsageDailyReport {
         var sawStandardTokens = false
         var priorityTokens: Int = 0
         var sawPriorityTokens = false
+        var unpricedTokens: Int = 0
+        var standardUnpricedTokens: Int = 0
+        var priorityUnpricedTokens: Int = 0
 
         mutating func add(_ breakdown: ModelBreakdown) {
+            self.unpricedTokens += breakdown.unpricedTokens ?? 0
+            self.standardUnpricedTokens += breakdown.standardUnpricedTokens ?? 0
+            self.priorityUnpricedTokens += breakdown.priorityUnpricedTokens ?? 0
             if let totalTokens = breakdown.totalTokens {
                 self.totalTokens += totalTokens
                 self.sawTotalTokens = true
@@ -397,7 +433,10 @@ extension CostUsageDailyReport {
                 standardCostUSD: self.sawStandardCost ? self.standardCostUSD : nil,
                 priorityCostUSD: self.sawPriorityCost ? self.priorityCostUSD : nil,
                 standardTokens: self.sawStandardTokens ? self.standardTokens : nil,
-                priorityTokens: self.sawPriorityTokens ? self.priorityTokens : nil)
+                priorityTokens: self.sawPriorityTokens ? self.priorityTokens : nil,
+                unpricedTokens: self.unpricedTokens > 0 ? self.unpricedTokens : nil,
+                standardUnpricedTokens: self.standardUnpricedTokens > 0 ? self.standardUnpricedTokens : nil,
+                priorityUnpricedTokens: self.priorityUnpricedTokens > 0 ? self.priorityUnpricedTokens : nil)
         }
     }
 

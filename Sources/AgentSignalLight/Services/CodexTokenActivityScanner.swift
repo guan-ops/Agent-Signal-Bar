@@ -15,6 +15,15 @@ struct CodexTokenActivityDay: Codable, Identifiable, Equatable, Sendable {
     let modelPriorityTokenTotals: [String: Int]
     let modelStandardEstimatedCostTotals: [String: Double]
     let modelPriorityEstimatedCostTotals: [String: Double]
+    // Optional so snapshots written by older versions remain decodable.
+    let hasUnpricedUsage: Bool?
+    let modelUnpricedTokenTotals: [String: Int]?
+    let modelStandardUnpricedTokenTotals: [String: Int]?
+    let modelPriorityUnpricedTokenTotals: [String: Int]?
+
+    var costIsPartial: Bool {
+        hasUnpricedUsage == true || (totalTokens > 0 && estimatedCostUSD == nil)
+    }
 
     init(
         day: Date,
@@ -25,7 +34,11 @@ struct CodexTokenActivityDay: Codable, Identifiable, Equatable, Sendable {
         modelStandardTokenTotals: [String: Int] = [:],
         modelPriorityTokenTotals: [String: Int] = [:],
         modelStandardEstimatedCostTotals: [String: Double] = [:],
-        modelPriorityEstimatedCostTotals: [String: Double] = [:]
+        modelPriorityEstimatedCostTotals: [String: Double] = [:],
+        hasUnpricedUsage: Bool? = nil,
+        modelUnpricedTokenTotals: [String: Int]? = nil,
+        modelStandardUnpricedTokenTotals: [String: Int]? = nil,
+        modelPriorityUnpricedTokenTotals: [String: Int]? = nil
     ) {
         self.day = day
         self.totalTokens = totalTokens
@@ -36,10 +49,26 @@ struct CodexTokenActivityDay: Codable, Identifiable, Equatable, Sendable {
         self.modelPriorityTokenTotals = modelPriorityTokenTotals
         self.modelStandardEstimatedCostTotals = modelStandardEstimatedCostTotals
         self.modelPriorityEstimatedCostTotals = modelPriorityEstimatedCostTotals
+        self.hasUnpricedUsage = hasUnpricedUsage
+        self.modelUnpricedTokenTotals = modelUnpricedTokenTotals
+        self.modelStandardUnpricedTokenTotals = modelStandardUnpricedTokenTotals
+        self.modelPriorityUnpricedTokenTotals = modelPriorityUnpricedTokenTotals
     }
 
     var id: TimeInterval {
         day.timeIntervalSince1970
+    }
+}
+
+struct CodexVerifiedPrefixSnapshot: Equatable, Sendable {
+    let statFingerprint: Int64
+    let changeTimeNanoseconds: Int64
+    let size: UInt64
+
+    func matches(_ cursor: CodexTokenObservationCursor) -> Bool {
+        cursor.sourceStatFingerprint == statFingerprint
+            && cursor.sourceChangeTimeNanoseconds == changeTimeNanoseconds
+            && cursor.endOffset <= size
     }
 }
 
@@ -53,6 +82,9 @@ struct CodexTokenActivityScanWatermark: Equatable, Sendable {
     let lineFingerprint: String
     let eventTimestamp: Date?
     let totalTokens: Int?
+    // Evidence for subtracting this scanned baseline from a later live total.
+    // It does not extend the scanned offset or cover any unscanned token event.
+    let verifiedPrefixSnapshot: CodexVerifiedPrefixSnapshot?
 
     init(
         sessionID: String?,
@@ -63,7 +95,8 @@ struct CodexTokenActivityScanWatermark: Equatable, Sendable {
         eventTimestamp: Date?,
         totalTokens: Int?,
         sourceStatFingerprint: Int64? = nil,
-        sourceChangeTimeNanoseconds: Int64? = nil
+        sourceChangeTimeNanoseconds: Int64? = nil,
+        verifiedPrefixSnapshot: CodexVerifiedPrefixSnapshot? = nil
     ) {
         self.sessionID = sessionID
         self.sourceID = sourceID
@@ -74,6 +107,7 @@ struct CodexTokenActivityScanWatermark: Equatable, Sendable {
         self.lineFingerprint = lineFingerprint
         self.eventTimestamp = eventTimestamp
         self.totalTokens = totalTokens
+        self.verifiedPrefixSnapshot = verifiedPrefixSnapshot
     }
 }
 
@@ -178,7 +212,7 @@ extension CodexTokenActivityScanning {
 final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Sendable {
     private typealias ModelContext = (lineNumber: Int, model: String, turnID: String?)
 
-    static let currentCacheVersion = 25
+    static let currentCacheVersion = 27
 
     private static let newlineNeedle = Data([0x0A])
     private static let tokenCountNeedle = Data("token_count".utf8)
@@ -618,8 +652,10 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
 
         let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: options.cacheRoot)
         let currentRootIdentities = Set(CostUsageScanner.codexRootsFingerprint(options: options).keys)
-        if !cache.days.isEmpty,
-           cache.roots.map({ Set($0.keys) }) == currentRootIdentities,
+        // Recovered pagination can be the entire history even when the ordinary
+        // inventory contains only empty conflict sentinels. The report builder
+        // applies those ledgers and checks whether any displayable data exists.
+        if cache.roots.map({ Set($0.keys) }) == currentRootIdentities,
            !CostUsageScanner.requestedWindowExpandsCache(range: costRange, cache: cache) {
             let report = CostUsageScanner.buildCodexReportFromCache(
                 cache: cache,
@@ -657,6 +693,14 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
             provider: .codex,
             cacheRoot: options.cacheRoot
         )
+        try CostUsageScanner.validateCodexPaginatedSnapshots(cache: cache, checkCancellation: nil)
+        let effectiveCache = CostUsageScanner.cacheIncludingCodexPaginatedHistory(cache)
+        return try agentSignalCostUsageScanWatermarksFromCache(effectiveCache, through: through)
+    }
+
+    private func agentSignalCostUsageScanWatermarksFromCache(
+        _ cache: CostUsageCache, through: Date
+    ) throws -> [CodexTokenActivityScanWatermark] {
         let owners = cache.files.compactMap { path, usage -> (String, String, CostUsageFileUsage)? in
             guard usage.codexInventoryOnly != true,
                   usage.codexNoncontributingDuplicate != true,
@@ -685,17 +729,43 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
             // offset deliberately does not cover the new live bytes.
             let fileURL = URL(fileURLWithPath: path)
             let currentMetadata = CostUsageScanner.codexFileMetadata(fileURL: fileURL)
+            var verifiedPrefixSnapshot: CodexVerifiedPrefixSnapshot?
             if let currentGeneration = currentMetadata.fileId {
-                let parsedBytes = usage.parsedBytes ?? usage.size
-                guard currentGeneration == generation,
+                guard let parsedBytes = usage.parsedBytes,
+                      currentGeneration == generation,
                       event.endOffset <= parsedBytes,
-                      try CostUsageScanner.codexFileMatchesCommittedFrontier(
-                          fileURL: fileURL,
-                          cached: usage,
-                          checkCancellation: nil
-                      )
+                      parsedBytes > 0, parsedBytes <= currentMetadata.size,
+                      usage.committedPrefixFingerprint?.isEmpty == false
                 else {
                     throw CostUsageScanner.codexChangedDuringScanError(path: path)
+                }
+                // A committed cache already proves this exact stat/ctime and
+                // generation. Avoid rereading every unchanged historical byte.
+                let unchanged = Self.costUsageFileMetadata(currentMetadata, matches: usage)
+                    && Self.costUsageFileMetadata(
+                        CostUsageScanner.codexFileMetadata(fileURL: fileURL), matches: usage)
+                if !unchanged {
+                    guard try CostUsageScanner.codexFileMatchesCommittedFrontier(
+                        fileURL: fileURL,
+                        cached: usage,
+                        checkCancellation: nil
+                    ) else {
+                        throw CostUsageScanner.codexChangedDuringScanError(path: path)
+                    }
+                }
+                let verifiedMetadata = CostUsageScanner.codexFileMetadata(fileURL: fileURL)
+                guard verifiedMetadata.fileId == generation, verifiedMetadata.size >= parsedBytes,
+                      !unchanged || Self.costUsageFileMetadata(verifiedMetadata, matches: usage) else {
+                    throw CostUsageScanner.codexChangedDuringScanError(path: path)
+                }
+                // The digest permits a concurrent append. Only issue an exact
+                // snapshot proof when *all* metadata stayed fixed during it.
+                if CostUsageScanner.codexFileMetadataIsSameSnapshot(currentMetadata, verifiedMetadata),
+                   currentMetadata.changeTimeNanoseconds == verifiedMetadata.changeTimeNanoseconds,
+                   let stat = verifiedMetadata.statFingerprint,
+                   let changeTime = verifiedMetadata.changeTimeNanoseconds {
+                    verifiedPrefixSnapshot = .init(statFingerprint: stat,
+                        changeTimeNanoseconds: changeTime, size: UInt64(verifiedMetadata.size))
                 }
             } else if fileManager.fileExists(atPath: path) {
                 throw CostUsageScanner.codexChangedDuringScanError(path: path)
@@ -713,7 +783,8 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
                 eventTimestamp: event.eventTimestamp,
                 totalTokens: event.totalTokens,
                 sourceStatFingerprint: usage.sourceStatFingerprint,
-                sourceChangeTimeNanoseconds: usage.sourceChangeTimeNanoseconds
+                sourceChangeTimeNanoseconds: usage.sourceChangeTimeNanoseconds,
+                verifiedPrefixSnapshot: verifiedPrefixSnapshot
             ))
         }
 
@@ -991,8 +1062,20 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
             var modelPriorityTokenTotals: [String: Int] = [:]
             var modelStandardCostTotals: [String: Double] = [:]
             var modelPriorityCostTotals: [String: Double] = [:]
+            var modelUnpricedTokens: [String: Int] = [:]
+            var modelStandardUnpricedTokens: [String: Int] = [:]
+            var modelPriorityUnpricedTokens: [String: Int] = [:]
 
             for breakdown in entry.modelBreakdowns ?? [] {
+                if let tokens = breakdown.standardUnpricedTokens, tokens > 0 {
+                    modelStandardUnpricedTokens[breakdown.modelName, default: 0] += tokens
+                }
+                if let tokens = breakdown.priorityUnpricedTokens, tokens > 0 {
+                    modelPriorityUnpricedTokens[breakdown.modelName, default: 0] += tokens
+                }
+                if breakdown.hasUnpricedUsage {
+                    modelUnpricedTokens[breakdown.modelName, default: 0] += max(breakdown.unpricedTokens ?? breakdown.totalTokens ?? 0, 1)
+                }
                 if let tokens = breakdown.totalTokens, tokens > 0 {
                     modelTokenTotals[breakdown.modelName, default: 0] += tokens
                 }
@@ -1022,7 +1105,11 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
                 modelStandardTokenTotals: modelStandardTokenTotals,
                 modelPriorityTokenTotals: modelPriorityTokenTotals,
                 modelStandardEstimatedCostTotals: modelStandardCostTotals,
-                modelPriorityEstimatedCostTotals: modelPriorityCostTotals
+                modelPriorityEstimatedCostTotals: modelPriorityCostTotals,
+                hasUnpricedUsage: !modelUnpricedTokens.isEmpty,
+                modelUnpricedTokenTotals: modelUnpricedTokens,
+                modelStandardUnpricedTokenTotals: modelStandardUnpricedTokens,
+                modelPriorityUnpricedTokenTotals: modelPriorityUnpricedTokens
             )
         }
         .sorted { $0.day < $1.day }
@@ -2006,7 +2093,9 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
                     modelStandardTokenTotals: $0.value.modelStandardTokenTotals,
                     modelPriorityTokenTotals: $0.value.modelPriorityTokenTotals,
                     modelStandardEstimatedCostTotals: $0.value.modelStandardEstimatedCostTotals,
-                    modelPriorityEstimatedCostTotals: $0.value.modelPriorityEstimatedCostTotals
+                    modelPriorityEstimatedCostTotals: $0.value.modelPriorityEstimatedCostTotals,
+                    hasUnpricedUsage: !($0.value.modelUnpricedTokenTotals ?? [:]).isEmpty,
+                    modelUnpricedTokenTotals: $0.value.modelUnpricedTokenTotals
                 )
             }
             .sorted { $0.day < $1.day }
@@ -2513,6 +2602,7 @@ private struct CodexTokenActivityDayCache: Codable, Equatable {
     var modelPriorityTokenTotals: [String: Int]
     var modelStandardEstimatedCostTotals: [String: Double]
     var modelPriorityEstimatedCostTotals: [String: Double]
+    var modelUnpricedTokenTotals: [String: Int]?
 
     mutating func add(
         tokens: Int,
@@ -2523,6 +2613,11 @@ private struct CodexTokenActivityDayCache: Codable, Equatable {
         let positiveTokens = max(tokens, 0)
         guard positiveTokens > 0 else { return }
         totalTokens += positiveTokens
+        if cost == nil {
+            var unpriced = modelUnpricedTokenTotals ?? [:]
+            unpriced[model ?? "unknown", default: 0] += positiveTokens
+            modelUnpricedTokenTotals = unpriced
+        }
         if let cost {
             estimatedCostUSD = (estimatedCostUSD ?? 0) + max(cost, 0)
         }
@@ -2548,6 +2643,11 @@ private struct CodexTokenActivityDayCache: Codable, Equatable {
     }
 
     mutating func merge(_ other: CodexTokenActivityDayCache) {
+        var unpriced = modelUnpricedTokenTotals ?? [:]
+        for (model, tokens) in other.modelUnpricedTokenTotals ?? [:] {
+            unpriced[model, default: 0] += tokens
+        }
+        modelUnpricedTokenTotals = unpriced.isEmpty ? nil : unpriced
         totalTokens += max(other.totalTokens, 0)
         if let otherCost = other.estimatedCostUSD {
             estimatedCostUSD = (estimatedCostUSD ?? 0) + max(otherCost, 0)

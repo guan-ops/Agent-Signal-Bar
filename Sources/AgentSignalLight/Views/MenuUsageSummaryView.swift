@@ -96,6 +96,7 @@ struct MenuUsageSummaryView: View {
                 quota
                 Divider()
                 tokens
+                CostCurrencyRateNote(store: model.costCurrency, text: model.text, compact: true)
             }
             .padding(12)
             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
@@ -222,8 +223,8 @@ struct MenuUsageSummaryView: View {
     private var tokens: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .top, spacing: 16) {
-                metricColumn(title: model.text("今日", "Today"), tokens: todayTokens, cost: todayCost)
-                metricColumn(title: model.text("近 30 天", "30 days"), tokens: monthTokens, cost: monthCost)
+                metricColumn(title: model.text("今日", "Today"), tokens: todayTokens, cost: todayCost, partial: isClaude ? todayClaudeEntry?.hasUnpricedUsage == true : model.tokenActivityCostIsPartial(for: .today))
+                metricColumn(title: model.text("近 30 天", "30 days"), tokens: monthTokens, cost: monthCost, partial: isClaude ? historyDays.contains { $0.costIsPartial } : model.tokenActivityCostIsPartial(for: .last30Days))
             }
             MenuTokenHistoryChart(model: model, days: historyDays, isClaude: isClaude)
                 .id(navigation.provider)
@@ -248,11 +249,12 @@ struct MenuUsageSummaryView: View {
         }
     }
 
-    private func metricColumn(title: String, tokens: Int?, cost: Double?) -> some View {
+    private func metricColumn(title: String, tokens: Int?, cost: Double?, partial: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).foregroundStyle(.secondary)
-            Text(cost.map { $0.formatted(.currency(code: "USD")) } ?? "—")
+            Text(model.estimatedCostText(cost, partial: partial))
                 .font(.system(size: 17, weight: .semibold)).monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.7)
             Text(tokens.map { model.compactTokenCountText($0) + " Token" } ?? "—")
                 .fontWeight(.medium).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
         }.frame(maxWidth: .infinity, alignment: .leading)
@@ -283,15 +285,17 @@ struct MenuUsageSummaryView: View {
         let today = calendar.startOfDay(for: Date())
         let start = calendar.date(byAdding: .day, value: -29, to: today) ?? today
         let end = calendar.date(byAdding: .day, value: 1, to: today) ?? today
-        let records: [CodexTokenActivityDay] = isClaude ? claude.days.compactMap { entry in
-            guard let day = CostUsageDateParser.parse(entry.date) else { return nil }
-            return CodexTokenActivityDay(day: day, totalTokens: entry.totalTokens ?? 0,
-                                         estimatedCostUSD: entry.costUSD,
-                                         modelTokenTotals: Dictionary((entry.modelBreakdowns ?? []).map {
-                                             ($0.modelName, $0.totalTokens ?? 0)
-                                         }, uniquingKeysWith: +))
-        } : model.tokenActivityDays
+        let records: [CodexTokenActivityDay] = isClaude ? claude.days.compactMap(Self.activityDay(for:)) : model.tokenActivityDays
         return records.filter { $0.day >= start && $0.day < end }
+    }
+
+    static func activityDay(for entry: CostUsageDailyReport.Entry) -> CodexTokenActivityDay? {
+        guard let day = CostUsageDateParser.parse(entry.date) else { return nil }
+        return CodexTokenActivityDay(day: day, totalTokens: entry.totalTokens ?? 0,
+            estimatedCostUSD: entry.costUSD,
+            modelTokenTotals: Dictionary((entry.modelBreakdowns ?? []).map {
+                ($0.modelName, $0.totalTokens ?? 0)
+            }, uniquingKeysWith: +), hasUnpricedUsage: entry.hasUnpricedUsage)
     }
 
     private var todayTokens: Int? {
@@ -338,14 +342,26 @@ private final class UsageActionMenuItem: NSMenuItem {
     @objc private func invoke() { handler() }
 }
 
-/// NSMenu uses the custom view's frame; keep it equal to SwiftUI's full content height.
+/// NSMenu uses the custom view's frame. Resize between layout passes, including while tracking.
 @MainActor
-private final class MenuUsageHostingView<Content: View>: NSHostingView<Content> {
+final class MenuUsageHostingView<Content: View>: NSHostingView<Content> {
+    private var resizeScheduled = false
+
     override func layout() {
         super.layout()
-        let height = fittingSize.height
-        if abs(frame.height - height) > 0.5 {
-            setFrameSize(NSSize(width: frame.width, height: height))
+        guard abs(frame.height - fittingSize.height) > 0.5, !resizeScheduled else { return }
+        resizeScheduled = true
+        // Resizing here re-enters NSMenu's window layout and can apply the height delta
+        // twice to its glass background. The main queue alone stalls while tracking.
+        let resize: @MainActor @Sendable () -> Void = { [weak self] in
+            guard let self else { return }
+            self.resizeScheduled = false
+            let height = self.fittingSize.height
+            guard height.isFinite, height > 0, abs(self.frame.height - height) > 0.5 else { return }
+            self.setFrameSize(NSSize(width: self.frame.width, height: height))
+        }
+        RunLoop.main.perform(inModes: [.default, .eventTracking]) {
+            MainActor.assumeIsolated { resize() }
         }
     }
 }

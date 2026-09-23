@@ -622,7 +622,7 @@ extension MenuBarStatusModel {
         )
     }
 
-    func tokenUsageCostText(_ cost: Double?, isLoading: Bool = false) -> String {
+    func tokenUsageCostText(_ cost: Double?, isLoading: Bool = false, partial: Bool = false) -> String {
         guard let cost else {
             if isLoading {
                 return text("正在计算…", "calculating…")
@@ -630,9 +630,13 @@ extension MenuBarStatusModel {
             return text("费用未知", "cost unavailable")
         }
         return text(
-            "费用 \(String(format: "$%.2f", max(0, cost)))",
-            "cost \(String(format: "$%.2f", max(0, cost)))"
+            "费用 \(estimatedCostText(cost, partial: partial))",
+            "cost \(estimatedCostText(cost, partial: partial))"
         )
+    }
+
+    func estimatedCostText(_ costUSD: Double?, partial: Bool = false) -> String {
+        costCurrency.format(costUSD, partial: partial, locale: Locale(identifier: appLanguage.localeIdentifier))
     }
 
     func localizedTimeString(for date: Date) -> String {

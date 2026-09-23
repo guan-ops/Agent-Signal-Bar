@@ -128,9 +128,9 @@ final class AgentSignalLightCoreTests: XCTestCase {
             modelsDevCatalog: emptyCatalog
         ))
 
-        XCTAssertEqual(sol, 7.1, accuracy: 0.000_001)
-        XCTAssertEqual(terra, 3.55, accuracy: 0.000_001)
-        XCTAssertEqual(luna, 1.42, accuracy: 0.000_001)
+        XCTAssertEqual(sol, 9.56, accuracy: 0.000_001)
+        XCTAssertEqual(terra, 5.08, accuracy: 0.000_001)
+        XCTAssertEqual(luna, 0.508, accuracy: 0.000_001)
     }
 
     func testCodex56PriorityPricingCoversAllVariants() throws {
@@ -153,9 +153,9 @@ final class AgentSignalLightCoreTests: XCTestCase {
             outputTokens: 10_000
         ))
 
-        XCTAssertEqual(sol, 1.42, accuracy: 0.000_001)
-        XCTAssertEqual(terra, 0.71, accuracy: 0.000_001)
-        XCTAssertEqual(luna, 0.284, accuracy: 0.000_001)
+        XCTAssertEqual(sol, 1.056, accuracy: 0.000_001)
+        XCTAssertEqual(terra, 0.568, accuracy: 0.000_001)
+        XCTAssertEqual(luna, 0.0568, accuracy: 0.000_001)
     }
 
     func testCodex56SessionScanProducesDollarCost() throws {
@@ -200,9 +200,9 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         let totalCost = try XCTUnwrap(report.summary?.totalCostUSD)
         let modelCost = try XCTUnwrap(report.data.first?.modelBreakdowns?.first?.costUSD)
-        XCTAssertEqual(totalCost, 7.1, accuracy: 0.000_001)
+        XCTAssertEqual(totalCost, 9.56, accuracy: 0.000_001)
         XCTAssertEqual(report.data.first?.modelBreakdowns?.first?.modelName, "gpt-5.6-sol")
-        XCTAssertEqual(modelCost, 7.1, accuracy: 0.000_001)
+        XCTAssertEqual(modelCost, 9.56, accuracy: 0.000_001)
     }
 
     func testClaudeScanReturnsFreshReportWhenCacheSaveFails() throws {

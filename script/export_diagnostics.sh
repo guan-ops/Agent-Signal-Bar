@@ -22,6 +22,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --help|-h)
       echo "usage: $0 [--full] [--output <directory>]"
+      echo "AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME overrides user diagnostic paths."
       exit 0
       ;;
     *)
@@ -44,10 +45,14 @@ COMMANDS_DIR="$WORK_DIR/commands"
 FILES_DIR="$WORK_DIR/files"
 CONFIG_DIR="$WORK_DIR/config"
 ARCHIVE="$OUTPUT_ROOT/$RUN_ID.zip"
-DEFAULT_STATE_DIR="$HOME/Library/Application Support/Agent Signal Bar/SignalState"
+DIAGNOSTIC_HOME="${AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME:-$HOME}"
+DEFAULT_STATE_DIR="$DIAGNOSTIC_HOME/Library/Application Support/Agent Signal Bar/SignalState"
 STATE_DIR="${AGENT_SIGNAL_LIGHT_STATE_DIR:-${SIGNAL_LIGHT_STATE_DIR:-$DEFAULT_STATE_DIR}}"
 STATE_FILE="${AGENT_SIGNAL_LIGHT_STATE_FILE:-$STATE_DIR/status.json}"
-LAUNCH_AGENT_PLIST="$HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
+LAUNCH_AGENT_PLIST="$DIAGNOSTIC_HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
+if [[ -n "${AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME:-}" ]]; then
+  export AGENT_SIGNAL_LIGHT_STATE_FILE="$STATE_FILE"
+fi
 
 mkdir -p "$COMMANDS_DIR" "$FILES_DIR" "$CONFIG_DIR"
 
@@ -108,7 +113,11 @@ else
 fi
 
 if [[ -x "$ROOT_DIR/script/install_hooks.py" ]]; then
-  run_capture "install-hooks-dry-run" /usr/bin/python3 "$ROOT_DIR/script/install_hooks.py" --target all --dry-run
+  if [[ -n "${AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME:-}" ]]; then
+    run_capture "install-hooks-dry-run" /usr/bin/python3 "$ROOT_DIR/script/install_hooks.py" --target all --home "$DIAGNOSTIC_HOME" --dry-run
+  else
+    run_capture "install-hooks-dry-run" /usr/bin/python3 "$ROOT_DIR/script/install_hooks.py" --target all --dry-run
+  fi
 else
   write_note "$COMMANDS_DIR/install-hooks-dry-run.txt" "script/install_hooks.py is not available in $ROOT_DIR"
 fi
@@ -155,11 +164,21 @@ manifest = {
 root.joinpath("manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
 PY
 
-rm -f "$ARCHIVE"
-(
+rm -f "$ARCHIVE" || exit 1
+if ! (
   cd "$OUTPUT_ROOT" || exit 1
   /usr/bin/ditto -c -k --norsrc --keepParent "$RUN_ID" "$ARCHIVE"
-)
+); then
+  rm -f "$ARCHIVE"
+  echo "export_diagnostics: failed to create diagnostics archive" >&2
+  exit 1
+fi
+
+if [[ ! -f "$ARCHIVE" || ! -s "$ARCHIVE" ]] || ! /usr/bin/unzip -tq "$ARCHIVE" >/dev/null 2>&1; then
+  rm -f "$ARCHIVE"
+  echo "export_diagnostics: diagnostics archive is missing, empty, or invalid" >&2
+  exit 1
+fi
 
 echo "Diagnostics folder: $WORK_DIR"
 echo "Diagnostics archive: $ARCHIVE"

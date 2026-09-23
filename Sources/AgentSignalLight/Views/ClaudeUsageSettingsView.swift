@@ -217,7 +217,7 @@ struct ClaudeUsageSettingsView: View {
                         Text("Token · " + support.days.compactMap(\.totalTokens).reduce(0, +).formatted())
                         Spacer()
                         let costs = support.days.compactMap(\.costUSD)
-                        if !costs.isEmpty { Text(costs.reduce(0, +), format: .currency(code: "USD")) }
+                        if !costs.isEmpty { Text(model.estimatedCostText(costs.reduce(0, +), partial: support.days.contains { $0.hasUnpricedUsage })) }
                     }
                     Chart(support.days, id: \.date) { day in
                         BarMark(x: .value("Day", day.date), y: .value("Tokens", day.totalTokens ?? 0))
@@ -228,7 +228,7 @@ struct ClaudeUsageSettingsView: View {
                             Text(day.date)
                             Spacer()
                             Text((day.totalTokens ?? 0).formatted() + " Token")
-                            if let cost = day.costUSD { Text(cost, format: .currency(code: "USD")) }
+                            if let cost = day.costUSD { Text(model.estimatedCostText(cost, partial: day.hasUnpricedUsage)) }
                         }
                     }
                 }

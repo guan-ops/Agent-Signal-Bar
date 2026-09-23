@@ -142,7 +142,7 @@ final class ClaudeSupportTests: XCTestCase {
             let model = ClaudeSupportModel(defaults: defaults, readCredentials: { _ in
                 XCTFail("History must not read credentials")
                 throw ClaudeSupportError.loginRequired
-            }, historyLoader: {
+            }, historyLoader: { _ in
                 started.fulfill()
                 guard gate.wait(timeout: .now() + 5) == .success else { throw ClaudeSupportError.timedOut }
                 if fails { throw ClaudeSupportError.commandFailed }
@@ -168,7 +168,7 @@ final class ClaudeSupportTests: XCTestCase {
         let started = expectation(description: "scan started")
         let gate = DispatchSemaphore(value: 0)
         defer { gate.signal() }
-        let model = ClaudeSupportModel(defaults: defaults, historyLoader: {
+        let model = ClaudeSupportModel(defaults: defaults, historyLoader: { _ in
             started.fulfill()
             _ = gate.wait(timeout: .now() + 5)
             return CostUsageDailyReport(data: [], summary: nil)
@@ -225,7 +225,7 @@ final class ClaudeSupportTests: XCTestCase {
         }
         let support = ClaudeSupportModel(defaults: defaults, service: service,
             readCredentials: { _ in .init(accessToken: "fixture", expiresAt: nil, plan: "Max") },
-            historyLoader: { CostUsageDailyReport(data: previewDays, summary: nil) })
+            historyLoader: { _ in CostUsageDailyReport(data: previewDays, summary: nil) })
         support.refresh(force: true)
         for _ in 0..<200 where support.isRefreshing { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(support.snapshot?.windows.count, 2)
@@ -309,7 +309,7 @@ final class ClaudeSupportTests: XCTestCase {
         let service = ClaudeUsageService { request in
             (Data(#"{"five_hour":{"utilization":20}}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
-        let model = ClaudeSupportModel(defaults: defaults, service: service, readCredentials: { _ in identity.next() }, historyLoader: {
+        let model = ClaudeSupportModel(defaults: defaults, service: service, readCredentials: { _ in identity.next() }, historyLoader: { _ in
             finished.fulfill()
             return CostUsageDailyReport(data: [], summary: nil)
         })

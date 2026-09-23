@@ -2760,6 +2760,9 @@ private struct FloatingSignalTokenPopoverView: View {
                 .overlay(Color.white.opacity(0.12))
 
             tokenRow(.last30Days)
+
+            CostCurrencyRateNote(store: model.costCurrency, text: model.text, compact: true)
+                .environment(\.colorScheme, .dark)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
@@ -2789,7 +2792,8 @@ private struct FloatingSignalTokenPopoverView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
 
-                    Text(model.tokenUsageCostText(cost, isLoading: model.isTokenActivityLoading))
+                    Text(model.tokenUsageCostText(cost, isLoading: model.isTokenActivityLoading,
+                        partial: model.tokenActivityCostIsPartial(for: tokenWindow)))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.white.opacity(0.72))
                         .lineLimit(1)

@@ -44,7 +44,7 @@ final class ClaudeLoginFlowTests: XCTestCase {
         }
         let model = ClaudeSupportModel(defaults: defaults, service: service,
             readCredentials: { _ in .init(accessToken: "fixture", expiresAt: nil, plan: "pro") },
-            loginRunner: { _ in }, historyLoader: { .init(data: [], summary: nil) })
+            loginRunner: { _ in }, historyLoader: { _ in .init(data: [], summary: nil) })
         XCTAssertNil(defaults.object(forKey: "claude.usageSource"))
         XCTAssertNil(defaults.object(forKey: "claude.webBrowser"))
         model.login()
@@ -94,7 +94,7 @@ final class ClaudeLoginFlowTests: XCTestCase {
                 installRunner: {
                     if fails { throw ClaudeSupportError.commandFailed }
                     return URL(fileURLWithPath: "/usr/bin/true")
-                }, historyLoader: { .init(data: [], summary: nil) })
+                }, historyLoader: { _ in .init(data: [], summary: nil) })
             model.installAndLogin()
             for _ in 0..<300 where model.isInstallingCLI || model.isLoggingIn || model.isRefreshing {
                 try await Task.sleep(for: .milliseconds(10))
@@ -119,7 +119,7 @@ final class ClaudeLoginFlowTests: XCTestCase {
         defaults.set("/usr/bin/false", forKey: "claude.executablePath")
         let model = ClaudeSupportModel(defaults: defaults, readCredentials: { _ in
             XCTFail("Failed login must not read credentials"); throw ClaudeSupportError.loginRequired
-        }, loginRunner: { _ in throw ClaudeSupportError.commandFailed }, historyLoader: { .init(data: [], summary: nil) })
+        }, loginRunner: { _ in throw ClaudeSupportError.commandFailed }, historyLoader: { _ in .init(data: [], summary: nil) })
         model.login()
         for _ in 0..<300 where model.isLoggingIn { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertFalse(model.credentialConsent)

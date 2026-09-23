@@ -81,7 +81,7 @@ agent_signal_product_bin_path() {
   fi
 }
 
-agent_signal_build_product() {
+agent_signal_build_product() (
   local product="$1"
   local binary_name="$2"
   local configuration="$3"
@@ -92,7 +92,7 @@ agent_signal_build_product() {
   local inputs=()
 
   archs="$(agent_signal_normalize_archs "$raw_archs")" || return
-  mkdir -p "$(dirname "$output_path")"
+  mkdir -p "$(dirname "$output_path")" || return
 
   while IFS= read -r arg; do
     [[ -n "$arg" ]] && args+=("$arg")
@@ -100,46 +100,55 @@ agent_signal_build_product() {
 
   if [[ -z "$archs" ]]; then
     if [[ "${#args[@]}" -gt 0 ]]; then
-      agent_signal_swift build "${args[@]}" --product "$product" >&2
+      agent_signal_swift build "${args[@]}" --product "$product" >&2 || return
     else
-      agent_signal_swift build --product "$product" >&2
+      agent_signal_swift build --product "$product" >&2 || return
     fi
     local bin_dir
-    bin_dir="$(agent_signal_product_bin_path "$product" "$configuration")"
+    bin_dir="$(agent_signal_product_bin_path "$product" "$configuration")" || return
     local bin_path="$bin_dir/$binary_name"
     if [[ ! -x "$bin_path" ]]; then
       echo "built binary not found: $bin_path" >&2
       return 1
     fi
-    cp "$bin_path" "$output_path"
-    chmod +x "$output_path"
+    cp "$bin_path" "$output_path" || return
+    chmod +x "$output_path" || return
     return 0
   fi
+
+  # SwiftPM backends can return the same Products/Release directory for both
+  # triples. Preserve each slice before the next build overwrites that path.
+  # The function subshell keeps this cleanup trap separate from caller traps.
+  local slice_dir
+  slice_dir="$(mktemp -d "${TMPDIR:-/private/tmp}/agent-signal-slices.XXXXXX")" || return
+  trap 'rm -rf "$slice_dir"' EXIT
 
   local arch
   for arch in $archs; do
     if [[ "${#args[@]}" -gt 0 ]]; then
-      agent_signal_swift build "${args[@]}" --triple "${arch}-apple-macosx" --product "$product" >&2
+      agent_signal_swift build "${args[@]}" --triple "${arch}-apple-macosx" --product "$product" >&2 || return
     else
-      agent_signal_swift build --triple "${arch}-apple-macosx" --product "$product" >&2
+      agent_signal_swift build --triple "${arch}-apple-macosx" --product "$product" >&2 || return
     fi
     local bin_dir
-    bin_dir="$(agent_signal_product_bin_path "$product" "$configuration" "$arch")"
+    bin_dir="$(agent_signal_product_bin_path "$product" "$configuration" "$arch")" || return
     local bin_path="$bin_dir/$binary_name"
     if [[ ! -x "$bin_path" ]]; then
       echo "built $arch binary not found: $bin_path" >&2
       return 1
     fi
-    inputs+=("$bin_path")
+    local slice_path="$slice_dir/$arch"
+    cp "$bin_path" "$slice_path" || return
+    inputs+=("$slice_path")
   done
 
   if [[ "${#inputs[@]}" -eq 1 ]]; then
-    cp "${inputs[0]}" "$output_path"
+    cp "${inputs[0]}" "$output_path" || return
   else
-    lipo -create "${inputs[@]}" -output "$output_path"
+    lipo -create "${inputs[@]}" -output "$output_path" || return
   fi
   chmod +x "$output_path"
-}
+)
 
 agent_signal_verify_binary_archs() {
   local binary_path="$1"
