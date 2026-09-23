@@ -134,7 +134,8 @@ struct CodexUsageDetailsView: View {
                         Spacer()
                         Text(cost(session.costUSD, partial: session.hasUnpricedUsage)).monospacedDigit()
                     }
-                    Text(session.models.joined(separator: " · ")).lineLimit(2).foregroundStyle(.secondary)
+                    Text(session.models.map { CodexModelPresentation.forModel($0).displayName }
+                        .joined(separator: " · ")).lineLimit(2).foregroundStyle(.secondary)
                     Text(text("输入 \(tokens(session.inputTokens)) · 缓存 \(tokens(session.cachedTokens)) · 输出 \(tokens(session.outputTokens))",
                               "Input \(tokens(session.inputTokens)) · Cached \(tokens(session.cachedTokens)) · Output \(tokens(session.outputTokens))"))
                         .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

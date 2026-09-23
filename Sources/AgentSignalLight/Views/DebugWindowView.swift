@@ -2068,21 +2068,23 @@ struct DebugWindowView: View {
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text(model.text("Token 使用", "Token Usage"))
+                Text(selectedUsagePlatform == .codex
+                    ? model.text("本机 Token 使用", "Local Token Usage")
+                    : model.text("Token 使用", "Token Usage"))
                     .font(settingsSubsectionTitleFont)
 
+                if selectedUsagePlatform == .codex {
+                    Image(systemName: "info.circle")
+                        .font(settingsDetailFont)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel(model.text("统计范围", "Usage scope"))
+                        .help(model.text(
+                            "汇总本机 Codex 会话日志，切换账号不影响统计范围。",
+                            "Totals from local Codex session logs. Switching accounts does not change the scope."
+                        ))
+                }
+
                 Spacer(minLength: 12)
-
-            }
-
-            if selectedUsagePlatform == .codex {
-                Text(model.text(
-                    "本机 Codex 会话汇总，不归属于当前所选账号。",
-                    "Device-wide Codex sessions; not scoped to the selected account."
-                ))
-                .font(settingsDetailFont)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
             }
 
             if selectedUsagePlatform.supportsTokenActivity {
@@ -2408,20 +2410,7 @@ struct DebugWindowView: View {
     }
 
     private func tokenUsageModelSortRank(_ modelName: String) -> Int {
-        let modelName = modelName.lowercased()
-        if modelName == "__other__" { return 900 }
-        if modelName.contains("gpt-6-astra") { return 0 }
-        if modelName.contains("gpt-5.6-sol") { return 1 }
-        if modelName.contains("gpt-5.6-terra") { return 2 }
-        if modelName.contains("gpt-5.6-luna") { return 3 }
-        if modelName.contains("5.5") { return 10 }
-        if modelName.contains("5.4") { return 20 }
-        if modelName.contains("5.3") { return 30 }
-        if modelName.contains("5.2") { return 40 }
-        if modelName.contains("5.1") { return 50 }
-        if modelName.contains("gpt-5") { return 60 }
-        if modelName.contains("auto-review") { return 70 }
-        return 800
+        CodexModelPresentation.forModel(modelName).sortRank
     }
 
     private func tokenUsageModelColor(
@@ -2430,33 +2419,7 @@ struct DebugWindowView: View {
         prominent: Bool,
         isSelected: Bool
     ) -> Color {
-        let modelName = modelName.lowercased()
-        let baseColor: Color
-        if modelName.contains("gpt-6-astra") {
-            baseColor = Color(red: 0.86, green: 0.30, blue: 0.54)
-        } else if modelName.contains("gpt-5.6-sol") {
-            baseColor = Color(red: 0.18, green: 0.38, blue: 0.82)
-        } else if modelName.contains("gpt-5.6-terra") {
-            baseColor = Color(red: 0.26, green: 0.70, blue: 0.40)
-        } else if modelName.contains("gpt-5.6-luna") {
-            baseColor = Color(red: 0.96, green: 0.62, blue: 0.28)
-        } else if modelName.contains("5.5") {
-            baseColor = Color(red: 0.10, green: 0.48, blue: 0.95)
-        } else if modelName.contains("5.4") {
-            baseColor = Color(red: 0.95, green: 0.52, blue: 0.18)
-        } else if modelName.contains("5.3") {
-            baseColor = Color(red: 0.62, green: 0.42, blue: 0.95)
-        } else if modelName.contains("5.2") {
-            baseColor = Color(red: 0.18, green: 0.68, blue: 0.84)
-        } else if modelName.contains("5.1") {
-            baseColor = Color(red: 0.22, green: 0.72, blue: 0.42)
-        } else if modelName.contains("gpt-5") {
-            baseColor = Color(red: 0.22, green: 0.58, blue: 0.76)
-        } else if modelName.contains("auto-review") {
-            baseColor = Color(red: 0.30, green: 0.72, blue: 0.76)
-        } else {
-            baseColor = Color.secondary
-        }
+        let baseColor = CodexModelPresentation.forModel(modelName).color
 
         let baseOpacity = prominent
             ? 0.48 + (normalized * 0.42)
@@ -2479,11 +2442,7 @@ struct DebugWindowView: View {
 
     private func tokenUsageModelDisplayName(_ modelName: String) -> String {
         if modelName == "__other__" { return model.text("其他", "Other") }
-        if modelName.lowercased() == "gpt-6-astra" { return "GPT-6 Astra" }
-        if modelName.lowercased() == "gpt-5.6-sol" { return "GPT-5.6 Sol" }
-        if modelName.lowercased() == "gpt-5.6-terra" { return "GPT-5.6 Terra" }
-        if modelName.lowercased() == "gpt-5.6-luna" { return "GPT-5.6 Luna" }
-        return modelName
+        return CodexModelPresentation.forModel(modelName).displayName
     }
 
     private func tokenUsageDaySummaryText(for day: CodexTokenActivityDay) -> String {

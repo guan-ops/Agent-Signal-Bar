@@ -8,10 +8,18 @@ Use this checklist before treating a build as ready for daily use or local shari
 - Before handing off a build that should be visually smoke-tested, run `./script/verify_release_all.sh --skip-package --ui`.
 - For final verification on this Mac after hooks, login item, and the app process are intentionally configured, run `./script/verify_release_all.sh --skip-package --ui --strict-doctor`.
 - For a faster non-UI re-check after artifacts already exist, run `./script/verify_release_all.sh --skip-package`.
+- When preparing artifacts without reading the user's hook settings, Claude log, launch-agent plist, or signal state, run `./script/verify_release_all.sh --isolated` in an isolated build/test environment. Add `--skip-package` to reuse artifacts. This option creates and removes a temporary diagnostic home and CLI state under `/private/tmp`; it rejects `--ui`, `--launch`, and `--strict-doctor` because those options restart the running app.
+
+`--isolated` scopes the shell diagnostics and CLI state only. Swift tests use Foundation application-support/cache paths and may use Keychain or start monitoring through default dependencies, so a SwiftPM scratch path alone is insufficient. Run those tests with independently isolated fixtures or a process sandbox that denies access to the real user data. Keep SwiftPM scratch and compiler caches under `/private/tmp`.
+
+For standalone diagnostics, set `AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME` to a temporary fixture home. `doctor.sh` and `export_diagnostics.sh` resolve user hook settings, Claude logs, and launch-agent metadata from it, and the exporter forwards it to `install_hooks.py --home`. Explicit `AGENT_SIGNAL_LIGHT_STATE_FILE` / `AGENT_SIGNAL_LIGHT_STATE_DIR` overrides still take precedence. Without the diagnostic-home override, existing local diagnostic behavior is unchanged.
+
+ZIP and DMG verification reject older bundled diagnostic scripts that do not support this override when it is set. Rebuild those artifacts before retrying `--isolated --skip-package`.
 
 The all-in-one release gate replaces the old manual command chain. It packages release artifacts unless `--skip-package` is used, then verifies:
 
 - shell scripts parse
+- isolated Python script regression tests pass
 - Swift tests pass
 - release checksums match
 - Sparkle `appcast.xml` and `AgentSignalBar-macos-universal-appcast.xml` exist and are included in release checksums

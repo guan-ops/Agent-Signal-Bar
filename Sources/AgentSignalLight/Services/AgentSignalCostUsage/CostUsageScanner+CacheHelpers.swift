@@ -253,10 +253,7 @@ extension CostUsageScanner {
             {
                 breakdown.priorityCostUSD += max(priorityCost, baseCost ?? priorityCost)
                 breakdown.sawPriorityCost = true
-            } else if isPriority, let baseCost {
-                breakdown.priorityCostUSD += baseCost
-                breakdown.sawPriorityCost = true
-            } else if let baseCost {
+            } else if !isPriority, let baseCost {
                 breakdown.standardCostUSD += baseCost
                 breakdown.sawStandardCost = true
             }
@@ -545,10 +542,7 @@ extension CostUsageScanner {
             {
                 priorityCostNanos[row.day, default: [:]][row.model, default: 0] += Int64(
                     (max(priorityCost, baseCost ?? priorityCost) * Self.costScale).rounded())
-            } else if isPriority, let baseCost {
-                priorityCostNanos[row.day, default: [:]][row.model, default: 0] += Int64(
-                    (baseCost * Self.costScale).rounded())
-            } else if let baseCost {
+            } else if !isPriority, let baseCost {
                 standardCostNanos[row.day, default: [:]][row.model, default: 0] += Int64(
                     (baseCost * Self.costScale).rounded())
             }
@@ -801,55 +795,54 @@ extension CostUsageScanner {
         checkCancellation: CancellationCheck?
     ) throws -> String? {
         guard throughOffset > 0 else { return nil }
-        let before = Self.codexFileMetadata(fileURL: fileURL)
-        guard before.fileId != nil, before.size >= throughOffset else { return nil }
-        try checkCancellation?()
-        let handle = try FileHandle(forReadingFrom: fileURL)
-        defer { try? handle.close() }
-        // The pathname can be atomically replaced after the first stat but
-        // before open(). Bind the proof to the descriptor that was actually
-        // opened, and re-check the path before reading any bytes.
-        try checkCancellation?()
-        let descriptorBefore = Self.codexFileMetadata(
-            fileDescriptor: handle.fileDescriptor,
-            path: fileURL.path
-        )
-        func matches(_ later: CodexFileMetadata, _ earlier: CodexFileMetadata) -> Bool {
-            if Self.codexFileMetadataIsSameSnapshot(later, earlier) { return true }
-            return allowingAppend && earlier.fileId != nil
-                && later.fileId == earlier.fileId && later.size > earlier.size
-        }
-        guard matches(descriptorBefore, before),
-              matches(
-                  Self.codexFileMetadata(fileURL: fileURL),
-                  before
-              )
-        else {
-            return nil
-        }
-        var hasher = SHA256()
-        var remaining = throughOffset
-        while remaining > 0 {
+        let maximumAttempts = allowingAppend ? 3 : 1
+        var sourceGeneration: String?
+        for _ in 0..<maximumAttempts {
+            let before = Self.codexFileMetadata(fileURL: fileURL)
+            guard let generation = before.fileId, before.size >= throughOffset,
+                  sourceGeneration == nil || sourceGeneration == generation else { return nil }
+            sourceGeneration = generation
             try checkCancellation?()
-            let count = Int(min(remaining, 256 * 1024))
-            guard let bytes = try handle.read(upToCount: count), bytes.count == count else {
-                return nil
+            let handle = try FileHandle(forReadingFrom: fileURL)
+            defer { try? handle.close() }
+            // Bind the proof to the opened descriptor and the current path.
+            // Replacement or truncation cannot be retried as an append.
+            try checkCancellation?()
+            let descriptorBefore = Self.codexFileMetadata(
+                fileDescriptor: handle.fileDescriptor, path: fileURL.path)
+            let pathBefore = Self.codexFileMetadata(fileURL: fileURL)
+            guard Self.codexFileMetadataIsSameSnapshot(descriptorBefore, before),
+                  Self.codexFileMetadataIsSameSnapshot(pathBefore, before) else {
+                guard allowingAppend,
+                      descriptorBefore.fileId == generation, pathBefore.fileId == generation,
+                      descriptorBefore.size >= before.size, pathBefore.size >= before.size else { return nil }
+                continue
             }
-            hasher.update(data: bytes)
-            remaining -= Int64(count)
+            var hasher = SHA256()
+            var remaining = throughOffset
+            while remaining > 0 {
+                try checkCancellation?()
+                let count = Int(min(remaining, 256 * 1024))
+                guard let bytes = try handle.read(upToCount: count), bytes.count == count else { return nil }
+                hasher.update(data: bytes)
+                remaining -= Int64(count)
+            }
+            try checkCancellation?()
+            let descriptorAfter = Self.codexFileMetadata(
+                fileDescriptor: handle.fileDescriptor, path: fileURL.path)
+            let after = Self.codexFileMetadata(fileURL: fileURL)
+            if Self.codexFileMetadataIsSameSnapshot(descriptorAfter, before),
+               Self.codexFileMetadataIsSameSnapshot(after, before) {
+                return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            }
+            // Growth alone cannot prove append-only behavior: a writer may
+            // rewrite an already-hashed block and append before this stat.
+            // Discard the digest and re-read the same fixed prefix from zero.
+            guard allowingAppend,
+                  descriptorAfter.fileId == generation, after.fileId == generation,
+                  descriptorAfter.size >= before.size, after.size >= before.size else { return nil }
         }
-        try checkCancellation?()
-        let descriptorAfter = Self.codexFileMetadata(
-            fileDescriptor: handle.fileDescriptor,
-            path: fileURL.path
-        )
-        let after = Self.codexFileMetadata(fileURL: fileURL)
-        guard matches(descriptorAfter, descriptorBefore),
-              matches(after, before)
-        else {
-            return nil
-        }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        throw Self.codexChangedDuringScanError(path: fileURL.path)
     }
 
     static func codexFileMatchesCommittedFrontier(
@@ -1423,6 +1416,7 @@ extension CostUsageScanner {
         modelsDevCacheRoot: URL? = nil,
         priorityTurns: [String: CodexPriorityTurnMetadata] = [:]) -> CostUsageDailyReport
     {
+        let cache = Self.cacheIncludingCodexPaginatedHistory(cache)
         var entries: [CostUsageDailyReport.Entry] = []
         var totalInput = 0
         var totalOutput = 0
@@ -1484,7 +1478,14 @@ extension CostUsageScanner {
                 } else {
                     nil
                 }
-                var cost = splitTotalCost
+                let standardModeTokens = standardTokensByDayModel[day]?[model]
+                    ?? (rowCostBreakdown?.hasModeSplit == true ? rowCostBreakdown?.optionalStandardTokens : nil)
+                let priorityModeTokens = priorityTokensByDayModel[day]?[model]
+                    ?? (rowCostBreakdown?.hasModeSplit == true ? rowCostBreakdown?.optionalPriorityTokens : nil)
+                let hasModeSplit = priorityCost != nil || priorityModeTokens != nil
+                // A known Fast request can have no verified Fast price. Its
+                // standard-price cache is not a fallback for that missing rate.
+                var cost = hasModeSplit ? splitTotalCost : (splitTotalCost
                     ?? cachedBaseCost
                     ?? rowTotalCost
                     ?? CostUsagePricing.codexCostUSD(
@@ -1493,13 +1494,13 @@ extension CostUsageScanner {
                         cachedInputTokens: cached,
                         outputTokens: output,
                         modelsDevCatalog: modelsDevCatalog,
-                        modelsDevCacheRoot: modelsDevCacheRoot)
-                if splitTotalCost == nil,
+                        modelsDevCacheRoot: modelsDevCacheRoot))
+                if !hasModeSplit,
                    let surchargeNanos = prioritySurchargeNanosByDayModel[day]?[model],
                    cachedBaseCost != nil
                 {
                     cost = (cost ?? 0) + (Double(surchargeNanos) / Self.costScale)
-                } else if splitTotalCost == nil,
+                } else if !hasModeSplit,
                           rowTotalCost == nil,
                           !priorityTurns.isEmpty,
                           let rows,
@@ -1511,11 +1512,6 @@ extension CostUsageScanner {
                 {
                     cost = (cost ?? 0) + surcharge
                 }
-                let standardModeTokens = standardTokensByDayModel[day]?[model]
-                    ?? (rowCostBreakdown?.hasModeSplit == true ? rowCostBreakdown?.optionalStandardTokens : nil)
-                let priorityModeTokens = priorityTokensByDayModel[day]?[model]
-                    ?? (rowCostBreakdown?.hasModeSplit == true ? rowCostBreakdown?.optionalPriorityTokens : nil)
-                let hasModeSplit = priorityCost != nil || priorityModeTokens != nil
                 breakdown.append(
                     CostUsageDailyReport.ModelBreakdown(
                         modelName: model,

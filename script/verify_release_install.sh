@@ -234,6 +234,13 @@ PY
 pass "bundled agent-signal-run preserves exit code and marks blocked"
 
 DIAGNOSTICS_DIR="$TMP_ROOT/diagnostics"
+if [[ -n "${AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME:-}" ]]; then
+  for diagnostic_script in "$DIAGNOSTICS_EXPORTER" "$APP_RESOURCES/script/doctor.sh"; do
+    if ! "$diagnostic_script" --help | grep -Fq "AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME"; then
+      die "packaged diagnostics do not support isolated verification; rebuild release artifacts"
+    fi
+  done
+fi
 "$DIAGNOSTICS_EXPORTER" --output "$DIAGNOSTICS_DIR" >"$TMP_ROOT/diagnostics.out"
 /usr/bin/python3 - "$TMP_ROOT/diagnostics.out" <<'PY'
 import sys

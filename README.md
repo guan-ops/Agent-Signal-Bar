@@ -110,6 +110,7 @@ Both styles support horizontal and vertical layouts. You can also tune blink spe
 
 - **Menu bar and desktop signals** with synchronized red, yellow, and green animations.
 - **Attention-first multi-session aggregation** that protects permission, blocked, failure, and review states from ordinary work events.
+- **Current Codex model estimates** for GPT-6 Astra/Sol/Luna and GPT-5.6, with distinct chart colors, Standard/Fast attribution, and per-request long-context pricing. See [model prices and estimation limits](docs/CODEX_MODEL_PRICING.md).
 - **Codex monitoring without required hooks** across Desktop, CLI/TUI, VS Code, Xcode, and IDEA, plus session, quota, token, and cost views.
 - **Saved Codex accounts** with account-bound credentials, quota snapshots, and reset-credit data.
 - **Detailed and native-style menu panels** with live sessions, recent activity, pause, settings, and relevant app shortcuts.

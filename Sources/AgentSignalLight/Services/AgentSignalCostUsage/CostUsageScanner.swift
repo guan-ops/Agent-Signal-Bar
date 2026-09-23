@@ -12,7 +12,7 @@ enum CostUsageScanner {
 
     static let log = AgentSignalCostUsageLog.logger(LogCategories.tokenCost)
     static let codexActiveSessionLookbackDays = 30
-    static let codexIdentityPolicyVersion = 1
+    static let codexIdentityPolicyVersion = 2
     static let costScale = 1_000_000_000.0
 
     enum ClaudeLogProviderFilter {
@@ -3470,7 +3470,7 @@ enum CostUsageScanner {
         let codexPricingKey = Self.codexPricingKey(modelsDevArtifact: modelsDevLoad.artifact)
         let codexPriorityMetadataKey = Self.codexPriorityMetadataKey(databaseURL: options.codexTraceDatabaseURL)
         let hasPriorityMetadata = codexPriorityMetadataKey.hasPrefix("sqlite:")
-        let pricingChanged = cache.codexPricingKey != nil && cache.codexPricingKey != codexPricingKey
+        let pricingChanged = cache.codexPricingKey != codexPricingKey
         let priorityMetadataChanged = Self.codexPriorityMetadataChanged(
             old: cache.codexPriorityMetadataKey,
             new: codexPriorityMetadataKey)
@@ -4047,6 +4047,12 @@ enum CostUsageScanner {
             options.codexScanProgress?(.init(phase: .validating, completedFiles: files.count, totalFiles: files.count))
             try checkCancellation?()
 
+            try Self.recoverCodexPaginatedHistory(
+                cache: &cache, range: range, through: now,
+                rebuild: plan.windowExpanded || plan.pricingChanged || plan.priorityMetadataChanged
+                    || plan.priorityTurnsChanged || plan.needsTurnIDCacheMigration,
+                resources: resources, checkCancellation: checkCancellation)
+
             Self.pruneForceRescanFilesOutsideWindow(
                 cache: &cache,
                 range: range,
@@ -4144,6 +4150,7 @@ enum CostUsageScanner {
                 else { throw CodexInventoryError.changedDuringEnumeration }
             }
             cache.codexIdentityPolicyVersion = Self.codexIdentityPolicyVersion
+            try Self.validateCodexPaginatedSnapshots(cache: cache, checkCancellation: checkCancellation)
             if restoredCheckpoint,
                Self.codexCheckpointScope(options: options) != checkpointScope {
                 options.codexScanCheckpoint?.clear()

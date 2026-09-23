@@ -3603,8 +3603,9 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     /// Accept a completed prefix while a session keeps growing. A numeric delta
-    /// is safe only when the scan and live cursor prove the same source snapshot,
-    /// the counter is monotonic, and both observations belong to the same day.
+    /// is safe only when the scan and live cursor prove the same source snapshot
+    /// (or the old prefix was reverified in the live snapshot), the counter is
+    /// monotonic, and both observations belong to the same day.
     /// A rewrite, reset, or midnight crossing still uses the conservative retry.
     private func pendingBaseline(
         after result: CodexTokenActivityScanResult,
@@ -3616,7 +3617,8 @@ final class MenuBarStatusModel: ObservableObject {
                   watermark.sourceGeneration == cursor.sourceGeneration,
                   watermark.sourceID == cursor.sourceID,
                   watermark.endOffset < cursor.endOffset,
-                  sourceSnapshotRelation(watermark: watermark, cursor: cursor) == .same,
+                  sourceSnapshotRelation(watermark: watermark, cursor: cursor) == .same
+                    || watermark.verifiedPrefixSnapshot?.matches(cursor) == true,
                   let total = watermark.totalTokens,
                   total >= state.scannedBaseline,
                   state.totalTokens >= total,

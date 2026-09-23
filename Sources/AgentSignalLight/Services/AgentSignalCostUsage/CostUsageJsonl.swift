@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 enum CostUsageJsonl {
     struct Line {
@@ -111,17 +116,25 @@ enum CostUsageJsonl {
                 chunk.withUnsafeBytes { rawBuffer in
                     guard let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return }
                     var segmentStart = 0
-                    var index = 0
-                    while index < rawBuffer.count {
-                        if base[index] == 0x0A {
-                            appendSegment(base.advanced(by: segmentStart), count: index - segmentStart)
-                            if flushLine(contentEndOffset: chunkStartOffset + Int64(index)) {
-                                return
-                            }
-                            lineStartOffset = chunkStartOffset + Int64(index + 1)
-                            segmentStart = index + 1
+                    while segmentStart < rawBuffer.count {
+                        // Skip payload bytes with the system's vectorized search,
+                        // including bytes beyond the retained line prefix.
+                        #if canImport(Darwin) || canImport(Glibc)
+                        guard let newline = memchr(
+                            base.advanced(by: segmentStart), 0x0A,
+                            rawBuffer.count - segmentStart) else { break }
+                        let index = base.distance(to: newline.assumingMemoryBound(to: UInt8.self))
+                        #else
+                        var index = segmentStart
+                        while index < rawBuffer.count, base[index] != 0x0A { index += 1 }
+                        guard index < rawBuffer.count else { break }
+                        #endif
+                        appendSegment(base.advanced(by: segmentStart), count: index - segmentStart)
+                        if flushLine(contentEndOffset: chunkStartOffset + Int64(index)) {
+                            return
                         }
-                        index += 1
+                        lineStartOffset = chunkStartOffset + Int64(index + 1)
+                        segmentStart = index + 1
                     }
                     if stoppedOffset == nil, segmentStart < rawBuffer.count {
                         appendSegment(base.advanced(by: segmentStart), count: rawBuffer.count - segmentStart)

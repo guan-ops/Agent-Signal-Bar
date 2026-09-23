@@ -110,6 +110,7 @@ Agent Signal Bar 把本地 AI Agent 活动转换成一套简单的红黄绿灯�
 
 - **状态栏与桌面信号灯**同步显示红、黄、绿三色动画。
 - **重要状态优先的多 session 聚合**，不会让普通工作事件覆盖授权、阻塞、失败和需要检查的状态。
+- **最新 Codex 模型估算**：支持 GPT-6 Astra／Sol／Luna 和 GPT-5.6，采用独立图表配色，区分 Standard／Fast，并按请求应用长上下文价格。参见[模型价格与估算范围](docs/CODEX_MODEL_PRICING.md)。
 - **无需安装 Hook 的 Codex 监控**，覆盖 Desktop、CLI/TUI、VS Code、Xcode 和 IDEA，并提供 session、额度、Token 和费用视图。
 - **多个已保存 Codex 账号**，确保凭据、额度快照与限额重置数据和所选账号对应。
 - **详细与原生风格状态栏面板**，显示实时 session、最近活动、暂停、设置和相关 App 快捷入口。
