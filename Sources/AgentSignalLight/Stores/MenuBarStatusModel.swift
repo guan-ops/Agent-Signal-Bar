@@ -1684,6 +1684,10 @@ final class MenuBarStatusModel: ObservableObject {
         return costs.isEmpty ? nil : costs.reduce(0, +)
     }
 
+    func tokenActivityCostIsPartial(for window: FloatingSignalTokenBadgeWindow, now: Date = Date()) -> Bool {
+        tokenActivityDays(for: window, now: now).contains { $0.costIsPartial }
+    }
+
     private func tokenActivityDays(for window: FloatingSignalTokenBadgeWindow, now: Date) -> [CodexTokenActivityDay] {
         tokenActivityDays(in: tokenActivityDays, for: window, now: now)
     }
@@ -5480,11 +5484,11 @@ final class MenuBarStatusModel: ObservableObject {
                 let persistedDay = Calendar.current.startOfDay(for: persisted.day)
                 guard persistedDay >= startDay, persistedDay <= today else { continue }
                 let totalTokens = max(0, persisted.totalTokens)
-                // v25 corrects session metadata identity, not byte-cursor
-                // semantics. Retain v24 source proof so old root/child labels
-                // can be reconciled against their exact file generation.
+                // v25 corrected session identity; v26 adds pricing completeness.
+                // Neither changes byte-cursor semantics. Retain fully identified
+                // source proof while rebuilding the daily display snapshot.
                 let preservesSourceProof = hasCompatibleActivityCache
-                    || Self.preservesV24TokenSourceProof(persisted.observationCursor, cacheVersion: snapshot.tokenActivityCacheVersion)
+                    || Self.preservesLegacyTokenSourceProof(persisted.observationCursor, cacheVersion: snapshot.tokenActivityCacheVersion)
                 let persistedObservationCursor = preservesSourceProof
                     ? persisted.observationCursor
                     : nil
@@ -5513,7 +5517,7 @@ final class MenuBarStatusModel: ObservableObject {
                 let day = Calendar.current.startOfDay(for: persisted.day)
                 guard day >= startDay, day <= today else { continue }
                 let persistedObservationCursor = hasCompatibleActivityCache
-                    || Self.preservesV24TokenSourceProof(persisted.observationCursor, cacheVersion: snapshot.tokenActivityCacheVersion)
+                    || Self.preservesLegacyTokenSourceProof(persisted.observationCursor, cacheVersion: snapshot.tokenActivityCacheVersion)
                     ? persisted.observationCursor
                     : nil
                 let key = persisted.key ?? Self.liveTokenCarryKey(
@@ -5598,15 +5602,15 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
-    private static func preservesV24TokenSourceProof(
+    private static func preservesLegacyTokenSourceProof(
         _ cursor: CodexTokenObservationCursor?,
         cacheVersion: Int?
     ) -> Bool {
         // Only a fully identified content epoch survives the parser correction.
         // An older cursor lacking stat/ctime can refer to a same-inode rewrite;
         // preserving it would reject a valid replacement line at the same offset.
-        cacheVersion == 24
-            && CodexTokenActivityScanner.currentCacheVersion == 25
+        (cacheVersion == 24 || cacheVersion == 25)
+            && CodexTokenActivityScanner.currentCacheVersion == 26
             && cursor?.sourceStatFingerprint != nil
             && cursor?.sourceChangeTimeNanoseconds != nil
     }

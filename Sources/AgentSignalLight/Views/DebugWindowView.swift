@@ -2157,12 +2157,12 @@ struct DebugWindowView: View {
                     ) {
                         tokenUsageDashboardMetric(
                             title: model.text("今日", "Today"),
-                            value: tokenActivityCurrencyText(selectedTokenActivityTodayEstimatedCostUSD)
+                            value: tokenActivityCurrencyText(selectedTokenActivityTodayEstimatedCostUSD, partial: model.tokenActivityCostIsPartial(for: .today))
                         )
 
                         tokenUsageDashboardMetric(
                             title: model.text("近 30 天费用", "Last 30 days cost"),
-                            value: tokenActivityCurrencyText(selectedTokenActivityLast30EstimatedCostUSD)
+                            value: tokenActivityCurrencyText(selectedTokenActivityLast30EstimatedCostUSD, partial: model.tokenActivityCostIsPartial(for: .last30Days))
                         )
 
                         tokenUsageDashboardMetric(
@@ -2494,7 +2494,7 @@ struct DebugWindowView: View {
     }
 
     private func tokenUsageDaySummaryText(for day: CodexTokenActivityDay) -> String {
-        let cost = tokenActivityCurrencyText(day.estimatedCostUSD)
+        let cost = tokenActivityCurrencyText(day.estimatedCostUSD, partial: day.costIsPartial)
         return model.text(
             "\(tokenActivityShortDateText(day.day))：\(cost) · \(model.compactTokenCountText(day.totalTokens)) token",
             "\(tokenActivityShortDateText(day.day)): \(cost) · \(model.compactTokenCountText(day.totalTokens)) tokens"
@@ -2506,7 +2506,7 @@ struct DebugWindowView: View {
         day: CodexTokenActivityDay
     ) -> String? {
         if let cost = day.modelEstimatedCostTotals[segment.model] {
-            return tokenActivityCurrencyText(cost)
+            return tokenActivityCurrencyText(cost, partial: (day.modelUnpricedTokenTotals?[segment.model] ?? 0) > 0)
         }
         return nil
     }
@@ -2609,12 +2609,14 @@ struct DebugWindowView: View {
         let standard = tokenUsageModePiece(
             label: model.text("标准", "Std"),
             tokens: standardTokens,
-            cost: day.modelStandardEstimatedCostTotals[modelName]
+            cost: day.modelStandardEstimatedCostTotals[modelName],
+            partial: (day.modelUnpricedTokenTotals?[modelName] ?? 0) > 0
         )
         let priority = tokenUsageModePiece(
             label: model.text("快速", "Fast"),
             tokens: priorityTokens,
-            cost: day.modelPriorityEstimatedCostTotals[modelName]
+            cost: day.modelPriorityEstimatedCostTotals[modelName],
+            partial: (day.modelUnpricedTokenTotals?[modelName] ?? 0) > 0
         )
         return [standard, priority]
             .compactMap { $0 }
@@ -2624,12 +2626,13 @@ struct DebugWindowView: View {
     private func tokenUsageModePiece(
         label: String,
         tokens: Int,
-        cost: Double?
+        cost: Double?,
+        partial: Bool
     ) -> String? {
         guard tokens > 0 else { return nil }
         var parts: [String] = [label]
         if let cost {
-            parts.append(tokenActivityCurrencyText(cost))
+            parts.append(tokenActivityCurrencyText(cost, partial: partial))
         }
         parts.append("\(model.compactTokenCountText(tokens)) token")
         return parts.joined(separator: " ")
@@ -2655,7 +2658,11 @@ struct DebugWindowView: View {
             var modelPriorityTotals: [String: Int] = [:]
             var modelStandardCostTotals: [String: Double] = [:]
             var modelPriorityCostTotals: [String: Double] = [:]
+            var modelUnpricedTokens: [String: Int] = [:]
             for day in days {
+                for (model, tokens) in day.modelUnpricedTokenTotals ?? [:] {
+                    modelUnpricedTokens[model, default: 0] += tokens
+                }
                 for (model, tokens) in day.modelTokenTotals where tokens > 0 {
                     modelTotals[model, default: 0] += tokens
                 }
@@ -2684,7 +2691,9 @@ struct DebugWindowView: View {
                 modelStandardTokenTotals: modelStandardTotals,
                 modelPriorityTokenTotals: modelPriorityTotals,
                 modelStandardEstimatedCostTotals: modelStandardCostTotals,
-                modelPriorityEstimatedCostTotals: modelPriorityCostTotals
+                modelPriorityEstimatedCostTotals: modelPriorityCostTotals,
+                hasUnpricedUsage: days.contains { $0.costIsPartial },
+                modelUnpricedTokenTotals: modelUnpricedTokens
             )
         }
 
@@ -2732,8 +2741,8 @@ struct DebugWindowView: View {
         return costs.isEmpty ? nil : costs.reduce(0, +)
     }
 
-    private func tokenActivityCurrencyText(_ value: Double?) -> String {
-        model.estimatedCostText(value)
+    private func tokenActivityCurrencyText(_ value: Double?, partial: Bool = false) -> String {
+        model.estimatedCostText(value, partial: partial)
     }
 
     private func tokenActivityShortDateText(_ date: Date) -> String {

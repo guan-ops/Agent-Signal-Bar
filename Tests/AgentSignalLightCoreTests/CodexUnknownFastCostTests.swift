@@ -121,6 +121,12 @@ final class CodexUnknownFastCostTests: XCTestCase {
         XCTAssertEqual(cache.files.values.first?.codexUnpricedTokens?[day]?["gpt-5.5"], 301_000)
         let details = CodexUsageDetails.build(cache: cache, now: date, modelsDevCatalog: catalog) { _, _ in nil }
         XCTAssertEqual(details.sessions.first?.hasUnpricedUsage, true)
+        let activityScanner = CodexTokenActivityScanner(sessionRootURLs: [sessions],
+            cacheURL: root.appendingPathComponent("activity.json"), costUsageCacheRootURL: cacheRoot,
+            usesAgentSignalCostUsageScanner: true, priorityDatabaseURL: trace, environment: [:])
+        let activity = activityScanner.scanDailyActivity(now: date, days: 1)
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(activity)) as? [[String: Any]]
+        XCTAssertEqual(encoded?.first?["hasUnpricedUsage"] as? Bool, true)
         let currentPricingKey = try XCTUnwrap(cache.codexPricingKey)
         cache.codexPricingKey = "before-unknown-fast-cost-policy"
         for path in Array(cache.files.keys) {

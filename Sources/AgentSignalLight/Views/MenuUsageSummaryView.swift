@@ -223,8 +223,8 @@ struct MenuUsageSummaryView: View {
     private var tokens: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .top, spacing: 16) {
-                metricColumn(title: model.text("今日", "Today"), tokens: todayTokens, cost: todayCost)
-                metricColumn(title: model.text("近 30 天", "30 days"), tokens: monthTokens, cost: monthCost)
+                metricColumn(title: model.text("今日", "Today"), tokens: todayTokens, cost: todayCost, partial: !isClaude && model.tokenActivityCostIsPartial(for: .today))
+                metricColumn(title: model.text("近 30 天", "30 days"), tokens: monthTokens, cost: monthCost, partial: !isClaude && model.tokenActivityCostIsPartial(for: .last30Days))
             }
             MenuTokenHistoryChart(model: model, days: historyDays, isClaude: isClaude)
                 .id(navigation.provider)
@@ -249,10 +249,10 @@ struct MenuUsageSummaryView: View {
         }
     }
 
-    private func metricColumn(title: String, tokens: Int?, cost: Double?) -> some View {
+    private func metricColumn(title: String, tokens: Int?, cost: Double?, partial: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).foregroundStyle(.secondary)
-            Text(model.estimatedCostText(cost))
+            Text(model.estimatedCostText(cost, partial: partial))
                 .font(.system(size: 17, weight: .semibold)).monospacedDigit()
                 .lineLimit(1).minimumScaleFactor(0.7)
             Text(tokens.map { model.compactTokenCountText($0) + " Token" } ?? "—")
