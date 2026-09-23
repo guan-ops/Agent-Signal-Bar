@@ -245,10 +245,13 @@ PY
             environment = dict(self.environment, TMP_ROOT=str(self.root),
                                APP_RESOURCES=str(resources), DIAGNOSTICS_EXPORTER=str(exporter),
                                AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME=str(self.home))
-            for exporter_supported, doctor_supported in [(False, False), (True, False), (True, True)]:
-                supported = exporter_supported and doctor_supported
+            for exporter_supported, doctor_supported in [(False, False), (True, False), (True, True), (False, None), (True, None)]:
+                supported = exporter_supported and doctor_supported is not False
                 with self.subTest(verifier=name, exporter=exporter_supported, doctor=doctor_supported):
                     for path, supports_home in [(exporter, exporter_supported), (doctor, doctor_supported)]:
+                        if supports_home is None:
+                            path.unlink(missing_ok=True)
+                            continue
                         path.write_text('#!/bin/bash\necho "'
                                         + ("AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME" if supports_home else "usage")
                                         + '"\n')

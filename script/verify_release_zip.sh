@@ -262,7 +262,11 @@ pass "release zip agent-signal-run preserves exit code and marks blocked"
 
 DIAGNOSTICS_DIR="$TMP_ROOT/diagnostics"
 if [[ -n "${AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME:-}" ]]; then
-  for diagnostic_script in "$DIAGNOSTICS_EXPORTER" "$APP_RESOURCES/script/doctor.sh"; do
+  diagnostic_scripts=("$DIAGNOSTICS_EXPORTER")
+  if [[ -x "$APP_RESOURCES/script/doctor.sh" ]]; then
+    diagnostic_scripts+=("$APP_RESOURCES/script/doctor.sh")
+  fi
+  for diagnostic_script in "${diagnostic_scripts[@]}"; do
     if ! "$diagnostic_script" --help | grep -Fq "AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME"; then
       die "packaged diagnostics do not support isolated verification; rebuild release artifacts"
     fi
