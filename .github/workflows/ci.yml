@@ -55,8 +55,7 @@ jobs:
 
       - name: Run script regression tests
         run: |
-          PYTHONDONTWRITEBYTECODE=1 python3 script/test_install_hooks.py
-          PYTHONDONTWRITEBYTECODE=1 python3 script/test_audit_regressions.py
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s script -p 'test_*.py'
 
       - name: Run Swift tests
         run: swift test
