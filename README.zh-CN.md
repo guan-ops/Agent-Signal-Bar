@@ -68,13 +68,13 @@ Agent Signal Bar 把本地 AI Agent 活动转换成一套简单的红黄绿灯�
     <td align="center" width="37%"><strong>简约小菜单</strong></td>
   </tr>
   <tr>
-    <td align="center"><a href="docs/assets/floating-signal-light.png"><img src="docs/assets/floating-signal-light.png" alt="带额度、运行 Agent 数量和 Token 角标的 Agent Signal Bar 悬浮灯" width="250"></a></td>
-    <td align="center"><a href="docs/assets/menu-bar-panel-detailed-zh-CN.png"><img src="docs/assets/menu-bar-panel-detailed-zh-CN.png" alt="显示 Codex 当前会话和最近事件的 Agent Signal Bar 复杂小菜单" width="100%"></a></td>
-    <td align="center"><a href="docs/assets/menu-bar-simple-zh-CN.png"><img src="docs/assets/menu-bar-simple-zh-CN.png" alt="显示 Codex 当前会话、额度和快捷操作的 Agent Signal Bar 简约小菜单" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/floating-signal-light.png?v=20260908-1"><img src="docs/assets/floating-signal-light.png?v=20260908-1" alt="带额度、运行 Agent 数量和 Token 角标的 Agent Signal Bar 悬浮灯" width="180"></a></td>
+    <td align="center"><a href="docs/assets/menu-bar-panel-detailed-zh-CN.png?v=20260908-1"><img src="docs/assets/menu-bar-panel-detailed-zh-CN.png?v=20260908-1" alt="显示演示 Codex 账号、额度和 Token 历史的 Agent Signal Bar 复杂小菜单" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/menu-bar-simple-zh-CN.png?v=20260908-1"><img src="docs/assets/menu-bar-simple-zh-CN.png?v=20260908-1" alt="显示演示 Codex 额度、Token 历史和快捷操作的 Agent Signal Bar 简约小菜单" width="100%"></a></td>
   </tr>
 </table>
 
-以上全部是保留桌面环境的屏幕区域截图。悬浮信号灯可以常驻桌面并跟随状态栏同步变化，支持拖动、自由缩放、尺寸预设、横向或竖向布局，以及紧凑的 session 与用量浮层。
+以上为 v1.6.0 应用真实界面截图，使用合成演示数据。所有截图统一为深色外观，设置窗口开启 Liquid Glass 并选择「标准」效果。悬浮信号灯可以常驻桌面并跟随状态栏同步变化，支持拖动、自由缩放、尺寸预设、横向或竖向布局，以及紧凑的 session 与用量浮层。
 
 ### 运行与用量
 
@@ -84,12 +84,12 @@ Agent Signal Bar 把本地 AI Agent 活动转换成一套简单的红黄绿灯�
     <td align="center" width="50%"><strong>用量</strong></td>
   </tr>
   <tr>
-    <td align="center"><a href="docs/assets/settings-activity-zh-CN.png"><img src="docs/assets/settings-activity-zh-CN.png" alt="显示正在运行的 Codex 桌面版当前会话和最近事件的 Agent Signal Bar 运行页" width="100%"></a></td>
-    <td align="center"><a href="docs/assets/settings-usage-zh-CN.png"><img src="docs/assets/settings-usage-zh-CN.png" alt="显示 Codex 额度、限额重置额度和 GPT-5.6 Token 估算明细的 Agent Signal Bar 用量页" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/settings-activity-zh-CN.png?v=20260908-1"><img src="docs/assets/settings-activity-zh-CN.png?v=20260908-1" alt="显示 Codex CLI 演示会话和最近事件的 Agent Signal Bar 运行页" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/settings-usage-zh-CN.png?v=20260908-1"><img src="docs/assets/settings-usage-zh-CN.png?v=20260908-1" alt="显示 Codex 额度、限额重置额度和模型 Token 数量、估算费用和占比的 Agent Signal Bar 用量页" width="100%"></a></td>
   </tr>
 </table>
 
-运行页截图来自真实的本地 Codex 桌面版会话。用量页汇总 Codex 额度周期、限额重置额度、本地 Token 与估算费用历史和已保存账号切换；其中数值是纯本地演示数据，Token 图使用 GPT-5.6 数据，不包含任何个人账号或凭据数据。
+截图中的账号、活动、额度和 Token 数值均为合成演示数据，演示邮箱为 `demo@agentsignalbar.app`。用量图展开所悬停日期的 GPT-6 Astra 与 gpt-5.6 Token 数量、估算费用和占比，不包含个人账号或凭据数据。Claude 专属截图暂不展示，待真实账号验证完成后补充。
 
 ### 选择喜欢的外观
 
