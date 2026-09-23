@@ -545,7 +545,8 @@ extension CostUsageScanner {
         guard let data = jsonText.data(using: .utf8),
               let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               request["type"] as? String == "response.create",
-              request["service_tier"] as? String == "priority"
+              let serviceTier = request["service_tier"] as? String,
+              serviceTier == "priority" || serviceTier == "fast"
         else { return nil }
 
         let turnID = self.value(named: "turn.id", in: prefix)

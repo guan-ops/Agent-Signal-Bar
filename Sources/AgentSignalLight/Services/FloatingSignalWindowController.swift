@@ -2760,6 +2760,9 @@ private struct FloatingSignalTokenPopoverView: View {
                 .overlay(Color.white.opacity(0.12))
 
             tokenRow(.last30Days)
+
+            CostCurrencyRateNote(store: model.costCurrency, text: model.text, compact: true)
+                .environment(\.colorScheme, .dark)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)

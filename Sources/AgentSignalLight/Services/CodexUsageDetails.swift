@@ -44,6 +44,8 @@ struct CodexUsageDetails: Equatable, Sendable {
     static func build(cache: CostUsageCache, now: Date,
                       modelsDevCatalog: ModelsDevCatalog,
                       projectPath: (String, String?) -> String? = readProjectPath) -> Self {
+        let recoveredGroups = cache.codexPaginatedLedgers ?? [:]
+        let cache = CostUsageScanner.cacheIncludingCodexPaginatedHistory(cache)
         let start = Calendar.current.date(byAdding: .day, value: -29,
                                            to: Calendar.current.startOfDay(for: now))!
         let range = CostUsageScanner.CostUsageDayRange(since: start, until: now)
@@ -58,14 +60,18 @@ struct CodexUsageDetails: Equatable, Sendable {
         }
         let sessions = groups.compactMap { id, files -> Session? in
             // Never select an arbitrary copy when ownership is ambiguous.
-            guard files.count == 1, let file = files.first else { return nil }
-            let days = file.usage.days.filter {
+            guard files.count == 1 || recoveredGroups[id].map({ Set($0.keys) == Set(files.map(\.path)) }) == true
+            else { return nil }
+            var subset = CostUsageCache()
+            for file in files {
+                subset.files[file.path] = file.usage
+                CostUsageScanner.applyFileDays(cache: &subset, fileDays: file.usage.days, sign: 1)
+            }
+            let days = subset.days.filter {
                 CostUsageScanner.CostUsageDayRange.isInRange(dayKey: $0.key,
                                                              since: range.sinceKey, until: range.untilKey)
             }
             guard !days.isEmpty else { return nil }
-            var subset = CostUsageCache()
-            subset.files = [file.path: file.usage]
             subset.days = days
             let report = CostUsageScanner.buildCodexReportFromCache(cache: subset, range: range,
                                                                     modelsDevCatalog: modelsDevCatalog)
@@ -74,14 +80,17 @@ struct CodexUsageDetails: Equatable, Sendable {
                 sum + models.values.reduce(0) { $0 + ($1.count > 1 ? $1[1] : 0) }
             }
             let modelRows = report.data.flatMap { $0.modelBreakdowns ?? [] }
-            let timestamps = (file.usage.tokenEventWatermarks ?? []).compactMap(\.eventTimestamp)
-                + [file.usage.lastTokenEventTimestamp].compactMap { $0 }
+            let timestamps = files.flatMap { file in
+                (file.usage.tokenEventWatermarks ?? []).compactMap(\.eventTimestamp)
+                    + [file.usage.lastTokenEventTimestamp].compactMap { $0 }
+            }
             let latest = timestamps.filter { $0 >= start && $0 <= now }.max()
-            return Session(id: id, projectPath: projectPath(file.path, file.usage.sessionId),
+            let projects = Set(files.compactMap { projectPath($0.path, $0.usage.sessionId) })
+            return Session(id: id, projectPath: projects.count == 1 ? projects.first : nil,
                            lastActivity: latest, inputTokens: report.summary?.totalInputTokens ?? 0,
                            cachedTokens: cached, outputTokens: report.summary?.totalOutputTokens ?? 0,
                            totalTokens: total, costUSD: report.summary?.totalCostUSD,
-                           hasUnpricedUsage: modelRows.contains { ($0.totalTokens ?? 0) > 0 && $0.costUSD == nil },
+                           hasUnpricedUsage: modelRows.contains { $0.hasUnpricedUsage },
                            models: Array(Set(modelRows.map(\.modelName))).sorted())
         }.sorted {
             if $0.lastActivity != $1.lastActivity { return ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }

@@ -96,6 +96,7 @@ struct MenuUsageSummaryView: View {
                 quota
                 Divider()
                 tokens
+                CostCurrencyRateNote(store: model.costCurrency, text: model.text, compact: true)
             }
             .padding(12)
             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
@@ -251,8 +252,9 @@ struct MenuUsageSummaryView: View {
     private func metricColumn(title: String, tokens: Int?, cost: Double?) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).foregroundStyle(.secondary)
-            Text(cost.map { $0.formatted(.currency(code: "USD")) } ?? "—")
+            Text(model.estimatedCostText(cost))
                 .font(.system(size: 17, weight: .semibold)).monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.7)
             Text(tokens.map { model.compactTokenCountText($0) + " Token" } ?? "—")
                 .fontWeight(.medium).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
         }.frame(maxWidth: .infinity, alignment: .leading)
@@ -338,14 +340,26 @@ private final class UsageActionMenuItem: NSMenuItem {
     @objc private func invoke() { handler() }
 }
 
-/// NSMenu uses the custom view's frame; keep it equal to SwiftUI's full content height.
+/// NSMenu uses the custom view's frame. Resize between layout passes, including while tracking.
 @MainActor
-private final class MenuUsageHostingView<Content: View>: NSHostingView<Content> {
+final class MenuUsageHostingView<Content: View>: NSHostingView<Content> {
+    private var resizeScheduled = false
+
     override func layout() {
         super.layout()
-        let height = fittingSize.height
-        if abs(frame.height - height) > 0.5 {
-            setFrameSize(NSSize(width: frame.width, height: height))
+        guard abs(frame.height - fittingSize.height) > 0.5, !resizeScheduled else { return }
+        resizeScheduled = true
+        // Resizing here re-enters NSMenu's window layout and can apply the height delta
+        // twice to its glass background. The main queue alone stalls while tracking.
+        let resize: @MainActor @Sendable () -> Void = { [weak self] in
+            guard let self else { return }
+            self.resizeScheduled = false
+            let height = self.fittingSize.height
+            guard height.isFinite, height > 0, abs(self.frame.height - height) > 0.5 else { return }
+            self.setFrameSize(NSSize(width: self.frame.width, height: height))
+        }
+        RunLoop.main.perform(inModes: [.default, .eventTracking]) {
+            MainActor.assumeIsolated { resize() }
         }
     }
 }

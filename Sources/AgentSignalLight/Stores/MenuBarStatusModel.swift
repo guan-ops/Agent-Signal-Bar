@@ -1,6 +1,7 @@
 import AgentSignalLightCore
 import AgentSignalLightUI
 import AppKit
+import Combine
 import Foundation
 @preconcurrency import UserNotifications
 
@@ -494,6 +495,9 @@ final class MenuBarStatusModel: ObservableObject {
     @Published private(set) var debugCacheMessage: String?
 
     let animationClock = SignalAnimationClock()
+    let costCurrency: CostCurrencyStore
+    private var currencyObservation: AnyCancellable?
+    private var currencyRefreshTimer: Timer?
 
     private let store: SignalStateStore
     private let userDefaults: UserDefaults
@@ -680,6 +684,7 @@ final class MenuBarStatusModel: ObservableObject {
     ) {
         self.store = store
         self.userDefaults = userDefaults
+        self.costCurrency = CostCurrencyStore(defaults: userDefaults, now: nowProvider)
         self.launchAtLoginManager = launchAtLoginManager
         self.hookInstallManager = hookInstallManager
         self.diagnosticsExportManager = diagnosticsExportManager
@@ -1026,7 +1031,11 @@ final class MenuBarStatusModel: ObservableObject {
             enableLaunchAtLoginByDefaultIfNeeded()
             userDefaults.set(Self.preferenceDefaultsVersion, forKey: "settingsPreferenceDefaultsVersion")
         }
+        currencyObservation = costCurrency.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         guard startsMonitoring else { return }
+        Task { [weak self] in await self?.costCurrency.refreshIfNeeded() }
         desktopAppSessions = filteredPlatformPresenceSessions(codexPlatformPresenceMonitor.detectSessions())
         watcher = StateFileWatcher(stateFileURL: snapshot.stateFileURL) { [weak self] in
             self?.reloadFromWatcher()
@@ -2716,6 +2725,14 @@ final class MenuBarStatusModel: ObservableObject {
     private func startTimers() {
         let timingProfile = runtimeTimingProfile
 
+        // The store checks the provider's next update time and backs off offline requests.
+        let currencyRefreshTimer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.costCurrency.refreshIfNeeded() }
+        }
+        currencyRefreshTimer.tolerance = 15
+        RunLoop.main.add(currencyRefreshTimer, forMode: .common)
+        self.currencyRefreshTimer = currencyRefreshTimer
+
         let pollTimer = Timer(timeInterval: timingProfile.statePollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.reloadFromWatcher()
@@ -2790,6 +2807,8 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private func stopTimers() {
+        currencyRefreshTimer?.invalidate()
+        currencyRefreshTimer = nil
         pollTimer?.invalidate()
         animationTimer?.invalidate()
         codexDesktopTimer?.invalidate()
@@ -3603,8 +3622,9 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     /// Accept a completed prefix while a session keeps growing. A numeric delta
-    /// is safe only when the scan and live cursor prove the same source snapshot,
-    /// the counter is monotonic, and both observations belong to the same day.
+    /// is safe only when the scan and live cursor prove the same source snapshot
+    /// (or the old prefix was reverified in the live snapshot), the counter is
+    /// monotonic, and both observations belong to the same day.
     /// A rewrite, reset, or midnight crossing still uses the conservative retry.
     private func pendingBaseline(
         after result: CodexTokenActivityScanResult,
@@ -3616,7 +3636,8 @@ final class MenuBarStatusModel: ObservableObject {
                   watermark.sourceGeneration == cursor.sourceGeneration,
                   watermark.sourceID == cursor.sourceID,
                   watermark.endOffset < cursor.endOffset,
-                  sourceSnapshotRelation(watermark: watermark, cursor: cursor) == .same,
+                  sourceSnapshotRelation(watermark: watermark, cursor: cursor) == .same
+                    || watermark.verifiedPrefixSnapshot?.matches(cursor) == true,
                   let total = watermark.totalTokens,
                   total >= state.scannedBaseline,
                   state.totalTokens >= total,

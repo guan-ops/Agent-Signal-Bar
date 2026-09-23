@@ -35,6 +35,24 @@ final class CodexUsageDetailsTests: XCTestCase {
         XCTAssertEqual(first.totalTokens, 120, "Cached input must not be added twice")
     }
 
+    func testMixedPricedAndUnpricedModesMarkSessionAndProjectAsPartial() throws {
+        var cache = CostUsageCache()
+        var file = usage("mixed")
+        file.days = [today: ["gpt-5.5": [301_000, 0, 2_000]]]
+        file.codexCostNanos = [today: ["gpt-5.5": 3_045_000_000]]
+        file.codexStandardCostNanos = [today: ["gpt-5.5": 35_000_000]]
+        file.codexPriorityCostNanos = nil
+        file.codexStandardTokens = [today: ["gpt-5.5": 2_000]]
+        file.codexPriorityTokens = [today: ["gpt-5.5": 301_000]]
+        cache.files = ["fixture": file]
+        let result = CodexUsageDetails.build(cache: cache, now: now, modelsDevCatalog: catalog) { _, _ in "/fixture" }
+        let session = try XCTUnwrap(result.sessions.first)
+        XCTAssertEqual(try XCTUnwrap(session.costUSD), 0.035, accuracy: 0.000_000_001)
+        XCTAssertEqual(session.totalTokens, 303_000)
+        XCTAssertTrue(session.hasUnpricedUsage)
+        XCTAssertEqual(result.projects.first?.hasUnpricedUsage, true)
+    }
+
     func testInventoryCopiesConflictsAndOldDaysDoNotContribute() {
         var cache = CostUsageCache()
         var owner = usage("owner")
@@ -89,7 +107,9 @@ final class CodexUsageDetailsTests: XCTestCase {
         }
         _ = NSApplication.shared
         let host = NSHostingView(rootView: CodexUsageDetailsView(details: details, isLoading: false,
-            text: { zh, _ in zh }, tokens: { $0.formatted() }).frame(width: 600))
+            text: { zh, _ in zh }, tokens: { $0.formatted() },
+            formatCost: { value, partial in value.map { (partial ? "≥ " : "") + $0.formatted(.currency(code: "USD")) } ?? "—" })
+            .frame(width: 600))
         let size = host.fittingSize
         XCTAssertEqual(size.width, 600, accuracy: 1)
         XCTAssertGreaterThan(size.height, 150)

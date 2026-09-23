@@ -53,6 +53,10 @@ jobs:
           bash -n scripts/claude-code-signal-hook
           bash -n scripts/generic-agent-signal-hook
 
+      - name: Run script regression tests
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s script -p 'test_*.py'
+
       - name: Run Swift tests
         run: swift test
 

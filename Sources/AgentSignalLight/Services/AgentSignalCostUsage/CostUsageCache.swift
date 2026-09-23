@@ -125,6 +125,9 @@ struct CostUsageCache: Codable {
     var codexIdentityPolicyVersion: Int?
     /// These owners depend on revocable no-usage proofs, not byte-equivalent copies.
     var codexNoncontributingSessionIDs: [String]?
+    /// Proven, disjoint response ledgers for paginated rollouts sharing a thread ID.
+    /// Keep them separate from the single-owner inventory and inherited-fork index.
+    var codexPaginatedLedgers: [String: [String: CostUsageFileUsage]]?
 
     /// filePath -> file usage
     var files: [String: CostUsageFileUsage] = [:]
@@ -194,6 +197,7 @@ struct CostUsageFileUsage: Codable {
     var codexPriorityCostNanos: [String: [String: Int64]]?
     var codexStandardTokens: [String: [String: Int]]?
     var codexPriorityTokens: [String: [String: Int]]?
+    var codexUnpricedTokens: [String: [String: Int]]?
     var codexTurnIDs: [String]?
     var codexRows: [CostUsageScanner.CodexUsageRow]?
     var claudeRows: [CostUsageScanner.ClaudeUsageRow]?

@@ -68,9 +68,15 @@ enum CostUsagePricing {
         let output: Int
     }
 
+    // Verified 2026-09-23: https://developers.openai.com/api/docs/pricing
+    // Prefer these official rates to models.dev, which can lag model launches and
+    // omit long-context tiers. These are API USD estimates, not Codex credit rates.
+    private static let codexOfficialPricingModels: Set<String> = [
+        "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+    ]
+
     private static let codex: [String: CodexPricing] = [
-        // Verified 2026-09-05: https://developers.openai.com/api/docs/pricing
-        // https://developers.openai.com/api/docs/models/gpt-6-astra
         "gpt-6-astra": CodexPricing(
             inputCostPerToken: 1e-5,
             outputCostPerToken: 5e-5,
@@ -83,6 +89,32 @@ enum CostUsagePricing {
             priorityInputCostPerToken: 2e-5,
             priorityOutputCostPerToken: 1e-4,
             priorityCacheReadInputCostPerToken: 2e-6,
+            priorityLongContextRateMultiplier: 2),
+        "gpt-6-sol": CodexPricing(
+            inputCostPerToken: 2e-6,
+            outputCostPerToken: 1e-5,
+            cacheReadInputCostPerToken: 2e-7,
+            displayLabel: nil,
+            thresholdTokens: 272_000,
+            inputCostPerTokenAboveThreshold: 4e-6,
+            outputCostPerTokenAboveThreshold: 1.5e-5,
+            cacheReadInputCostPerTokenAboveThreshold: 4e-7,
+            priorityInputCostPerToken: 4e-6,
+            priorityOutputCostPerToken: 2e-5,
+            priorityCacheReadInputCostPerToken: 4e-7,
+            priorityLongContextRateMultiplier: 2),
+        "gpt-6-luna": CodexPricing(
+            inputCostPerToken: 1e-7,
+            outputCostPerToken: 5e-7,
+            cacheReadInputCostPerToken: 1e-8,
+            displayLabel: nil,
+            thresholdTokens: 272_000,
+            inputCostPerTokenAboveThreshold: 2e-7,
+            outputCostPerTokenAboveThreshold: 7.5e-7,
+            cacheReadInputCostPerTokenAboveThreshold: 2e-8,
+            priorityInputCostPerToken: 2e-7,
+            priorityOutputCostPerToken: 1e-6,
+            priorityCacheReadInputCostPerToken: 2e-8,
             priorityLongContextRateMultiplier: 2),
         "gpt-5": CodexPricing(
             inputCostPerToken: 1.25e-6,
@@ -197,33 +229,52 @@ enum CostUsagePricing {
             cacheReadInputCostPerToken: nil,
             displayLabel: nil),
         "gpt-5.6-sol": CodexPricing(
-            inputCostPerToken: 5e-6,
-            outputCostPerToken: 3e-5,
-            cacheReadInputCostPerToken: 5e-7,
+            inputCostPerToken: 4e-6,
+            outputCostPerToken: 2e-5,
+            cacheReadInputCostPerToken: 4e-7,
             displayLabel: nil,
-            priorityInputCostPerToken: 1e-5,
-            priorityOutputCostPerToken: 6e-5,
-            priorityCacheReadInputCostPerToken: 1e-6),
+            thresholdTokens: 272_000,
+            inputCostPerTokenAboveThreshold: 8e-6,
+            outputCostPerTokenAboveThreshold: 3e-5,
+            cacheReadInputCostPerTokenAboveThreshold: 8e-7,
+            priorityInputCostPerToken: 8e-6,
+            priorityOutputCostPerToken: 4e-5,
+            priorityCacheReadInputCostPerToken: 8e-7,
+            priorityLongContextRateMultiplier: 2),
         "gpt-5.6-terra": CodexPricing(
-            inputCostPerToken: 2.5e-6,
-            outputCostPerToken: 1.5e-5,
-            cacheReadInputCostPerToken: 2.5e-7,
+            inputCostPerToken: 2e-6,
+            outputCostPerToken: 1.2e-5,
+            cacheReadInputCostPerToken: 2e-7,
             displayLabel: nil,
-            priorityInputCostPerToken: 5e-6,
-            priorityOutputCostPerToken: 3e-5,
-            priorityCacheReadInputCostPerToken: 5e-7),
+            thresholdTokens: 272_000,
+            inputCostPerTokenAboveThreshold: 4e-6,
+            outputCostPerTokenAboveThreshold: 1.8e-5,
+            cacheReadInputCostPerTokenAboveThreshold: 4e-7,
+            priorityInputCostPerToken: 4e-6,
+            priorityOutputCostPerToken: 2.4e-5,
+            priorityCacheReadInputCostPerToken: 4e-7,
+            priorityLongContextRateMultiplier: 2),
         "gpt-5.6-luna": CodexPricing(
-            inputCostPerToken: 1e-6,
-            outputCostPerToken: 6e-6,
-            cacheReadInputCostPerToken: 1e-7,
+            inputCostPerToken: 2e-7,
+            outputCostPerToken: 1.2e-6,
+            cacheReadInputCostPerToken: 2e-8,
             displayLabel: nil,
-            priorityInputCostPerToken: 2e-6,
-            priorityOutputCostPerToken: 1.2e-5,
-            priorityCacheReadInputCostPerToken: 2e-7),
+            thresholdTokens: 272_000,
+            inputCostPerTokenAboveThreshold: 4e-7,
+            outputCostPerTokenAboveThreshold: 1.8e-6,
+            cacheReadInputCostPerTokenAboveThreshold: 4e-8,
+            priorityInputCostPerToken: 4e-7,
+            priorityOutputCostPerToken: 2.4e-6,
+            priorityCacheReadInputCostPerToken: 4e-8,
+            priorityLongContextRateMultiplier: 2),
     ]
 
     static func codexBuiltInPricingFingerprint() -> String {
-        var parts = ["priorityInputTokenLimit=\(self.codexPriorityInputTokenLimit)"]
+        var parts = [
+            "costPolicyVersion=3", // Preserve unpriced token counts alongside confirmed cost subtotals.
+            "priorityInputTokenLimit=\(self.codexPriorityInputTokenLimit)",
+            "officialPricingModels=\(self.codexOfficialPricingModels.sorted().joined(separator: ","))",
+        ]
         for model in self.codex.keys.sorted() {
             guard let pricing = self.codex[model] else { continue }
             parts.append([
@@ -496,6 +547,11 @@ enum CostUsagePricing {
         modelsDevCacheRoot: URL? = nil) -> Double?
     {
         let key = self.normalizeCodexModel(model)
+        if self.codexOfficialPricingModels.contains(key), let pricing = self.codex[key] {
+            return self.codexCostUSD(
+                pricing: pricing, inputTokens: inputTokens,
+                cachedInputTokens: cachedInputTokens, outputTokens: outputTokens)
+        }
         if let lookup = self.modelsDevLookup(
             providerID: self.codexModelsDevProviderID,
             model: model,

@@ -43,6 +43,18 @@ struct CodexTokenActivityDay: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+struct CodexVerifiedPrefixSnapshot: Equatable, Sendable {
+    let statFingerprint: Int64
+    let changeTimeNanoseconds: Int64
+    let size: UInt64
+
+    func matches(_ cursor: CodexTokenObservationCursor) -> Bool {
+        cursor.sourceStatFingerprint == statFingerprint
+            && cursor.sourceChangeTimeNanoseconds == changeTimeNanoseconds
+            && cursor.endOffset <= size
+    }
+}
+
 struct CodexTokenActivityScanWatermark: Equatable, Sendable {
     let sessionID: String?
     let sourceID: String
@@ -53,6 +65,9 @@ struct CodexTokenActivityScanWatermark: Equatable, Sendable {
     let lineFingerprint: String
     let eventTimestamp: Date?
     let totalTokens: Int?
+    // Evidence for subtracting this scanned baseline from a later live total.
+    // It does not extend the scanned offset or cover any unscanned token event.
+    let verifiedPrefixSnapshot: CodexVerifiedPrefixSnapshot?
 
     init(
         sessionID: String?,
@@ -63,7 +78,8 @@ struct CodexTokenActivityScanWatermark: Equatable, Sendable {
         eventTimestamp: Date?,
         totalTokens: Int?,
         sourceStatFingerprint: Int64? = nil,
-        sourceChangeTimeNanoseconds: Int64? = nil
+        sourceChangeTimeNanoseconds: Int64? = nil,
+        verifiedPrefixSnapshot: CodexVerifiedPrefixSnapshot? = nil
     ) {
         self.sessionID = sessionID
         self.sourceID = sourceID
@@ -74,6 +90,7 @@ struct CodexTokenActivityScanWatermark: Equatable, Sendable {
         self.lineFingerprint = lineFingerprint
         self.eventTimestamp = eventTimestamp
         self.totalTokens = totalTokens
+        self.verifiedPrefixSnapshot = verifiedPrefixSnapshot
     }
 }
 
@@ -618,8 +635,10 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
 
         let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: options.cacheRoot)
         let currentRootIdentities = Set(CostUsageScanner.codexRootsFingerprint(options: options).keys)
-        if !cache.days.isEmpty,
-           cache.roots.map({ Set($0.keys) }) == currentRootIdentities,
+        // Recovered pagination can be the entire history even when the ordinary
+        // inventory contains only empty conflict sentinels. The report builder
+        // applies those ledgers and checks whether any displayable data exists.
+        if cache.roots.map({ Set($0.keys) }) == currentRootIdentities,
            !CostUsageScanner.requestedWindowExpandsCache(range: costRange, cache: cache) {
             let report = CostUsageScanner.buildCodexReportFromCache(
                 cache: cache,
@@ -657,6 +676,14 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
             provider: .codex,
             cacheRoot: options.cacheRoot
         )
+        try CostUsageScanner.validateCodexPaginatedSnapshots(cache: cache, checkCancellation: nil)
+        let effectiveCache = CostUsageScanner.cacheIncludingCodexPaginatedHistory(cache)
+        return try agentSignalCostUsageScanWatermarksFromCache(effectiveCache, through: through)
+    }
+
+    private func agentSignalCostUsageScanWatermarksFromCache(
+        _ cache: CostUsageCache, through: Date
+    ) throws -> [CodexTokenActivityScanWatermark] {
         let owners = cache.files.compactMap { path, usage -> (String, String, CostUsageFileUsage)? in
             guard usage.codexInventoryOnly != true,
                   usage.codexNoncontributingDuplicate != true,
@@ -685,17 +712,43 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
             // offset deliberately does not cover the new live bytes.
             let fileURL = URL(fileURLWithPath: path)
             let currentMetadata = CostUsageScanner.codexFileMetadata(fileURL: fileURL)
+            var verifiedPrefixSnapshot: CodexVerifiedPrefixSnapshot?
             if let currentGeneration = currentMetadata.fileId {
-                let parsedBytes = usage.parsedBytes ?? usage.size
-                guard currentGeneration == generation,
+                guard let parsedBytes = usage.parsedBytes,
+                      currentGeneration == generation,
                       event.endOffset <= parsedBytes,
-                      try CostUsageScanner.codexFileMatchesCommittedFrontier(
-                          fileURL: fileURL,
-                          cached: usage,
-                          checkCancellation: nil
-                      )
+                      parsedBytes > 0, parsedBytes <= currentMetadata.size,
+                      usage.committedPrefixFingerprint?.isEmpty == false
                 else {
                     throw CostUsageScanner.codexChangedDuringScanError(path: path)
+                }
+                // A committed cache already proves this exact stat/ctime and
+                // generation. Avoid rereading every unchanged historical byte.
+                let unchanged = Self.costUsageFileMetadata(currentMetadata, matches: usage)
+                    && Self.costUsageFileMetadata(
+                        CostUsageScanner.codexFileMetadata(fileURL: fileURL), matches: usage)
+                if !unchanged {
+                    guard try CostUsageScanner.codexFileMatchesCommittedFrontier(
+                        fileURL: fileURL,
+                        cached: usage,
+                        checkCancellation: nil
+                    ) else {
+                        throw CostUsageScanner.codexChangedDuringScanError(path: path)
+                    }
+                }
+                let verifiedMetadata = CostUsageScanner.codexFileMetadata(fileURL: fileURL)
+                guard verifiedMetadata.fileId == generation, verifiedMetadata.size >= parsedBytes,
+                      !unchanged || Self.costUsageFileMetadata(verifiedMetadata, matches: usage) else {
+                    throw CostUsageScanner.codexChangedDuringScanError(path: path)
+                }
+                // The digest permits a concurrent append. Only issue an exact
+                // snapshot proof when *all* metadata stayed fixed during it.
+                if CostUsageScanner.codexFileMetadataIsSameSnapshot(currentMetadata, verifiedMetadata),
+                   currentMetadata.changeTimeNanoseconds == verifiedMetadata.changeTimeNanoseconds,
+                   let stat = verifiedMetadata.statFingerprint,
+                   let changeTime = verifiedMetadata.changeTimeNanoseconds {
+                    verifiedPrefixSnapshot = .init(statFingerprint: stat,
+                        changeTimeNanoseconds: changeTime, size: UInt64(verifiedMetadata.size))
                 }
             } else if fileManager.fileExists(atPath: path) {
                 throw CostUsageScanner.codexChangedDuringScanError(path: path)
@@ -713,7 +766,8 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
                 eventTimestamp: event.eventTimestamp,
                 totalTokens: event.totalTokens,
                 sourceStatFingerprint: usage.sourceStatFingerprint,
-                sourceChangeTimeNanoseconds: usage.sourceChangeTimeNanoseconds
+                sourceChangeTimeNanoseconds: usage.sourceChangeTimeNanoseconds,
+                verifiedPrefixSnapshot: verifiedPrefixSnapshot
             ))
         }
 

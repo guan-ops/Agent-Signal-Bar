@@ -102,13 +102,6 @@ cp -R "$ROOT_DIR/Tests" "$PAYLOAD_DIR/Tests"
 cp -R "$ROOT_DIR/script" "$PAYLOAD_DIR/script"
 cp -R "$ROOT_DIR/scripts" "$PAYLOAD_DIR/scripts"
 cp -R "$ROOT_DIR/docs" "$PAYLOAD_DIR/docs"
-mkdir -p "$PAYLOAD_DIR/.codex"
-if [[ -f "$ROOT_DIR/.codex/config.toml" ]]; then
-  cp "$ROOT_DIR/.codex/config.toml" "$PAYLOAD_DIR/.codex/config.toml"
-fi
-if [[ -d "$ROOT_DIR/.codex/environments" ]]; then
-  cp -R "$ROOT_DIR/.codex/environments" "$PAYLOAD_DIR/.codex/environments"
-fi
 cp -R "$APP_BUNDLE" "$PAYLOAD_DIR/dist/$APP_NAME.app"
 rm -rf "$DIST_DIR/$APP_NAME.app"
 ditto --norsrc --noextattr "$APP_BUNDLE" "$DIST_DIR/$APP_NAME.app"
@@ -121,7 +114,6 @@ printf "packaged-release\n" >"$PAYLOAD_DIR/dist/.packaged-release"
 find "$PAYLOAD_DIR" -type d -name __pycache__ -prune -exec rm -rf {} +
 find "$PAYLOAD_DIR" -type f \( -name '*.pyc' -o -name '.DS_Store' \) -delete
 find "$PAYLOAD_DIR" -type d \( -name marketing -o -name social -o -name video \) -prune -exec rm -rf {} +
-rm -f "$PAYLOAD_DIR/.codex/hooks.json" "$PAYLOAD_DIR/.codex"/hooks.json.*
 
 chmod +x "$PAYLOAD_DIR/dist/bin/agent-signal-light" \
   "$PAYLOAD_DIR/dist/bin/agent-signal" \

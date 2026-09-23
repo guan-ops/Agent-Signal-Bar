@@ -35,23 +35,23 @@ option_value() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --session|-s)
-      SESSION_ID="$(option_value "$1" "${2:-}")"
+      SESSION_ID="$(option_value "$1" "${2:-}")" || exit 2
       shift 2
       ;;
     --agent|--source)
-      AGENT_NAME="$(option_value "$1" "${2:-}")"
+      AGENT_NAME="$(option_value "$1" "${2:-}")" || exit 2
       shift 2
       ;;
     --start-event)
-      START_EVENT="$(option_value "$1" "${2:-}")"
+      START_EVENT="$(option_value "$1" "${2:-}")" || exit 2
       shift 2
       ;;
     --done-event)
-      DONE_EVENT="$(option_value "$1" "${2:-}")"
+      DONE_EVENT="$(option_value "$1" "${2:-}")" || exit 2
       shift 2
       ;;
     --blocked-event|--failed-event)
-      BLOCKED_EVENT="$(option_value "$1" "${2:-}")"
+      BLOCKED_EVENT="$(option_value "$1" "${2:-}")" || exit 2
       shift 2
       ;;
     --help|-h)

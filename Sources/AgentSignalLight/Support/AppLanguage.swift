@@ -630,9 +630,13 @@ extension MenuBarStatusModel {
             return text("费用未知", "cost unavailable")
         }
         return text(
-            "费用 \(String(format: "$%.2f", max(0, cost)))",
-            "cost \(String(format: "$%.2f", max(0, cost)))"
+            "费用 \(estimatedCostText(cost))",
+            "cost \(estimatedCostText(cost))"
         )
+    }
+
+    func estimatedCostText(_ costUSD: Double?, partial: Bool = false) -> String {
+        costCurrency.format(costUSD, partial: partial, locale: Locale(identifier: appLanguage.localeIdentifier))
     }
 
     func localizedTimeString(for date: Date) -> String {
