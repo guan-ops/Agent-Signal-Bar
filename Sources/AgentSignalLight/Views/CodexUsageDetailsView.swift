@@ -5,6 +5,7 @@ struct CodexUsageDetailsView: View {
     let isLoading: Bool
     let text: (String, String) -> String
     let tokens: (Int) -> String
+    let formatCost: (Double?, Bool) -> String
     @State private var query = ""
     @State private var selectedProject: String?
     @State private var projectsExpanded = false
@@ -172,8 +173,7 @@ struct CodexUsageDetailsView: View {
     }
 
     private func cost(_ value: Double?, partial: Bool) -> String {
-        guard let value else { return "—" }
-        return (partial ? "≥ " : "") + value.formatted(.currency(code: "USD"))
+        formatCost(value, partial)
     }
 }
 

@@ -515,6 +515,9 @@ struct DebugWindowView: View {
                 }
                 .zIndex(expandedSettingsDropdown == .theme ? 1000 : 0)
 
+                CostCurrencySettingsView(store: model.costCurrency, text: model.text,
+                                         locale: Locale(identifier: model.appLanguage.localeIdentifier))
+
                 settingRow(model.text("液态玻璃效果", "Liquid glass")) {
                     settingsSwitch(settingsGlassEnabledBinding)
                 }
@@ -938,8 +941,10 @@ struct DebugWindowView: View {
                     usageTokenSummaryCard
                     CodexUsageDetailsView(details: model.tokenActivityDetails,
                                           isLoading: model.isTokenActivityLoading,
-                                          text: model.text, tokens: model.compactTokenCountText)
+                                          text: model.text, tokens: model.compactTokenCountText,
+                                          formatCost: { model.estimatedCostText($0, partial: $1) })
                 }
+                CostCurrencyRateNote(store: model.costCurrency, text: model.text)
             }
         }
         .onAppear {
@@ -2685,8 +2690,7 @@ struct DebugWindowView: View {
     }
 
     private func tokenActivityCurrencyText(_ value: Double?) -> String {
-        guard let value else { return "$--" }
-        return String(format: "$%.2f", max(0, value))
+        model.estimatedCostText(value)
     }
 
     private func tokenActivityShortDateText(_ date: Date) -> String {

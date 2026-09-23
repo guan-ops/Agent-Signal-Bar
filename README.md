@@ -146,12 +146,15 @@ Start with the [Codex setup](docs/CODEX_SETUP.md), [Claude Code setup](docs/CLAU
 
 ## Privacy and network access
 
+Choose **General → Cost display currency** to display local Codex and Claude cost estimates in one of 17 currencies, including USD, CNY and NZD. [ExchangeRate-API](https://www.exchangerate-api.com) provides daily reference rates; the rate date is shown beside converted estimates. Today’s and historical costs use the same latest available rate. Offline conversion uses the dated cache, or retains USD if no rate is available. Original usage records remain in USD; account extra usage keeps its billing currency.
+
 Agent Signal Bar is local-first, but it is not described as fully offline:
 
 - Agent activity is detected from known local Codex logs or local hook, CLI, and JSON state.
 - State snapshots, hook events, cost-scan caches, and exported diagnostics remain on your Mac unless you choose to share them.
 - Optional Codex account and quota features connect directly to OpenAI and can use local Codex credentials or optional `chatgpt.com` browser-session data. Saved account credentials and manually entered cookies use macOS Keychain storage.
 - Service-status and update checks contact OpenAI Status and GitHub/Sparkle respectively.
+- Selecting a non-USD cost currency fetches public daily rates from `open.er-api.com`. This request contains no account credentials or usage records.
 - No Agent Signal Bar backend account or project-hosted cloud service is required.
 
 ## CLI and custom agents

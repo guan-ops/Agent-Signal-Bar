@@ -73,7 +73,7 @@ struct MenuTokenHistoryChart: View {
     }
 
     private func detail(_ day: CodexTokenActivityDay) -> String {
-        let cost = day.estimatedCostUSD.map { $0.formatted(.currency(code: "USD")) } ?? "—"
+        let cost = model.estimatedCostText(day.estimatedCostUSD)
         return "\(dateLabel(day.day)) · \(model.compactTokenCountText(day.totalTokens)) Token · \(cost)"
     }
 }

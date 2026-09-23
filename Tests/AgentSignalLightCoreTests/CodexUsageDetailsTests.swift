@@ -89,7 +89,9 @@ final class CodexUsageDetailsTests: XCTestCase {
         }
         _ = NSApplication.shared
         let host = NSHostingView(rootView: CodexUsageDetailsView(details: details, isLoading: false,
-            text: { zh, _ in zh }, tokens: { $0.formatted() }).frame(width: 600))
+            text: { zh, _ in zh }, tokens: { $0.formatted() },
+            formatCost: { value, partial in value.map { (partial ? "≥ " : "") + $0.formatted(.currency(code: "USD")) } ?? "—" })
+            .frame(width: 600))
         let size = host.fittingSize
         XCTAssertEqual(size.width, 600, accuracy: 1)
         XCTAssertGreaterThan(size.height, 150)

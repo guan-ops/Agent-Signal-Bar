@@ -96,6 +96,7 @@ struct MenuUsageSummaryView: View {
                 quota
                 Divider()
                 tokens
+                CostCurrencyRateNote(store: model.costCurrency, text: model.text, compact: true)
             }
             .padding(12)
             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
@@ -251,8 +252,9 @@ struct MenuUsageSummaryView: View {
     private func metricColumn(title: String, tokens: Int?, cost: Double?) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).foregroundStyle(.secondary)
-            Text(cost.map { $0.formatted(.currency(code: "USD")) } ?? "—")
+            Text(model.estimatedCostText(cost))
                 .font(.system(size: 17, weight: .semibold)).monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.7)
             Text(tokens.map { model.compactTokenCountText($0) + " Token" } ?? "—")
                 .fontWeight(.medium).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
         }.frame(maxWidth: .infinity, alignment: .leading)

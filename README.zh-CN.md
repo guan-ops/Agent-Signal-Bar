@@ -146,12 +146,15 @@ Agent Signal Bar 把本地 AI Agent 活动转换成一套简单的红黄绿灯�
 
 ## 隐私与联网范围
 
+在 **通用 → 费用显示货币** 中可选择美元、人民币、新西兰元等 17 种货币，用于显示本机 Codex 和 Claude 费用估算。[ExchangeRate-API](https://www.exchangerate-api.com) 提供每日参考汇率，换算费用旁会显示汇率日期。今日及历史费用均使用最新可用汇率；离线时使用带日期的缓存，没有汇率时保留 USD。原始用量记录仍以美元计价，账号额外用量保留账单币种。
+
 Agent Signal Bar 是本地优先应用，但不应被理解为完全离线：
 
 - Agent 活动来自已知的本地 Codex 日志，或本地 Hook、CLI 与 JSON 状态。
 - 状态快照、Hook 事件、用量扫描缓存和导出的诊断包都留在 Mac 上，除非你主动选择分享。
 - 可选的 Codex 账号与额度功能会直接连接 OpenAI，并可使用本地 Codex 凭据或可选的 `chatgpt.com` 浏览器 session 数据。已保存账号凭据和手动输入的 Cookie 使用 macOS Keychain 存储。
 - 服务状态与更新检查会分别访问 OpenAI Status 和 GitHub/Sparkle。
+- 选择非美元费用显示货币时，会从 `open.er-api.com` 获取公开的每日汇率；请求不包含账号凭据或用量记录。
 - 不要求 Agent Signal Bar 后端账号，也不依赖项目托管的云服务。
 
 ## CLI 与自定义 Agent
