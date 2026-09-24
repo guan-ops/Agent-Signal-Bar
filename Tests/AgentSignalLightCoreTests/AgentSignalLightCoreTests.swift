@@ -11935,8 +11935,10 @@ final class AgentSignalLightCoreTests: XCTestCase {
             lastEvent: "SessionEnd"
         )
 
-        XCTAssert(alertSnapshot.aggregate == .blocked)
-        XCTAssert(alertSnapshot.sessions.first?.signal == .blocked)
+        // 与下方 permission 段一致：8c279d8 起 blocked 不再 preserveAgainstSessionEndSignal，
+        // 会话结束时应被清除，而非保留红灯。
+        XCTAssert(alertSnapshot.aggregate == .idle)
+        XCTAssert(alertSnapshot.sessions.isEmpty)
         XCTAssert(alertSnapshot.recentEvents.first?.signal == .sessionEnd)
 
         let permissionFixture = try makeTemporaryStore()

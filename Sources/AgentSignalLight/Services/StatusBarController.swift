@@ -404,6 +404,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             action: #selector(toggleFloatingSignalSoundFromMenu)
         ))
         menu.addItem(.separator())
+        menu.addItem(actionMenuItem(model.text("清除信号", "Clear Signal"), imageName: "xmark.circle", action: #selector(clearSignalFromMenu)))
         menu.addItem(actionMenuItem(model.text("设置", "Settings"), imageName: "gearshape", action: #selector(openSettingsFromMenu)))
         menu.addItem(actionMenuItem(model.text("退出", "Quit"), imageName: "power", action: #selector(quitFromMenu)))
     }
@@ -715,6 +716,12 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
 
     @objc private func quitFromMenu() {
         NSApplication.shared.terminate(nil)
+    }
+
+    @objc private func clearSignalFromMenu() {
+        // 一键清除所有会话状态（重置为 idle），作为卡死红灯的逃生舱，
+        // 无需杀进程重启。底层为 SignalStateStore.clearSessions()。
+        model.clearSessions()
     }
 
     private func removeStatusItem() {

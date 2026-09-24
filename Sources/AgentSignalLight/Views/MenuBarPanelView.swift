@@ -199,6 +199,17 @@ struct MenuBarPanelView: View {
             HStack {
                 Spacer()
                 Button {
+                    model.clearSessions()
+                    model.reload()
+                } label: {
+                    Label(model.text("清除信号", "Clear Signal"), systemImage: "xmark.circle")
+                }
+                .buttonStyle(.borderless)
+            }
+
+            HStack {
+                Spacer()
+                Button {
                     NSApplication.shared.terminate(nil)
                 } label: {
                     Label(model.text("退出", "Quit"), systemImage: "power")
