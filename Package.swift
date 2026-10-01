@@ -17,7 +17,7 @@ let package = Package(
         .library(name: "AgentSignalLightUI", targets: ["AgentSignalLightUI"])
     ],
     dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.3"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
         .package(url: "https://github.com/steipete/SweetCookieKit", from: "0.4.1")
     ],
     targets: [
