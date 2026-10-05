@@ -18,6 +18,7 @@ struct CodexModelPresentation: Equatable {
     static func forModel(_ raw: String) -> Self {
         let model = CostUsagePricing.normalizeCodexModel(raw.lowercased())
         switch model {
+        case "gpt-6.1-sol": return Self(displayName: "GPT-6.1 Sol", sortRank: -1, colorRGB: 0xEE7430)
         case "gpt-6-astra": return Self(displayName: "GPT-6 Astra", sortRank: 0, colorRGB: 0x6F52F0)
         case "gpt-6-sol": return Self(displayName: "GPT-6 Sol", sortRank: 1, colorRGB: 0xE85028)
         case "gpt-6-luna": return Self(displayName: "GPT-6 Luna", sortRank: 2, colorRGB: 0xF8D068)
