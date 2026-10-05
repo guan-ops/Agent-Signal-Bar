@@ -72,7 +72,7 @@ enum CostUsagePricing {
     // Prefer these official rates to models.dev, which can lag model launches and
     // omit long-context tiers. These are API USD estimates, not Codex credit rates.
     private static let codexOfficialPricingModels: Set<String> = [
-        "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+        "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
         "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
     ]
 
@@ -89,6 +89,20 @@ enum CostUsagePricing {
             priorityInputCostPerToken: 2e-5,
             priorityOutputCostPerToken: 1e-4,
             priorityCacheReadInputCostPerToken: 2e-6,
+            priorityLongContextRateMultiplier: 2),
+        // Verified 2026-10-05: https://developers.openai.com/api/docs/models/gpt-6.1-sol
+        "gpt-6.1-sol": CodexPricing(
+            inputCostPerToken: 2e-6,
+            outputCostPerToken: 1e-5,
+            cacheReadInputCostPerToken: 1e-7,
+            displayLabel: nil,
+            thresholdTokens: 272_000,
+            inputCostPerTokenAboveThreshold: 4e-6,
+            outputCostPerTokenAboveThreshold: 1.5e-5,
+            cacheReadInputCostPerTokenAboveThreshold: 2e-7,
+            priorityInputCostPerToken: 4e-6,
+            priorityOutputCostPerToken: 2e-5,
+            priorityCacheReadInputCostPerToken: 2e-7,
             priorityLongContextRateMultiplier: 2),
         "gpt-6-sol": CodexPricing(
             inputCostPerToken: 2e-6,
@@ -271,7 +285,7 @@ enum CostUsagePricing {
 
     static func codexBuiltInPricingFingerprint() -> String {
         var parts = [
-            "costPolicyVersion=5", // Preserve mode-specific unpriced counts and revalidate paginated totals.
+            "costPolicyVersion=6", // Reprice catalogs that previously omitted bundled long-context rates.
             "priorityInputTokenLimit=\(self.codexPriorityInputTokenLimit)",
             "officialPricingModels=\(self.codexOfficialPricingModels.sorted().joined(separator: ","))",
         ]
@@ -560,7 +574,7 @@ enum CostUsagePricing {
         {
             return self.codexCostUSD(
                 pricing: lookup.pricing,
-                thresholdTokens: self.codex[key]?.thresholdTokens,
+                bundledPricing: self.codex[key],
                 inputTokens: inputTokens,
                 cachedInputTokens: cachedInputTokens,
                 outputTokens: outputTokens)
@@ -634,21 +648,27 @@ enum CostUsagePricing {
 
     private static func codexCostUSD(
         pricing: ModelsDevPricingInfo,
-        thresholdTokens: Int? = nil,
+        bundledPricing: CodexPricing? = nil,
         inputTokens: Int,
         cachedInputTokens: Int,
         outputTokens: Int) -> Double
     {
-        self.codexCostUSD(
+        // Fill the bundled context tier only when the catalog omits the whole block.
+        // An explicit partial block keeps the catalog's own base-rate fallback semantics.
+        let contextFallback = pricing.thresholdTokens == nil ? bundledPricing : nil
+        return self.codexCostUSD(
             pricing: CodexPricing(
                 inputCostPerToken: pricing.inputCostPerToken,
                 outputCostPerToken: pricing.outputCostPerToken,
                 cacheReadInputCostPerToken: pricing.cacheReadInputCostPerToken,
                 displayLabel: nil,
-                thresholdTokens: thresholdTokens ?? pricing.thresholdTokens,
-                inputCostPerTokenAboveThreshold: pricing.inputCostPerTokenAboveThreshold,
-                outputCostPerTokenAboveThreshold: pricing.outputCostPerTokenAboveThreshold,
-                cacheReadInputCostPerTokenAboveThreshold: pricing.cacheReadInputCostPerTokenAboveThreshold),
+                thresholdTokens: bundledPricing?.thresholdTokens ?? pricing.thresholdTokens,
+                inputCostPerTokenAboveThreshold: pricing.inputCostPerTokenAboveThreshold
+                    ?? contextFallback?.inputCostPerTokenAboveThreshold,
+                outputCostPerTokenAboveThreshold: pricing.outputCostPerTokenAboveThreshold
+                    ?? contextFallback?.outputCostPerTokenAboveThreshold,
+                cacheReadInputCostPerTokenAboveThreshold: pricing.cacheReadInputCostPerTokenAboveThreshold
+                    ?? contextFallback?.cacheReadInputCostPerTokenAboveThreshold),
             inputTokens: inputTokens,
             cachedInputTokens: cachedInputTokens,
             outputTokens: outputTokens)
