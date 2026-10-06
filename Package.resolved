@@ -1,13 +1,13 @@
 {
-  "originHash" : "b5b806703ce0be51bbcbd71245b91bb77526d421e6da5981a40c14dcfb7f688f",
+  "originHash" : "f3dd57b0e11e2be2e24067184637badec98bb558278ddb8f63e141abec5c17a4",
   "pins" : [
     {
       "identity" : "sparkle",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sparkle-project/Sparkle",
       "state" : {
-        "revision" : "d46d456107feacc80711b21847b82b07bd9fb46e",
-        "version" : "2.9.3"
+        "revision" : "eef1a539a373c1f1a320624b1130fc5de7b2e100",
+        "version" : "2.10.0"
       }
     },
     {
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/steipete/SweetCookieKit",
       "state" : {
-        "revision" : "21bedea672a3e63ccad24d744051e76cdf0462dd",
-        "version" : "0.4.1"
+        "revision" : "aa9fbefd7d4fb6335a3cd71fd6210f9a35535185",
+        "version" : "0.5.3"
       }
     }
   ],
