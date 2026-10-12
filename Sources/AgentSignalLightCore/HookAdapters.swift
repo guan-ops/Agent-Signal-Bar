@@ -746,12 +746,32 @@ private func failureValue(_ value: Any) -> Bool {
     }
     if let string = value as? String {
         let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized.isEmpty || ["0", "false", "no", "none", "null", "success", "ok"].contains(normalized) {
+        // 良性 / 成功语义的值不应被当成失败。原始实现只有 success/ok，
+        // 导致 completed / passed / done 等正常终态被误判为失败并触发红灯。
+        let benignValues = Set([
+            "", "0", "false", "no", "none", "null",
+            "success", "ok", "okay", "succeeded", "successful",
+            "completed", "complete", "pass", "passed", "done",
+            "resolved", "resolve", "ready", "finished", "noop"
+        ])
+        if benignValues.contains(normalized) {
             return false
         }
         return true
     }
-    return !(value is NSNull)
+    // 空集合 / 空字典 / 显式 null 不含任何失败信息，不应判为失败。
+    // 原始实现对非 NSNull 一律返回 true，导致 "errors": [] 这类良性
+    // payload 被误判为失败并点亮红灯。
+    if value is NSNull {
+        return false
+    }
+    if let array = value as? [Any] {
+        return !array.isEmpty
+    }
+    if let dict = value as? [String: Any] {
+        return !dict.isEmpty
+    }
+    return false
 }
 
 private func isFailureWord(_ value: String) -> Bool {

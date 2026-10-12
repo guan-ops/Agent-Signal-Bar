@@ -395,20 +395,24 @@ public final class SignalStateStore: @unchecked Sendable {
 }
 
 private extension AgentSignal {
+    // 会话结束（sessionEnd）是明确的终态事件，不应被之前的 blocked 状态保留，
+    // 否则即便 agent 已结束/解除阻塞，红灯仍会卡到 TTL 过期才熄灭。
     var preserveAgainstSessionEndSignal: Bool {
         switch displayState {
-        case .completed, .needsReview, .blocked, .stale, .paused:
+        case .completed, .needsReview, .stale, .paused:
             return true
-        case .ready, .active, .permission:
+        case .ready, .active, .permission, .blocked:
             return false
         }
     }
 
+    // 收到明确的完成信号（done）时，blocked 状态也应被覆盖，
+    // 否则 blocked 红灯会一直保留到 TTL 过期。
     var preserveAgainstCompletedSignal: Bool {
         switch displayState {
-        case .blocked, .stale, .paused:
+        case .stale, .paused:
             return true
-        case .ready, .active, .completed, .needsReview, .permission:
+        case .ready, .active, .completed, .needsReview, .permission, .blocked:
             return false
         }
     }
