@@ -2400,11 +2400,53 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     func openCodex() {
-        openAgentApplication(appName: "Codex", displayName: "Codex")
+        // Legacy entry: open ChatGPT desktop by verified bundle ID preference list.
+        openMonitoredClient(.chatgptDesktop)
+    }
+
+    func openChatGPTDesktop() {
+        openMonitoredClient(.chatgptDesktop)
     }
 
     func openClaude() {
-        openAgentApplication(appName: "Claude", displayName: "Claude")
+        openMonitoredClient(.claudeDesktop)
+    }
+
+    func openGrokBot() {
+        openMonitoredClient(.grokBot)
+    }
+
+    func markSessionViewed(sessionID: String) {
+        do {
+            snapshot = try store.markSessionViewed(sessionID: sessionID)
+            lastError = nil
+        } catch {
+            lastError = text(
+                "标记已查看失败：\(error.localizedDescription)",
+                "Failed to mark viewed: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    func markAllAwaitingSessionsViewed() {
+        let ids = snapshot.sessions.filter(\.awaitingView).map(\.sessionID)
+        guard !ids.isEmpty else {
+            lastError = text("当前没有待查看的回复。", "No replies awaiting view.")
+            return
+        }
+        do {
+            var latest = snapshot
+            for id in ids {
+                latest = try store.markSessionViewed(sessionID: id)
+            }
+            snapshot = latest
+            lastError = nil
+        } catch {
+            lastError = text(
+                "标记已查看失败：\(error.localizedDescription)",
+                "Failed to mark viewed: \(error.localizedDescription)"
+            )
+        }
     }
 
     func showStateFile() {
@@ -6581,20 +6623,22 @@ final class MenuBarStatusModel: ObservableObject {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
 
-    private func openAgentApplication(appName: String, displayName: String) {
-        let candidates = [
-            URL(fileURLWithPath: "/Applications/\(appName).app"),
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/\(appName).app")
-        ]
-
-        guard let appURL = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
-            lastError = text("没有找到 \(displayName).app。", "\(displayName).app was not found.")
-            return
+    private func openMonitoredClient(_ client: MonitoredClientApp) {
+        let workspace = NSWorkspace.shared
+        for bundleID in client.preferredBundleIdentifiers {
+            if let appURL = workspace.urlForApplication(withBundleIdentifier: bundleID) {
+                workspace.openApplication(at: appURL, configuration: NSWorkspace.OpenConfiguration())
+                lastError = nil
+                return
+            }
         }
 
-        NSWorkspace.shared.openApplication(at: appURL, configuration: NSWorkspace.OpenConfiguration())
-        lastError = nil
+        lastError = text(
+            "没有找到 \(client.displayName)（bundle: \(client.preferredBundleIdentifiers.joined(separator: ", "))）。",
+            "\(client.displayName) was not found (bundle: \(client.preferredBundleIdentifiers.joined(separator: ", ")))."
+        )
     }
+
 
     private func runHookInstall(
         operation: HookInstallOperation,

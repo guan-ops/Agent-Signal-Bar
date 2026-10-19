@@ -599,7 +599,7 @@ private struct FloatingSignalPanelView: View {
         self.openSettings = openSettings
         _cachedLightSnapshot = State(initialValue: model.floatingSignalLightSnapshot)
         _cachedFloatingInfoSessions = State(
-            initialValue: ActivityPresentation.visibleRunningSessions(from: model.activitySnapshot)
+            initialValue: ActivityPresentation.attentionBadgeSessions(from: model.activitySnapshot)
         )
     }
 
@@ -1315,7 +1315,7 @@ private struct FloatingSignalPanelView: View {
 
     private func refreshCachedSnapshots() {
         cachedLightSnapshot = model.floatingSignalLightSnapshot
-        cachedFloatingInfoSessions = ActivityPresentation.visibleRunningSessions(from: model.activitySnapshot)
+        cachedFloatingInfoSessions = ActivityPresentation.attentionBadgeSessions(from: model.activitySnapshot)
     }
 
     private func resizeHandleTarget(scale: CGFloat, hotspotInset: CGFloat) -> some View {

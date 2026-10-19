@@ -252,6 +252,40 @@ public final class SignalStateStore: @unchecked Sendable {
         try setManualSignal(.idle)
     }
 
+    /// Manual 已查看: clears awaiting-view without inventing idle from silence.
+    public func markSessionViewed(sessionID: String, updatedAt: Date = Date()) throws -> SignalSnapshot {
+        try withStateLock {
+            var document = try readDocument()
+            let now = Date()
+            _ = pruneRuntimeSessions(in: &document, now: now)
+
+            guard var record = document.sessions[sessionID] else {
+                return document.snapshot(stateFileURL: stateFileURL)
+            }
+
+            record.awaitingView = false
+            record.updatedAt = updatedAt
+            if record.lastEvent == nil || record.lastEvent?.isEmpty == true {
+                record.lastEvent = "MarkedViewed"
+            } else if record.lastEvent != "MarkedViewed" {
+                record.lastEvent = "MarkedViewed"
+            }
+            document.sessions[sessionID] = record
+            document.aggregate = document.aggregateSignal()
+            appendEvent(
+                to: &document,
+                sessionID: sessionID,
+                agent: record.agent,
+                signal: record.signal,
+                event: "MarkedViewed",
+                updatedAt: updatedAt
+            )
+            document.updatedAt = updatedAt
+            try writeDocument(document)
+            return document.snapshot(stateFileURL: stateFileURL)
+        }
+    }
+
     public func applySessionSignal(
         _ signal: AgentSignal,
         sessionID: String,
@@ -325,7 +359,8 @@ public final class SignalStateStore: @unchecked Sendable {
                         signal: signal,
                         lastEvent: lastEvent,
                         updatedAt: eventDate,
-                        quota: quota ?? existingBeforePrune?.quota
+                        quota: quota ?? existingBeforePrune?.quota,
+                        awaitingView: true
                     )
                 }
             default:
@@ -425,7 +460,7 @@ private extension SignalStateStore {
         var removedNonCompletedSession = false
 
         document.sessions = previousSessions.filter { _, record in
-            let ttlSeconds = runtimeTTLSeconds(for: record.signal)
+            let ttlSeconds = runtimeTTLSeconds(for: record)
             let shouldKeep = now.timeIntervalSince(record.updatedAt) <= ttlSeconds
             if !shouldKeep && shouldExpiredSessionMarkStateStale(record.signal) {
                 removedNonCompletedSession = true
@@ -439,8 +474,12 @@ private extension SignalStateStore {
         )
     }
 
-    func runtimeTTLSeconds(for signal: AgentSignal) -> Double {
-        switch signal {
+    func runtimeTTLSeconds(for record: SessionRecord) -> Double {
+        // 回复待查看 must persist past the short done TTL until mark-viewed.
+        if record.awaitingView {
+            return sessionTTLSeconds
+        }
+        switch record.signal {
         case .done, .toolDone, .subagentStop:
             return completedTTLSeconds
         default:

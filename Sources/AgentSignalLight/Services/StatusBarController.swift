@@ -389,6 +389,11 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         menu.addItem(.separator())
         addOpenAgentMenuItems(to: menu, snapshot: activitySnapshot)
         menu.addItem(actionMenuItem(
+            model.text("标记已查看", "Mark Viewed"),
+            imageName: "checkmark.circle",
+            action: #selector(markViewedFromMenu)
+        ))
+        menu.addItem(actionMenuItem(
             model.isMonitoringPaused ? model.text("继续监控", "Resume Monitoring") : model.text("暂停监控", "Pause Monitoring"),
             imageName: model.isMonitoringPaused ? "play.fill" : "pause.fill",
             action: #selector(toggleMonitoringFromMenu)
@@ -428,18 +433,21 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     private func addOpenAgentMenuItems(to menu: NSMenu, snapshot: SignalSnapshot) {
         let agents = nativeRunningAgentKeys(from: snapshot)
         if agents.isEmpty {
-            menu.addItem(actionMenuItem(model.text("打开 Codex", "Open Codex"), imageName: "terminal", action: #selector(openCodexFromMenu)))
+            menu.addItem(actionMenuItem(model.text("打开 ChatGPT", "Open ChatGPT"), imageName: "terminal", action: #selector(openCodexFromMenu)))
             menu.addItem(actionMenuItem(model.text("打开 Claude", "Open Claude"), imageName: "sparkles", action: #selector(openClaudeFromMenu)))
+            menu.addItem(actionMenuItem(model.text("打开 Grok Bot", "Open Grok Bot"), imageName: "bolt", action: #selector(openGrokFromMenu)))
             return
         }
 
         if agents.contains("codex") {
-            menu.addItem(actionMenuItem(model.text("打开 Codex", "Open Codex"), imageName: "terminal", action: #selector(openCodexFromMenu)))
+            menu.addItem(actionMenuItem(model.text("打开 ChatGPT", "Open ChatGPT"), imageName: "terminal", action: #selector(openCodexFromMenu)))
         }
 
         if agents.contains("claude") {
             menu.addItem(actionMenuItem(model.text("打开 Claude", "Open Claude"), imageName: "sparkles", action: #selector(openClaudeFromMenu)))
         }
+
+        menu.addItem(actionMenuItem(model.text("打开 Grok Bot", "Open Grok Bot"), imageName: "bolt", action: #selector(openGrokFromMenu)))
     }
 
     private func nativeRunningAgentKeys(from snapshot: SignalSnapshot) -> Set<String> {
@@ -690,11 +698,19 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     @objc private func openCodexFromMenu() {
-        model.openCodex()
+        model.openChatGPTDesktop()
     }
 
     @objc private func openClaudeFromMenu() {
         model.openClaude()
+    }
+
+    @objc private func openGrokFromMenu() {
+        model.openGrokBot()
+    }
+
+    @objc private func markViewedFromMenu() {
+        model.markAllAwaitingSessionsViewed()
     }
 
     @objc private func toggleMonitoringFromMenu() {
