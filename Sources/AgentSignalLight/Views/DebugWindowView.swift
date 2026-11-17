@@ -1384,7 +1384,10 @@ struct DebugWindowView: View {
         // Follow the light agent selection, as the status bar and floating lights do; the
         // session list below remains the all-agent overview.
         let summary = model.signalLightSummary
-        let selectedSignal: AgentSignal = model.isLightDebugModeEnabled ? .idle : summary.signal
+        // Paused monitoring greys the status bar and floating lights; the hero must agree.
+        let selectedSignal: AgentSignal = model.isLightDebugModeEnabled
+            ? .idle
+            : (model.isMonitoringPaused ? .paused : summary.signal)
         let updatedAt = summary.updatedAt
 
         return HStack(alignment: .center, spacing: ASB.Space.l) {
@@ -2372,12 +2375,15 @@ struct DebugWindowView: View {
                 }
             }
 
-            settingRow(model.text("状态栏方向", "Status bar direction")) {
-                compactSegmentedControl(
-                    options: TrafficSignalLayout.allCases,
-                    selection: displayLayoutBinding
-                ) { layout in
-                    model.displayName(for: layout)
+            // A single lamp has the same geometry in both layouts, so direction has no effect.
+            if model.statusBarStyle != .singleLamp {
+                settingRow(model.text("状态栏方向", "Status bar direction")) {
+                    compactSegmentedControl(
+                        options: TrafficSignalLayout.allCases,
+                        selection: displayLayoutBinding
+                    ) { layout in
+                        model.displayName(for: layout)
+                    }
                 }
             }
 
@@ -2430,7 +2436,9 @@ struct DebugWindowView: View {
                 settingRow(model.text("悬浮灯大小", "Floating signal size")) {
                     compactSegmentedControl(
                         options: floatingSignalSizeOptions,
-                        selection: floatingSignalSizeBinding
+                        selection: floatingSignalSizeBinding,
+                        // The fourth "Custom" segment does not fit the default control width.
+                        width: floatingSignalSizeOptions.count > 3 ? 216 : nil
                     ) { option in
                         switch option {
                         case .compact:
@@ -2785,7 +2793,7 @@ struct DebugWindowView: View {
     private var manualSignalSettings: some View {
         settingsSection(model.text("灯效", "Effects")) {
             VStack(alignment: .leading, spacing: 14) {
-                settingsSubsection(model.text("灯效自定义", "Effect Customization")) {
+                settingsSubsection(model.text("灯效自定义", "Effect Customization"), showsLeadingDivider: false) {
                     settingRow(model.text("思考灯效", "Thinking effect")) {
                         thinkingEffectMenu
                     }
@@ -3087,9 +3095,16 @@ struct DebugWindowView: View {
         return ASBSection(title: title) { rows }
     }
 
-    private func settingsSubsection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func settingsSubsection<Content: View>(
+        _ title: String,
+        showsLeadingDivider: Bool = true,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Divider().opacity(0.6)
+            // A subsection that opens its card has nothing above it to separate from.
+            if showsLeadingDivider {
+                Divider().opacity(0.6)
+            }
             Text(title)
                 .font(settingsSubsectionTitleFont)
                 .foregroundStyle(.secondary)

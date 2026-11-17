@@ -1852,6 +1852,11 @@ final class MenuBarStatusModel: ObservableObject {
 
     /// Provider selection is exclusive, persistent, and does not disable monitoring of other providers.
     func selectSignalLightProvider(_ provider: SignalLightProvider) {
+        // Choosing the provider auto-follow already shows is not a request to pin it;
+        // leaving following mode here would silently stop the light from switching agents.
+        if signalLightAgentSelectionMode == .following, selectedSignalLightProvider == provider {
+            return
+        }
         setSignalLightAgentScopes(provider.scopes)
         refreshFloatingUsage()
     }

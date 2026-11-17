@@ -13651,6 +13651,44 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testSelectingFollowedProviderKeepsAutomaticFollowing() throws {
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .working,
+                updatedAt: now,
+                sessions: [
+                    "claude-code:thread": SessionRecord(
+                        agent: "claude-code",
+                        signal: .working,
+                        lastEvent: "PreToolUse",
+                        updatedAt: now
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        XCTAssertEqual(model.signalLightAgentSelectionMode, .following)
+        XCTAssertEqual(model.selectedSignalLightProvider, .claude)
+
+        // The floating info row for the agent already being followed must not pin it.
+        model.selectSignalLightProvider(.claude)
+        XCTAssertEqual(model.signalLightAgentSelectionMode, .following)
+
+        // Choosing a different provider is an explicit pin.
+        model.selectSignalLightProvider(.codex)
+        XCTAssertEqual(model.signalLightAgentSelectionMode, .manual)
+        XCTAssertEqual(model.signalLightAgentScopes, SignalLightAgentScope.codexCases)
+    }
+
+    @MainActor
     func testSignalLightFollowingIgnoresPresenceOnlySessions() throws {
         let savedSelectionDefaults = clearSignalLightSelectionDefaults()
         let savedMonitoringDefaults = [
