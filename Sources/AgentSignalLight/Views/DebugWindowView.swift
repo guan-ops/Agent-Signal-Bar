@@ -2538,13 +2538,14 @@ struct DebugWindowView: View {
     private var cliInstallSettings: some View {
         settingsSection(model.text("命令行工具", "Command Line Tool")) {
             VStack(alignment: .leading, spacing: 8) {
-                connectionActionButton(
-                    model.text("安装 CLI", "Install CLI"),
-                    systemImage: "terminal",
-                    width: 83,
-                    disabled: model.isCLIInstallRunning,
-                    action: { model.installBundledCLI() }
-                )
+                connectionButtonRow(buttonCount: 1) {
+                    connectionActionButton(
+                        model.text("安装 CLI", "Install CLI"),
+                        systemImage: "terminal",
+                        disabled: model.isCLIInstallRunning,
+                        action: { model.installBundledCLI() }
+                    )
+                }
 
                 Text(model.text(
                     "将 agent-signal-light 命令安装到 /opt/homebrew/bin 或 /usr/local/bin。",
@@ -2836,44 +2837,45 @@ struct DebugWindowView: View {
 
                 Divider()
 
-                connectionItem(
+                connectionBlock(
                     title: model.text("诊断与版本", "Diagnostics"),
                     subtitle: model.text("导出诊断包、查看状态文件和版本", "Export diagnostics, state file, and version"),
                     systemImage: "lifepreserver"
                 ) {
-                    VStack(alignment: .trailing, spacing: 6) {
-                        HStack(spacing: 8) {
-                            diagnosticActionButton(
-                                model.text("导出诊断", "Export Diagnostics"),
-                                systemImage: "archivebox",
-                                disabled: model.isDiagnosticsExportRunning
-                            ) {
-                                isShowingDiagnosticsExportConfirmation = true
-                            }
-
-                            diagnosticActionButton(model.text("状态文件", "State File"), systemImage: "folder") {
-                                model.showStateFile()
-                            }
+                    connectionButtonRow(buttonCount: 3) {
+                        connectionActionButton(
+                            model.text("导出诊断", "Export Diagnostics"),
+                            systemImage: "archivebox",
+                            disabled: model.isDiagnosticsExportRunning
+                        ) {
+                            isShowingDiagnosticsExportConfirmation = true
                         }
 
-                        HStack(spacing: 8) {
-                            diagnosticActionButton(model.text("复制路径", "Copy Path"), systemImage: "doc.on.doc") {
-                                model.copyStateFilePath()
-                            }
-
-                            diagnosticActionButton(
-                                model.text("版本", "Release"),
-                                systemImage: "shippingbox",
-                                disabled: model.releaseInfo.releaseFileURL == nil
-                            ) {
-                                model.showReleaseInfoFile()
-                            }
+                        connectionActionButton(model.text("状态文件", "State File"), systemImage: "folder") {
+                            model.showStateFile()
                         }
 
-                        if model.isDiagnosticsExportRunning {
+                        connectionActionButton(model.text("复制路径", "Copy Path"), systemImage: "doc.on.doc") {
+                            model.copyStateFilePath()
+                        }
+                    }
+
+                    if model.isDiagnosticsExportRunning {
+                        HStack(spacing: 8) {
                             ProgressView()
                                 .controlSize(.small)
+                            connectionStatusText(model.text("正在导出诊断…", "Exporting diagnostics…"))
                         }
+                    }
+                }
+
+                if model.isHookInstallRunning {
+                    // Hook runs are not tracked per agent, so progress is shown once,
+                    // where the result card will appear.
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        connectionStatusText(model.text("正在处理 Hook…", "Updating hooks…"))
                     }
                 }
 
@@ -2898,6 +2900,16 @@ struct DebugWindowView: View {
                     Spacer()
 
                     Button {
+                        model.showReleaseInfoFile()
+                    } label: {
+                        Image(systemName: "shippingbox")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(model.releaseInfo.releaseFileURL == nil)
+                    .help(model.text("显示版本信息文件", "Show release info file"))
+                    .accessibilityLabel(model.text("版本", "Release"))
+
+                    Button {
                         model.copyReleaseInfo()
                     } label: {
                         Image(systemName: "doc.on.doc")
@@ -2911,44 +2923,56 @@ struct DebugWindowView: View {
 
     private var automaticConnectionSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
-            connectionItem(
+            connectionBlock(
                 title: model.text("Codex", "Codex"),
                 subtitle: model.text(
                     "支持 Codex Desktop、CLI、VS Code、Xcode、IDEA",
                     "Supports Codex Desktop, CLI, VS Code, Xcode, and IDEA"
                 ),
-                systemImage: "desktopcomputer"
-            ) {
-                HStack(spacing: 8) {
-                    Text(model.text("自动监控", "Auto monitor"))
-                        .font(settingsDetailStrongFont)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                    settingsSwitch(codexDesktopMonitoringBinding)
-                        .help(model.text(
-                            "自动识别 Codex Desktop、CLI、VS Code、Xcode、IDEA 活动",
-                            "Automatically detect Codex Desktop, CLI, VS Code, Xcode, and IDEA activity"
-                        ))
+                systemImage: "desktopcomputer",
+                trailing: {
+                    autoMonitorSwitch(codexDesktopMonitoringBinding, help: model.text(
+                        "自动识别 Codex Desktop、CLI、VS Code、Xcode、IDEA 活动",
+                        "Automatically detect Codex Desktop, CLI, VS Code, Xcode, and IDEA activity"
+                    ))
                 }
-            }
+            ) {
+                connectionStatusText(model.codexConnectionMessage)
+                Text(model.resolvedCodexDataDirectory)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text(model.codexConnectionMessage).font(settingsBodyFont).foregroundStyle(.secondary).textSelection(.enabled)
-                Text(model.resolvedCodexDataDirectory).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
-                HStack {
-                    Button(model.text("选择数据目录…", "Choose data directory…")) { model.chooseCodexDataDirectory() }
-                    if !model.codexDataDirectory.isEmpty {
-                        Button(model.text("使用默认目录", "Use default directory")) { model.setCodexDataDirectory("") }
+                connectionButtonRow(buttonCount: model.codexDataDirectory.isEmpty ? 2 : 3) {
+                    connectionActionButton(
+                        model.text("选择数据目录…", "Choose Folder…"),
+                        systemImage: "folder"
+                    ) {
+                        model.chooseCodexDataDirectory()
                     }
-                    Button(model.text("检查连接", "Check connection")) { model.checkConnections() }
-                        .disabled(model.isConnectionCheckRunning)
+
+                    if !model.codexDataDirectory.isEmpty {
+                        connectionActionButton(
+                            model.text("使用默认目录", "Use Default"),
+                            systemImage: "arrow.uturn.backward"
+                        ) {
+                            model.setCodexDataDirectory("")
+                        }
+                    }
+
+                    connectionActionButton(
+                        model.text("检查连接", "Check connection"),
+                        systemImage: "antenna.radiowaves.left.and.right",
+                        disabled: model.isConnectionCheckRunning
+                    ) {
+                        model.checkConnections()
+                    }
                 }
             }
 
             Divider()
 
-            connectionItem(
+            connectionBlock(
                 title: model.text("Codex Hook（可选）", "Codex Hook (Optional)"),
                 subtitle: model.text(
                     "可选增强：用于权限请求、低延迟和兼容旧版本",
@@ -2965,31 +2989,26 @@ struct DebugWindowView: View {
 
             Divider()
 
-            connectionItem(
+            connectionBlock(
                 title: "Claude",
                 subtitle: model.text(
                     "支持 Claude Code Desktop、CLI 和 IDE；普通聊天显示应用活动",
                     "Claude Code Desktop, CLI, and IDE; ordinary chat shows app activity"
                 ),
-                systemImage: "sparkles"
-            ) {
-                HStack(spacing: 8) {
-                    Text(model.text("自动监控", "Auto monitor"))
-                        .font(settingsDetailStrongFont)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                    settingsSwitch(claudeDesktopMonitoringBinding)
-                        .help(model.text(
-                            "自动识别 Claude Desktop 活动",
-                            "Automatically detect Claude Desktop activity"
-                        ))
+                systemImage: "sparkles",
+                trailing: {
+                    autoMonitorSwitch(claudeDesktopMonitoringBinding, help: model.text(
+                        "自动识别 Claude Desktop 活动",
+                        "Automatically detect Claude Desktop activity"
+                    ))
                 }
+            ) {
+                EmptyView()
             }
 
             Divider()
 
-            connectionItem(
+            connectionBlock(
                 title: model.text("Claude Code Hook", "Claude Code Hook"),
                 subtitle: model.text(
                     "接入思考、工作、授权等待与完成状态",
@@ -2997,6 +3016,8 @@ struct DebugWindowView: View {
                 ),
                 systemImage: "terminal"
             ) {
+                // The hook status belongs next to the buttons that act on it.
+                connectionStatusText(model.claudeConnectionMessage)
                 hookActionButtons(
                     preview: { model.previewClaudeHookInstall() },
                     install: { model.installClaudeHooks() },
@@ -3004,30 +3025,38 @@ struct DebugWindowView: View {
                 )
             }
 
-            Toggle(model.text("读取 Claude 桌面回复状态（可选）", "Read Claude desktop response status (optional)"), isOn: Binding(
-                get: { model.isClaudeUIStatusMonitoringEnabled },
-                set: { model.setClaudeUIStatusMonitoringEnabled($0) }
-            ))
-            .disabled(!model.isClaudeDesktopMonitoringEnabled)
-            Text(model.text("只读检查当前 Claude 窗口的回复按钮，不保存聊天内容；不判断后台任务完成。", "Read-only checks of response controls in Claude windows; no chat content is saved and background completion is not inferred."))
-                .font(settingsBodyFont).foregroundStyle(.secondary)
-            Text(model.claudeUIConnectionMessage)
-                .font(settingsBodyFont).foregroundStyle(.secondary)
-            if model.isClaudeUIStatusMonitoringEnabled {
-                Button(model.text("打开辅助功能设置", "Open Accessibility Settings")) {
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                        NSWorkspace.shared.open(url)
+            Divider()
+
+            connectionBlock(
+                title: model.text("Claude 桌面回复状态（可选）", "Claude Desktop Response Status (Optional)"),
+                subtitle: model.text(
+                    "只读检查当前 Claude 窗口的回复按钮，不保存聊天内容；不判断后台任务完成。",
+                    "Read-only checks of response controls in Claude windows; no chat content is saved and background completion is not inferred."
+                ),
+                systemImage: "eye",
+                trailing: {
+                    settingsSwitch(Binding(
+                        get: { model.isClaudeUIStatusMonitoringEnabled },
+                        set: { model.setClaudeUIStatusMonitoringEnabled($0) }
+                    ))
+                    .disabled(!model.isClaudeDesktopMonitoringEnabled)
+                    .help(model.text("读取 Claude 桌面回复状态", "Read Claude desktop response status"))
+                }
+            ) {
+                connectionStatusText(model.claudeUIConnectionMessage)
+
+                if model.isClaudeUIStatusMonitoringEnabled {
+                    connectionButtonRow(buttonCount: 1) {
+                        connectionActionButton(
+                            model.text("打开辅助功能设置", "Accessibility…"),
+                            systemImage: "hand.raised"
+                        ) {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
                     }
                 }
-            }
-
-            Text(model.claudeConnectionMessage)
-                .font(settingsBodyFont).foregroundStyle(.secondary).textSelection(.enabled)
-
-            if model.isHookInstallRunning {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
     }
@@ -3502,18 +3531,37 @@ struct DebugWindowView: View {
         }
     }
 
+    /// Connections buttons fill one column of a shared three-column grid, so every row
+    /// on the page lines up regardless of label length or language.
     private func connectionActionButton(
         _ title: String,
         systemImage: String,
-        width: CGFloat? = nil,
         disabled: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            settingsActionSurface(title, systemImage: systemImage, width: width ?? connectionActionButtonWidth)
+            settingsActionSurface(title, systemImage: systemImage, fillsWidth: true)
         }
         .buttonStyle(.plain)
         .disabled(disabled)
+        .frame(maxWidth: .infinity)
+    }
+
+    private static let connectionButtonColumns = 3
+
+    private func connectionButtonRow<Buttons: View>(
+        buttonCount: Int,
+        @ViewBuilder buttons: () -> Buttons
+    ) -> some View {
+        HStack(spacing: 8) {
+            buttons()
+            // Empty columns keep short rows aligned with full ones.
+            ForEach(0..<max(0, Self.connectionButtonColumns - buttonCount), id: \.self) { _ in
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: 1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func hookActionButtons(
@@ -3521,41 +3569,55 @@ struct DebugWindowView: View {
         install: @escaping () -> Void,
         uninstall: @escaping () -> Void
     ) -> some View {
-        VStack(alignment: .trailing, spacing: 8) {
-            HStack(spacing: 8) {
-                connectionActionButton(
-                    model.text("检查", "Check"),
-                    systemImage: "checkmark.circle",
-                    disabled: model.isHookInstallRunning,
-                    action: preview
-                )
+        connectionButtonRow(buttonCount: 3) {
+            connectionActionButton(
+                model.text("检查", "Check"),
+                systemImage: "checkmark.circle",
+                disabled: model.isHookInstallRunning,
+                action: preview
+            )
 
-                connectionActionButton(
-                    model.text("安装", "Install"),
-                    systemImage: "wrench.and.screwdriver",
-                    disabled: model.isHookInstallRunning,
-                    action: install
-                )
-            }
+            connectionActionButton(
+                model.text("安装", "Install"),
+                systemImage: "wrench.and.screwdriver",
+                disabled: model.isHookInstallRunning,
+                action: install
+            )
 
-            HStack(spacing: 8) {
-                Color.clear
-                    .frame(width: connectionActionButtonWidth, height: 1)
+            connectionActionButton(
+                model.text("卸载", "Uninstall"),
+                systemImage: "trash",
+                disabled: model.isHookInstallRunning,
+                action: uninstall
+            )
+        }
+    }
 
-                connectionActionButton(
-                    model.text("卸载", "Uninstall"),
-                    systemImage: "trash",
-                    disabled: model.isHookInstallRunning,
-                    action: uninstall
-                )
-            }
+    private func connectionStatusText(_ message: String) -> some View {
+        Text(message)
+            .font(settingsBodyFont)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+    }
+
+    private func autoMonitorSwitch(_ binding: Binding<Bool>, help: String) -> some View {
+        HStack(spacing: 8) {
+            Text(model.text("自动监控", "Auto monitor"))
+                .font(settingsDetailStrongFont)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+            settingsSwitch(binding)
+                .help(help)
         }
     }
 
     private func settingsActionSurface(
         _ title: String,
         systemImage: String?,
-        width: CGFloat? = nil
+        width: CGFloat? = nil,
+        fillsWidth: Bool = false
     ) -> some View {
         HStack(spacing: 6) {
             if let systemImage {
@@ -3572,7 +3634,8 @@ struct DebugWindowView: View {
         .font(settingsControlFont)
         .foregroundStyle(.primary)
         .padding(.horizontal, 9)
-        .frame(width: width ?? settingsActionButtonWidth, height: dropdownControlHeight)
+        .frame(width: fillsWidth ? nil : (width ?? settingsActionButtonWidth), height: dropdownControlHeight)
+        .frame(maxWidth: fillsWidth ? .infinity : nil)
         .background(
             glassControlBackground(cornerRadius: 6)
         )
@@ -3776,10 +3839,6 @@ struct DebugWindowView: View {
         compactConnectionActionButtonWidth
     }
 
-    private var connectionActionButtonWidth: CGFloat {
-        compactConnectionActionButtonWidth
-    }
-
     private var compactConnectionActionButtonWidth: CGFloat {
         usesCompactLatinLayout ? 131 : 113
     }
@@ -3978,6 +4037,29 @@ struct DebugWindowView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    /// A Connections entry: icon, title and description with an optional trailing switch,
+    /// then status lines and buttons aligned under the text column.
+    private func connectionBlock<Trailing: View, Details: View>(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        @ViewBuilder trailing: () -> Trailing = { EmptyView() },
+        @ViewBuilder details: () -> Details
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            connectionItem(title: title, subtitle: subtitle, systemImage: systemImage, actions: trailing)
+
+            VStack(alignment: .leading, spacing: 8) {
+                details()
+            }
+            .padding(.leading, connectionDetailIndent)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Icon column (22pt) plus the row spacing (12pt) in `connectionItem`.
+    private var connectionDetailIndent: CGFloat { 34 }
 
     @ViewBuilder
     private func connectionResult(message: String) -> some View {
