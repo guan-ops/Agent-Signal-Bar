@@ -48,21 +48,23 @@ The all-in-one release gate replaces the old manual command chain. It packages r
 - Turn `显示状态栏信号` off; the settings window should open immediately so the app is recoverable.
 - Close that settings window while `显示状态栏信号` is still off; the app should exit instead of running invisibly.
 - Relaunch once with `显示状态栏信号` off; the settings window should open automatically.
-- Open `高级`; confirm light-effect customization exposes active effect, active speed, alert flash speed, done effect, and breathing strength.
+- Open `灯效`; confirm light-effect customization exposes active effect, active speed, alert flash speed, done effect, and breathing strength.
 - Trigger real or CLI-driven `thinking`, `working`, `permission`, `blocked`, and `done` signals; confirm the status bar animation follows the current customization and returns to the live session state afterward.
 - Confirm pause/resume monitoring plays the configured pause/resume light transitions and then returns to the correct live state.
 - Confirm the menu shows the current version/build and release state such as `Local / not notarized`.
-- Open `运行`, confirm it shows the current aggregate status, monitoring state, active sessions, and recent events without exposing raw JSON; the summary signal should be one pure-color lamp only, independent of the selected status bar style, while keeping the same status color and flashing/breathing timing.
-- Open `通用`, confirm language is a dropdown menu, the status bar controls are in this same page, and switch between `跟随系统`, `简体中文`, `English`, and one additional language; the settings window and menu bar panel should update immediately.
+- Open `概览`, confirm it shows the current aggregate status, the agent being followed, a pause/resume button, monitoring state, active sessions, and recent events without exposing raw JSON; the summary signal should be one pure-color lamp only, independent of the selected status bar style, while keeping the same status color and flashing/breathing timing.
+- Open `通用`, confirm language is a dropdown menu, and switch between `跟随系统`, `简体中文`, `English`, and one additional language; the settings window and menu bar panel should update immediately.
 - Open `连接` and click `版本`; Finder should select `dist/AgentSignalBar-release-manifest.json` when a release manifest is present, or the bundled `AgentSignalLight-release-info.json` after DMG installation.
 - Set `圆点横向尺寸` to `默认` while the style is `极简圆点` and direction is `横向`; confirm the icon becomes the same footprint as horizontal `经典灯牌` while keeping transparent white-ring styling.
 - Set `灯牌竖向尺寸` to `大` while the style is `经典灯牌` and direction is `竖向`; confirm the icon stays compact but no longer collapses into a tiny column, and still keeps the black lamp housing.
-- Check both styles:
+- Check all three styles in `灯效`:
   - `经典灯牌`
   - `极简圆点`
+  - `单灯` (one lamp in the current signal color; direction does not change it)
 - Check both directions:
   - `横向`
   - `竖向`
+- In `概览`, confirm the light agent defaults to `自动跟随` on a fresh install; pin one agent, leave it idle while another agent works, and confirm the light shows the working agent only while `空闲时显示其他 Agent` is on.
 - Confirm the menu or settings window updates for:
   - `空闲`
   - `工作中` green active only, with no red or yellow light

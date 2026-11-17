@@ -32,7 +32,8 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
 
     func fetchQuota(now: Date? = nil) async throws -> AgentQuotaStatus {
         let now = now ?? clock()
-        return try await fetchUsageStatus(now: now).quota
+        guard let quota = try await fetchUsageStatus(now: now).quota else { throw CodexRateLimitFetchError.noRateLimits }
+        return quota
     }
 
     func fetchUsageStatus(now: Date? = nil) async throws -> CodexUsageStatus {
@@ -593,7 +594,10 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
     }
 
     static func quotaStatus(from response: CodexUsageResponse, updatedAt: Date) throws -> AgentQuotaStatus {
-        try usageStatus(from: response, updatedAt: updatedAt, source: .unknown).quota
+        guard let quota = try usageStatus(from: response, updatedAt: updatedAt, source: .unknown).quota else {
+            throw CodexRateLimitFetchError.noRateLimits
+        }
+        return quota
     }
 
     static func usageStatus(
@@ -602,14 +606,10 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
         source: CodexUsageFetchSource,
         authFingerprint: String? = nil
     ) throws -> CodexUsageStatus {
-        guard let primaryWindow = response.rateLimit?.primaryWindow,
-              let primary = windowStatus(from: primaryWindow)
-        else {
-            throw CodexRateLimitFetchError.noRateLimits
-        }
-
+        let credits = creditStatus(from: response, updatedAt: updatedAt)
+        let rawPrimary = response.rateLimit?.primaryWindow.flatMap(windowStatus(from:))
         let secondary = response.rateLimit?.secondaryWindow.flatMap(windowStatus(from:))
-        let quota = AgentQuotaStatus(
+        let quota = (rawPrimary ?? secondary).map { primary in AgentQuotaStatus(
             remainingPercent: primary.remainingPercent,
             usedPercent: primary.usedPercent,
             limitID: response.resolvedLimitID,
@@ -619,11 +619,12 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
             resetsAt: primary.resetsAt,
             updatedAt: updatedAt,
             primary: primary,
-            secondary: secondary
-        )
+            secondary: rawPrimary == nil ? nil : secondary
+        ) }
+        guard quota != nil || credits != nil else { throw CodexRateLimitFetchError.noRateLimits }
         return CodexUsageStatus(
             quota: quota,
-            credits: creditStatus(from: response, updatedAt: updatedAt),
+            credits: credits,
             planName: response.planType?.rawValue,
             source: source,
             authFingerprint: authFingerprint
@@ -631,6 +632,7 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
     }
 
     private static func windowStatus(from window: CodexUsageResponse.WindowSnapshot) -> AgentQuotaWindowStatus? {
+        guard window.usedPercent.isFinite else { return nil }
         let usedPercent = min(max(window.usedPercent, 0), 100)
         return AgentQuotaWindowStatus(
             remainingPercent: 100 - usedPercent,
@@ -644,10 +646,12 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
         let limit = response.individualLimit
             ?? response.rateLimit?.individualLimit
             ?? response.spendControl?.individualLimit
-        if let limitStatus = limit?.creditStatus(updatedAt: updatedAt) {
+        let balance = response.credits?.balance.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        if var limitStatus = limit?.creditStatus(updatedAt: updatedAt) {
+            limitStatus.balance = balance
             return limitStatus
         }
-        guard let balance = response.credits?.balance else { return nil }
+        guard let balance else { return nil }
         return CodexCreditStatus(
             title: "Credits",
             used: nil,
@@ -655,7 +659,8 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
             remaining: max(0, balance),
             remainingPercent: nil,
             resetsAt: nil,
-            updatedAt: updatedAt
+            updatedAt: updatedAt,
+            balance: balance
         )
     }
 
@@ -832,7 +837,7 @@ enum CodexUsageFetchSource: String, Codable, Equatable, Sendable {
 }
 
 struct CodexUsageStatus: Equatable, Sendable {
-    let quota: AgentQuotaStatus
+    let quota: AgentQuotaStatus?
     let credits: CodexCreditStatus?
     let planName: String?
     let source: CodexUsageFetchSource
@@ -847,6 +852,8 @@ struct CodexCreditStatus: Codable, Equatable, Sendable {
     let remainingPercent: Double?
     let resetsAt: Date?
     let updatedAt: Date
+    /// A purchased balance may coexist with a monthly credit cap. Neither is a reset-credit count.
+    var balance: Double? = nil
 
     var usedPercent: Double? {
         remainingPercent.map { min(100, max(0, 100 - $0)) }
@@ -1091,7 +1098,9 @@ struct CodexUsageResponse: Decodable, Sendable {
         }
 
         func creditStatus(updatedAt: Date) -> CodexCreditStatus? {
-            guard let limit, limit > 0 else { return nil }
+            guard let limit, limit.isFinite, limit > 0,
+                  used?.isFinite != false, remainingPercent?.isFinite != false,
+                  used != nil || remainingPercent != nil else { return nil }
             let used: Double = if let used {
                 max(0, used)
             } else if let remainingPercent {

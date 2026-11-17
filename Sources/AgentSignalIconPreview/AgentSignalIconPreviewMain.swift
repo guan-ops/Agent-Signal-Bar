@@ -771,6 +771,8 @@ struct AgentSignalIconPreview {
             return NSColor.secondaryLabelColor.withAlphaComponent(0.28)
         case .macOS:
             return NSColor.clear
+        case .singleLamp:
+            return NSColor.secondaryLabelColor.withAlphaComponent(0.22)
         }
     }
 

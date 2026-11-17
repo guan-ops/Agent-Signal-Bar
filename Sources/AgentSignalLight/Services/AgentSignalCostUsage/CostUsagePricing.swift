@@ -285,7 +285,7 @@ enum CostUsagePricing {
 
     static func codexBuiltInPricingFingerprint() -> String {
         var parts = [
-            "costPolicyVersion=6", // Reprice catalogs that previously omitted bundled long-context rates.
+            "costPolicyVersion=7", // Rebuild caches with mode-specific unpriced counts alongside incomplete-request tracking.
             "priorityInputTokenLimit=\(self.codexPriorityInputTokenLimit)",
             "officialPricingModels=\(self.codexOfficialPricingModels.sorted().joined(separator: ","))",
         ]

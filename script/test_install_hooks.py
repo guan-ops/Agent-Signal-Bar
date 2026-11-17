@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 import io
 import json
 import errno
@@ -24,6 +25,129 @@ if SPEC is None or SPEC.loader is None:
 install_hooks = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = install_hooks
 SPEC.loader.exec_module(install_hooks)
+
+
+class ClaudeWorktreeHookTests(unittest.TestCase):
+    def claude_spec(self, home: Path):
+        return install_hooks.specs_for(home, codex_scope="user", project_root=home)["claude"]
+
+    def legacy_config(self, spec):
+        data = install_hooks.merge_hooks(spec).data
+        for event in ("WorktreeCreate", "WorktreeRemove"):
+            data["hooks"][event] = [install_hooks.hook_block(
+                install_hooks.hook_command(spec, event), event, spec.matcher,
+            )]
+        data["fixturePreference"] = {"keep": True}
+        return data
+
+    def test_new_install_keeps_worktree_management_with_claude(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            spec = self.claude_spec(Path(directory))
+            result = install_hooks.merge_hooks(spec)
+            self.assertEqual(len(result.data["hooks"]), 26)
+            self.assertNotIn("WorktreeCreate", result.data["hooks"])
+            self.assertNotIn("WorktreeRemove", result.data["hooks"])
+            self.assertFalse(spec.path.exists(), "preview must not write config")
+            install_hooks.write_result(result)
+            self.assertFalse(install_hooks.merge_hooks(spec).changed)
+
+    def test_legacy_install_removes_only_two_events_and_keeps_backup(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            spec = self.claude_spec(Path(directory))
+            before = self.legacy_config(spec)
+            spec.path.parent.mkdir(parents=True)
+            spec.path.write_text(json.dumps(before), encoding="utf-8")
+            before_bytes = spec.path.read_bytes()
+
+            result = install_hooks.merge_hooks(spec)
+            expected = copy.deepcopy(before)
+            for event in ("WorktreeCreate", "WorktreeRemove"):
+                del expected["hooks"][event]
+            self.assertEqual(result.data, expected)
+            self.assertEqual(result.added_events, [])
+            self.assertEqual(result.migrated_events, [])
+            self.assertEqual(set(result.removed_events), {"WorktreeCreate", "WorktreeRemove"})
+            self.assertEqual(spec.path.read_bytes(), before_bytes)
+
+            applied = install_hooks.write_result(result)
+            self.assertIsNotNone(applied.backup)
+            self.assertEqual(applied.backup.read_bytes(), before_bytes)
+            self.assertEqual(json.loads(spec.path.read_text()), expected)
+            self.assertFalse(install_hooks.merge_hooks(spec).changed)
+
+    def test_migration_preserves_real_worktree_hooks_and_mixed_block_metadata(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            spec = self.claude_spec(Path(directory))
+            before = self.legacy_config(spec)
+            expected = copy.deepcopy(before)
+            for event in ("WorktreeCreate", "WorktreeRemove"):
+                external = {"type": "command", "command": f"/fixture/manage-worktree {event}"}
+                before["hooks"][event][0]["hooks"].append(external)
+                before["hooks"][event][0]["fixtureMetadata"] = "preserve"
+                before["hooks"][event].append(install_hooks.hook_block(
+                    "'/old/app/Contents/Resources/scripts/claude-code-signal-hook'", event, "",
+                ))
+                expected["hooks"][event] = [{
+                    "hooks": [external], "matcher": "", "fixtureMetadata": "preserve",
+                }]
+            spec.path.parent.mkdir(parents=True)
+            spec.path.write_text(json.dumps(before), encoding="utf-8")
+
+            result = install_hooks.merge_hooks(spec)
+            self.assertEqual(result.data, expected)
+            install_hooks.write_result(result)
+            self.assertFalse(install_hooks.merge_hooks(spec).changed)
+
+    def test_doctor_accepts_safe_config_and_rejects_legacy_worktree_hooks(self) -> None:
+        doctor = SCRIPT_PATH.with_name("doctor.sh").read_text()
+        marker = '  if /usr/bin/python3 - "$CLAUDE_SETTINGS_FILE"'
+        source = doctor.split(marker, 1)[1].split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            spec = self.claude_spec(Path(directory))
+            spec.path.parent.mkdir(parents=True)
+            for legacy in (False, True):
+                with self.subTest(legacy=legacy):
+                    data = self.legacy_config(spec) if legacy else install_hooks.merge_hooks(spec).data
+                    spec.path.write_text(json.dumps(data), encoding="utf-8")
+                    result = subprocess.run(
+                        [sys.executable, "-", str(spec.path), str(spec.wrapper), str(SCRIPT_PATH)],
+                        input=source, capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 1 if legacy else 0, result.stderr)
+                    if legacy:
+                        self.assertIn("status hooks override worktree management", result.stderr)
+
+
+class ClaudeRuntimeDiscoveryTests(unittest.TestCase):
+    def test_native_install_is_found_outside_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            binary = home / ".local/bin/claude"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("#!/bin/sh\nexit 0\n")
+            binary.chmod(0o700)
+            with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True):
+                self.assertEqual(install_hooks.resolve_claude_cli(home), str(binary))
+
+    def test_explicit_executable_is_respected_without_falling_back(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            binary = home / "custom claude"
+            binary.write_text("#!/bin/sh\nexit 0\n")
+            binary.chmod(0o700)
+            with mock.patch.dict(os.environ, {"AGENT_SIGNAL_CLAUDE_EXECUTABLE": str(binary)}, clear=True):
+                self.assertEqual(install_hooks.resolve_claude_cli(home), str(binary))
+                binary.chmod(0o600)
+                self.assertIsNone(install_hooks.resolve_claude_cli(home))
+
+    def test_desktop_presence_and_found_cli_are_informational(self) -> None:
+        output = io.StringIO()
+        with mock.patch.object(install_hooks, "resolve_claude_cli", return_value="/fixture/claude"), \
+             mock.patch.object(install_hooks, "process_is_running", return_value=True), \
+             mock.patch.object(install_hooks, "read_recent_text", return_value=""), redirect_stdout(output):
+            install_hooks.print_claude_runtime_diagnostics(Path("/fixture/home"))
+        self.assertNotIn("[diagnostic]", output.getvalue())
+        self.assertIn("[info] Claude Desktop: running", output.getvalue())
 
 
 class InstallHooksAtomicWriteTests(unittest.TestCase):

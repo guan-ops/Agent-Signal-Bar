@@ -1,7 +1,8 @@
 import Foundation
+import AgentSignalLightCore
 
 struct HookInstallManager: Sendable {
-    private static let commandTimeout: TimeInterval = 30
+    var selectedCodexPath: String? = nil
 
     func preview() throws -> HookInstallResult {
         let root = try hookRoot()
@@ -68,91 +69,23 @@ struct HookInstallManager: Sendable {
     }
 
     private func runInstallHooks(hookRoot: HookRoot, arguments: [String]) throws -> HookInstallResult {
-        let hookRootURL = hookRoot.url
-        let scriptURL = hookRootURL.appendingPathComponent("script/install_hooks.py")
-        guard FileManager.default.isExecutableFile(atPath: scriptURL.path) else {
-            throw HookInstallError.missingInstallScript(scriptURL.path)
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["python3", scriptURL.path] + arguments
-        process.currentDirectoryURL = hookRootURL
-
-        let outputURL = temporaryCaptureURL(suffix: "out")
-        let errorURL = temporaryCaptureURL(suffix: "err")
-        try Data().write(to: outputURL)
-        try Data().write(to: errorURL)
-        let outputHandle = try FileHandle(forWritingTo: outputURL)
-        let errorHandle = try FileHandle(forWritingTo: errorURL)
-        defer {
-            try? outputHandle.close()
-            try? errorHandle.close()
-            try? FileManager.default.removeItem(at: outputURL)
-            try? FileManager.default.removeItem(at: errorURL)
-        }
-        process.standardOutput = outputHandle
-        process.standardError = errorHandle
-
-        try process.run()
-        try waitForProcess(process, timeout: Self.commandTimeout)
-
-        let output = String(
-            data: (try? Data(contentsOf: outputURL)) ?? Data(),
-            encoding: .utf8
-        ) ?? ""
-        let error = String(
-            data: (try? Data(contentsOf: errorURL)) ?? Data(),
-            encoding: .utf8
-        ) ?? ""
-
-        let result = HookInstallResult(
-            exitCode: process.terminationStatus,
-            output: output.trimmingCharacters(in: .whitespacesAndNewlines),
-            error: error.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
-
-        guard process.terminationStatus == 0 else {
-            throw HookInstallError.commandFailed(result)
-        }
-
-        return result
-    }
-
-    private func temporaryCaptureURL(suffix: String) -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("agent-signal-hook-\(UUID().uuidString).\(suffix)")
-    }
-
-    private func waitForProcess(_ process: Process, timeout: TimeInterval) throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + max(0, timeout)
-        while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-
-        if process.isRunning {
-            BoundedProcessTermination.terminate(process)
-            throw HookInstallError.commandTimedOut(timeout)
-        }
+        let targetIndex = arguments.firstIndex(of: "--target")
+        let target = targetIndex.map { arguments[$0 + 1] } ?? "all"
+        let installer = NativeHookInstaller(resources: hookRoot.url, selectedCodexPath: selectedCodexPath)
+        let output = try installer.run(target: target, install: arguments.contains("--install"),
+            remove: arguments.contains("--remove"), projectRoot: hookRoot.codexScope == "project" ? hookRoot.url : nil)
+        return HookInstallResult(exitCode: 0, output: output, error: "")
     }
 
     private func hookRoot() throws -> HookRoot {
         let bundleURL = Bundle.main.bundleURL.standardizedFileURL
-        let distParent = bundleURL.deletingLastPathComponent()
-        if distParent.lastPathComponent == "dist" {
-            let rootURL = distParent.deletingLastPathComponent()
-            if FileManager.default.fileExists(atPath: rootURL.appendingPathComponent("script/install_hooks.py").path) {
-                return HookRoot(url: rootURL, codexScope: "project")
-            }
-        }
-
         if let resourceURL = Bundle.main.resourceURL?.standardizedFileURL,
-           FileManager.default.fileExists(atPath: resourceURL.appendingPathComponent("script/install_hooks.py").path) {
+           FileManager.default.isExecutableFile(atPath: resourceURL.appendingPathComponent("scripts/codex-signal-hook").path) {
             return HookRoot(url: resourceURL, codexScope: "user")
         }
 
         let currentURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).standardizedFileURL
-        if FileManager.default.fileExists(atPath: currentURL.appendingPathComponent("script/install_hooks.py").path) {
+        if FileManager.default.fileExists(atPath: currentURL.appendingPathComponent("scripts/codex-signal-hook").path) {
             return HookRoot(url: currentURL, codexScope: "project")
         }
 

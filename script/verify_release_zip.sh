@@ -141,8 +141,9 @@ sheet = root / "status-icon-preview.png"
 manifest = root / "manifest.json"
 data = json.loads(manifest.read_text())
 records = data.get("records", [])
-if len(records) != 48:
-    raise SystemExit("preview manifest should contain 48 records")
+# 3 styles x 2 layouts x 12 states.
+if len(records) != 72:
+    raise SystemExit("preview manifest should contain 72 records")
 if sheet.stat().st_size <= 10_000:
     raise SystemExit("preview sheet is unexpectedly small")
 for item in records:

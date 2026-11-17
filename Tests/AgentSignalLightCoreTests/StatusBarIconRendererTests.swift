@@ -158,6 +158,27 @@ final class StatusBarIconRendererTests: XCTestCase {
     }
 
     
+    func testSingleLampShowsOnlyTheLitColorInACompactIcon() throws {
+        XCTAssertEqual(SignalLampAnimation.dominantColor(signal: .working, tick: 0), .green)
+        XCTAssertEqual(SignalLampAnimation.dominantColor(signal: .attention, tick: 2), .yellow)
+        XCTAssertEqual(SignalLampAnimation.dominantColor(signal: .permissionRequest, tick: 0), .red)
+        XCTAssertEqual(SignalLampAnimation.dominantColor(signal: .working, tick: 0, allLightsOn: true), .green,
+                       "All lamps on (pause transition) prefers green")
+
+        for style in [TrafficSignalStyle.macOS, .trafficLight] {
+            XCTAssertLessThan(
+                StatusBarIconRenderer.statusItemLength(layout: .horizontal, style: .singleLamp),
+                StatusBarIconRenderer.statusItemLength(layout: .horizontal, style: style),
+                "The single lamp takes less menu bar width than any horizontal icon")
+        }
+        for layout in TrafficSignalLayout.allCases {
+            let permission = try renderedPixels(signal: .permissionRequest, tick: 0, layout: layout, style: .singleLamp)
+            XCTAssert(permission.count(where: \.isRedLampPixel) >= minimumVisibleLampPixels)
+            XCTAssertEqual(permission.count(where: \.isGreenLampPixel), 0)
+            XCTAssertEqual(permission.count(where: \.isYellowLampPixel), 0)
+        }
+    }
+
     func testActiveStatusBarRenderingNeverShowsWarningColors() throws {
         for style in TrafficSignalStyle.allCases {
             for layout in TrafficSignalLayout.allCases {

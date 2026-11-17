@@ -12,7 +12,6 @@ struct DebugWindowView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var selectedSettingsTab: SettingsTab = .activity
     @State private var expandedSettingsDropdown: SettingsDropdownID?
-    @State private var hoveredTokenActivityDayID: TimeInterval?
     @State private var selectedUsagePlatform: UsagePlatform = .codex
     @StateObject private var claudeSupport: ClaudeSupportModel
     @ObservedObject private var usageNavigation: UsageMenuNavigation
@@ -26,11 +25,15 @@ struct DebugWindowView: View {
     @State private var isShowingDiagnosticsExportConfirmation = false
     private let activityRecentEventLimit = 50
 
+    /// `initialTab` is a tab's raw value (activity, usage, light, connections, general, debug,
+    /// about); previews and UI tests use it to open a page directly.
     init(model: MenuBarStatusModel, updater: SparkleUpdaterService,
-         claudeSupport: ClaudeSupportModel? = nil, usageNavigation: UsageMenuNavigation? = nil) {
+         claudeSupport: ClaudeSupportModel? = nil, usageNavigation: UsageMenuNavigation? = nil,
+         initialTab: String? = nil) {
         self.model = model
         self.updater = updater
-        _claudeSupport = StateObject(wrappedValue: claudeSupport ?? ClaudeSupportModel())
+        _selectedSettingsTab = State(initialValue: initialTab.flatMap(SettingsTab.init(rawValue:)) ?? .activity)
+        _claudeSupport = StateObject(wrappedValue: claudeSupport ?? model.claudeSupport)
         self.usageNavigation = usageNavigation ?? UsageMenuNavigation()
     }
 
@@ -100,52 +103,56 @@ struct DebugWindowView: View {
         }
         .onChange(of: model.isDebugSettingsVisible) { _, isVisible in
             if !isVisible && selectedSettingsTab == .debug {
-                selectedSettingsTab = .advanced
+                selectedSettingsTab = .general
             }
         }
     }
 
+    /// UI 2.0 sidebar: explicit accent selection, so the chosen page stays legible whether or
+    /// not the window is key (a List selection turns into an unreadable dark bar otherwise).
     private var settingsSidebar: some View {
-        VStack(spacing: 0) {
-            List(selection: $selectedSettingsTab) {
-                ForEach(visibleSettingsTabs.filter { $0 != .about }) { tab in
-                    settingsSidebarRow(tab)
-                }
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(visibleSettingsTabs.filter { $0 != .about }) { tab in
+                settingsSidebarRow(tab)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-
-            VStack(spacing: 0) {
-                List(selection: $selectedSettingsTab) {
-                    settingsSidebarRow(.about)
-                }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
-                .scrollDisabled(true)
-                .frame(height: 48)
-
-            }
+            Spacer(minLength: 0)
+            settingsSidebarRow(.about)
         }
+        .padding(.horizontal, 10)
+        .padding(.bottom, ASB.Space.m)
         .onChange(of: selectedSettingsTab) { _, _ in
             closeSettingsDropdown()
-            hoveredTokenActivityDayID = nil
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(model.text("设置页面", "Settings pages"))
     }
 
     private func settingsSidebarRow(_ tab: SettingsTab) -> some View {
-        Label {
-            Text(menuTitle(for: tab))
-                .lineLimit(1)
-        } icon: {
-            Image(systemName: tab.systemImage)
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 18)
+        let isSelected = selectedSettingsTab == tab
+        return Button {
+            selectedSettingsTab = tab
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: tab.systemImage)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(isSelected ? Color.white : Color.accentColor)
+                    .frame(width: 18)
+                Text(menuTitle(for: tab))
+                    .font(ASB.Typeface.body)
+                    .foregroundStyle(isSelected ? Color.white : Color.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: ASB.Radius.control, style: .continuous)
+                    .fill(isSelected ? Color.accentColor : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: ASB.Radius.control, style: .continuous))
         }
-        .font(.system(size: 13, weight: .medium))
-        .padding(.vertical, 5)
-        .tag(tab)
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
         .accessibilityIdentifier("settings.sidebar.\(tab.rawValue)")
     }
 
@@ -182,8 +189,8 @@ struct DebugWindowView: View {
             }
             .zIndex(1)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.horizontal, ASB.Space.xl)
+        .padding(.vertical, ASB.Space.l)
         .frame(maxWidth: .infinity, maxHeight: proxy.size.height, alignment: .topLeading)
     }
 
@@ -210,8 +217,8 @@ struct DebugWindowView: View {
                 SettingsScrollConfigurator()
                     .frame(width: 0, height: 0)
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
+            .padding(.horizontal, ASB.Space.xl)
+            .padding(.vertical, ASB.Space.l)
             .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .topLeading)
         }
         .scrollContentBackground(.hidden)
@@ -240,9 +247,12 @@ struct DebugWindowView: View {
         case .usage:
             usageSettings
         case .connections:
-            connectionSettings
-        case .advanced:
-            advancedSettings
+            VStack(alignment: .leading, spacing: 20) {
+                connectionSettings
+                cliInstallSettings
+            }
+        case .light:
+            lightSettings
         case .debug:
             debugSettings
         case .about:
@@ -255,13 +265,13 @@ struct DebugWindowView: View {
         case .general:
             return model.text("通用", "General")
         case .activity:
-            return model.text("运行", "Activity")
+            return model.text("概览", "Overview")
         case .usage:
             return model.text("用量", "Usage")
         case .connections:
             return model.text("连接", "Connect")
-        case .advanced:
-            return model.text("高级", "Advanced")
+        case .light:
+            return model.text("灯效", "Light")
         case .debug:
             return model.text("调试", "Debug")
         case .about:
@@ -272,21 +282,23 @@ struct DebugWindowView: View {
     fileprivate enum SettingsTab: String, CaseIterable, Identifiable {
         case activity
         case usage
-        case general
+        case light
         case connections
-        case advanced
+        case general
         case debug
         case about
 
         var id: String { rawValue }
 
         static func displayOrder(showDebug: Bool) -> [SettingsTab] {
+            // Grouped by what the user wants to do: see, measure, shape the light,
+            // connect agents, then app-wide preferences.
             var tabs: [SettingsTab] = [
                 .activity,
                 .usage,
-                .general,
+                .light,
                 .connections,
-                .advanced
+                .general
             ]
             if showDebug {
                 tabs.append(.debug)
@@ -305,8 +317,8 @@ struct DebugWindowView: View {
                 return "chart.bar.xaxis"
             case .connections:
                 return "link"
-            case .advanced:
-                return "slider.horizontal.3"
+            case .light:
+                return "lightbulb"
             case .debug:
                 return "stethoscope"
             case .about:
@@ -413,65 +425,22 @@ struct DebugWindowView: View {
         let scopes: [SignalLightAgentScope]
     }
 
-    private var settingsHeaderTitleFont: Font {
-        .system(size: usesCompactLatinLayout ? 14.5 : 15, weight: .semibold)
-    }
-
-    private var settingsTabIconFont: Font {
-        .system(size: 12, weight: .medium)
-    }
-
-    private var settingsSectionTitleFont: Font {
-        .system(size: usesCompactLatinLayout ? 13 : 14, weight: .semibold)
-    }
-
-    private var settingsSubsectionTitleFont: Font {
-        .system(size: usesCompactLatinLayout ? 11.5 : 12, weight: .semibold)
-    }
-
-    private var settingsRowTitleFont: Font {
-        .system(size: usesCompactLatinLayout ? 11.5 : 12, weight: .semibold)
-    }
-
-    private var settingsControlFont: Font {
-        .system(size: usesCompactLatinLayout ? 10.5 : 11, weight: .semibold)
-    }
-
-    private var settingsBodyFont: Font {
-        .system(size: usesCompactLatinLayout ? 10.5 : 11, weight: .regular)
-    }
-
-    private var settingsBodyStrongFont: Font {
-        .system(size: usesCompactLatinLayout ? 10.5 : 11, weight: .semibold)
-    }
-
-    private var usageAccountStatusTitleFont: Font {
-        .system(size: 11, weight: .semibold)
-    }
-
-    private var settingsDetailFont: Font {
-        .system(size: usesCompactLatinLayout ? 9.5 : 10, weight: .regular)
-    }
-
-    private var settingsDetailStrongFont: Font {
-        .system(size: usesCompactLatinLayout ? 9.5 : 10, weight: .semibold)
-    }
-
-    private var agentScopeSectionFont: Font {
-        .system(size: usesCompactLatinLayout ? 9 : 9.5, weight: .semibold)
-    }
-
-    private var agentScopeOptionFont: Font {
-        .system(size: usesCompactLatinLayout ? 9.5 : 10, weight: .semibold)
-    }
-
-    private var settingsTinyIconFont: Font {
-        .system(size: 9.5, weight: .bold)
-    }
-
-    private var settingsIconFont: Font {
-        .system(size: usesCompactLatinLayout ? 10.5 : 11, weight: .semibold)
-    }
+    // UI 2.0: every settings font comes from the shared five-size scale.
+    private var settingsHeaderTitleFont: Font { ASB.Typeface.title }
+    private var settingsTabIconFont: Font { .system(size: 12, weight: .medium) }
+    private var settingsSectionTitleFont: Font { ASB.Typeface.title }
+    private var settingsSubsectionTitleFont: Font { ASB.Typeface.captionStrong }
+    private var settingsRowTitleFont: Font { ASB.Typeface.body }
+    private var settingsControlFont: Font { ASB.Typeface.body }
+    private var settingsBodyFont: Font { ASB.Typeface.caption }
+    private var settingsBodyStrongFont: Font { ASB.Typeface.captionStrong }
+    private var usageAccountStatusTitleFont: Font { ASB.Typeface.captionStrong }
+    private var settingsDetailFont: Font { ASB.Typeface.caption }
+    private var settingsDetailStrongFont: Font { ASB.Typeface.captionStrong }
+    private var agentScopeSectionFont: Font { ASB.Typeface.captionStrong }
+    private var agentScopeOptionFont: Font { ASB.Typeface.body }
+    private var settingsTinyIconFont: Font { ASB.Typeface.badge }
+    private var settingsIconFont: Font { .system(size: 11, weight: .medium) }
 
     private var usesCompactLatinLayout: Bool {
         model.appLanguage.usesCompactLatinLayout
@@ -505,7 +474,7 @@ struct DebugWindowView: View {
 
     private var generalSettings: some View {
         VStack(alignment: .leading, spacing: 16) {
-            settingsSection(model.text("通用", "General")) {
+            settingsSection(model.text("外观与语言", "Appearance & Language")) {
                 settingRow(model.text("语言", "Language")) {
                     languageMenu
                 }
@@ -538,47 +507,71 @@ struct DebugWindowView: View {
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 3) {
-                    settingRow(model.text("新西兰原版模式", "New Zealand original mode")) {
-                        settingsSwitch(newZealandTrafficLightModeBinding)
-                            .help(model.text(
-                                "按新西兰行人红绿灯节奏慢闪，并将完成音和闪烁音切换为新西兰。",
-                                "Use the original New Zealand pedestrian crossing cadence and switch completion and blink sounds to New Zealand."
-                            ))
-                    }
-
-                    Text(model.text(
-                        "按新西兰行人红绿灯节奏慢闪，并将完成音和闪烁音切换为新西兰。",
-                        "Use the original New Zealand pedestrian crossing cadence and switch completion and blink sounds to New Zealand."
-                    ))
-                    .font(settingsDetailFont)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-
-                soundAlertSettings
             }
             .zIndex(isGeneralDropdownExpanded ? 10 : 1)
 
-            Divider()
+            settingsSection(model.text("启动与运行", "Startup")) {
+                runtimeBehaviorSettings
+            }
+            .zIndex(0)
+
+            debugVisibilitySettings
                 .zIndex(0)
-
-            signalVisibilitySettings
-
-            Divider()
-                .zIndex(0)
-
-            runtimeBehaviorSettings
         }
     }
 
     private var isGeneralDropdownExpanded: Bool {
         switch expandedSettingsDropdown {
-        case .language, .theme, .currency, .completionSound, .waitingSound:
+        case .language, .theme, .currency:
             return true
         default:
             return false
         }
+    }
+
+    /// Everything about how the light looks and sounds, previously split between the
+    /// General and Advanced tabs.
+    private var lightSettings: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            signalVisibilitySettings
+                .zIndex(0)
+            statusBarSettings
+                .zIndex(0)
+            floatingSignalSettings
+                .zIndex(0)
+            manualSignalSettings
+                .zIndex(isEffectDropdownExpanded ? 10 : 1)
+            settingsSection(model.text("灯光节奏", "Rhythm")) {
+                settingRow(model.text("新西兰原版模式", "New Zealand original mode")) {
+                    settingsSwitch(newZealandTrafficLightModeBinding)
+                }
+                Text(model.text(
+                    "按新西兰行人红绿灯节奏慢闪，并将完成音和闪烁音切换为新西兰。",
+                    "Use the original New Zealand pedestrian crossing cadence and switch completion and blink sounds to New Zealand."
+                ))
+                .font(settingsDetailFont)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .zIndex(0)
+            settingsSection(model.text("声音", "Sound")) {
+                soundAlertSettings
+            }
+            .zIndex(isSoundDropdownExpanded ? 10 : 0)
+        }
+    }
+
+    private var isEffectDropdownExpanded: Bool {
+        switch expandedSettingsDropdown {
+        case .thinkingEffect, .workingEffect, .needsReviewEffect, .permissionEffect, .blockedEffect, .doneEffect:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var isSoundDropdownExpanded: Bool {
+        expandedSettingsDropdown == .completionSound || expandedSettingsDropdown == .waitingSound
     }
 
     private var languageMenu: some View {
@@ -820,16 +813,47 @@ struct DebugWindowView: View {
 
     private var signalLightAgentMenu: some View {
         let visibleScopeSet = visibleSignalLightAgentScopeSet
-        let selectedScopes = model.displaySignalLightAgentScopes.intersection(visibleScopeSet)
-        let fallbackScopes = model.signalLightAgentScopes.intersection(visibleScopeSet)
-        let titleScopes = selectedScopes.isEmpty ? fallbackScopes : selectedScopes
+        let isFollowing = model.signalLightAgentSelectionMode == .following
+        // In auto-follow the agent rows show what is being followed, not a manual choice.
+        let selectedScopes = isFollowing ? [] : model.signalLightAgentScopes.intersection(visibleScopeSet)
+        let followedScopes = model.displaySignalLightAgentScopes.intersection(visibleScopeSet)
+        let title = isFollowing
+            ? model.text("自动跟随", "Auto Follow")
+                + (followedScopes.isEmpty ? "" : " · " + model.displayName(for: followedScopes))
+            : model.displayName(for: selectedScopes)
 
         return inlineDropdown(
             id: .signalLightAgents,
-            title: model.displayName(for: titleScopes),
+            title: title,
             width: agentScopeMenuWidth
         ) {
             dropdownOptions(width: agentScopeMenuWidth) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                        model.followSignalLightAutomatically()
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 9, weight: .semibold))
+                            .frame(width: 12)
+                        Text(model.text("自动跟随", "Auto Follow"))
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                    }
+                    .font(agentScopeOptionFont)
+                    .foregroundStyle(isFollowing ? Color.white : Color.primary)
+                    .padding(.horizontal, 7)
+                    .frame(width: agentScopeMenuWidth, height: 26)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(isFollowing ? Color.accentColor.opacity(0.92) : Color.clear)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(model.text("灯效跟随最活跃的 Agent", "The light follows the most active agent"))
+
                 ForEach(signalLightAgentDropdownSections) { section in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(section.title)
@@ -883,12 +907,31 @@ struct DebugWindowView: View {
     }
 
     private var activitySettings: some View {
-        settingsSection(model.text("运行详情", "Agent Activity")) {
-            VStack(alignment: .leading, spacing: 14) {
-                settingRow(model.text("灯效 Agent", "Light Agent")) {
+        VStack(alignment: .leading, spacing: ASB.Space.l) {
+            if model.isLightDebugModeEnabled {
+                lightDebugModeBanner
+            }
+
+            ASBGroup {
+                activitySummaryCard
+            }
+
+            settingsSection(model.text("灯效 Agent", "Light Agent")) {
+                settingRow(model.text("跟随", "Follow")) {
                     signalLightAgentMenu
                 }
                 .zIndex(expandedSettingsDropdown == .signalLightAgents ? 1000 : 0)
+
+                // Auto-follow already shows whichever agent is active.
+                if model.signalLightAgentSelectionMode == .manual {
+                    settingRow(model.text("空闲时显示其他 Agent", "Show Others While Idle")) {
+                        settingsSwitch(signalLightIdleFallbackBinding)
+                            .help(model.text(
+                                "已选 Agent 没在工作时，灯效暂时显示正在工作的其他 Agent",
+                                "While the selected agent is idle, the light shows another agent that is working"
+                            ))
+                    }
+                }
 
                 if shouldShowSignalLightAgentUnavailableHint,
                    let hint = model.signalLightAgentUnavailableHint {
@@ -901,23 +944,20 @@ struct DebugWindowView: View {
                     }
                     .foregroundStyle(.secondary)
                 }
-
-                if model.isLightDebugModeEnabled {
-                    lightDebugModeBanner
-                }
-
-                activitySummaryCard
-
-                Divider()
-
-                activitySessions
-
-                Divider()
-
-                activityEvents
-                    .layoutPriority(1)
             }
-            .frame(maxHeight: .infinity, alignment: .topLeading)
+            .zIndex(expandedSettingsDropdown == .signalLightAgents ? 10 : 1)
+
+            settingsSection(model.text("正在运行", "Running")) {
+                activitySessions
+            }
+            .zIndex(0)
+
+            ASBSection(title: model.text("最近事件", "Recent Events")) {
+                activityEvents
+                    .frame(minHeight: 60)
+            }
+            .layoutPriority(1)
+            .zIndex(0)
         }
         .frame(maxHeight: .infinity, alignment: .topLeading)
     }
@@ -972,21 +1012,21 @@ struct DebugWindowView: View {
             .zIndex(expandedSettingsDropdown == .usagePlatform ? 1000 : 0)
 
             VStack(alignment: .leading, spacing: 8) {
+                usageAccountCard
+                agentQuotaSummaryCard
                 if selectedUsagePlatform == .claude {
-                    ClaudeUsageSettingsView(model: model, support: claudeSupport) {
-                        closeSettingsDropdown()
-                        selectedSettingsTab = .connections
-                    }
+                    claudeUsageSection(.balances)
                 } else {
-                    usageAccountCard
-                    agentQuotaSummaryCard
+                    CodexCreditsSummaryView(model: model)
+                        .padding(ASB.Space.m).asbGroupBackground()
                     codexResetCreditsCard
-                    usageTokenSummaryCard
-                    CodexUsageDetailsView(details: model.tokenActivityDetails,
-                                          isLoading: model.isTokenActivityLoading,
-                                          text: model.text, tokens: model.compactTokenCountText,
-                                          formatCost: { model.estimatedCostText($0, partial: $1) })
                 }
+                usageTokenSummaryCard
+                CodexUsageDetailsView(details: selectedUsagePlatform == .claude ? claudeSupport.historyDetails : model.tokenActivityDetails,
+                                      isLoading: selectedUsagePlatform == .claude ? claudeSupport.isHistoryScanning : model.isTokenActivityLoading,
+                                      text: model.text, tokens: model.compactTokenCountText,
+                                      formatCost: { model.estimatedCostText($0, partial: $1) },
+                                      provider: selectedUsagePlatform == .claude ? .claude : .codex)
                 CostCurrencyRateNote(store: model.costCurrency, text: model.text)
             }
         }
@@ -995,6 +1035,20 @@ struct DebugWindowView: View {
         }
         .onChange(of: selectedUsagePlatform) { _, _ in
             refreshSelectedUsagePlatform()
+        }
+        .task(id: selectedUsagePlatform) {
+            guard selectedUsagePlatform == .claude else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                if !Task.isCancelled { claudeSupport.refresh() }
+            }
+        }
+    }
+
+    private func claudeUsageSection(_ section: ClaudeUsageSettingsView.Section) -> ClaudeUsageSettingsView {
+        ClaudeUsageSettingsView(model: model, support: claudeSupport, section: section, accountDetailsExpanded: $isUsageAccountDetailsExpanded) {
+            closeSettingsDropdown()
+            selectedSettingsTab = .connections
         }
     }
 
@@ -1054,7 +1108,7 @@ struct DebugWindowView: View {
                 || model.isCodexRateLimitFetchInFlight
                 || model.isCodexProviderDetailsLoading
         case .claude:
-            return false
+            return claudeSupport.isRefreshing || claudeSupport.isSwitching || claudeSupport.isLoggingIn
         }
     }
 
@@ -1064,7 +1118,7 @@ struct DebugWindowView: View {
         case .codex:
             codexAccountSwitcherCard
         case .claude:
-            claudeAccountStatusCard
+            claudeUsageSection(.account)
         }
     }
 
@@ -1095,46 +1149,6 @@ struct DebugWindowView: View {
             if model.isCodexCookieControlEnabled,
                model.codexOpenAICookieMode == .manual {
                 codexManualOpenAICookieInput
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-    }
-
-    private var codexProviderDetailsDisclosure: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Divider().opacity(0.35)
-
-            Button {
-                withAnimation(.easeInOut(duration: 0.16)) {
-                    isUsageAccountDetailsExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Text(model.text("详情", "Details"))
-                        .font(settingsBodyStrongFont)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-
-                    Spacer(minLength: 10)
-
-                    Image(systemName: "chevron.down")
-                        .font(settingsTinyIconFont.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(isUsageAccountDetailsExpanded ? 180 : 0))
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(model.text("展开 Codex 状态详情", "Expand Codex status details"))
-
-            if isUsageAccountDetailsExpanded {
-                VStack(alignment: .leading, spacing: 10) {
-                    codexUsageSourceControls
-
-                    Divider().opacity(0.35)
-
-                    codexProviderDetailsContent
-                }
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
@@ -1191,8 +1205,8 @@ struct DebugWindowView: View {
 
             codexProviderDetailsContent
         }
-        .padding(10)
-        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(ASB.Space.m)
+        .asbGroupBackground()
         .onAppear {
             model.refreshCodexProviderDetails()
         }
@@ -1367,56 +1381,57 @@ struct DebugWindowView: View {
     }
 
     private var activitySummaryCard: some View {
-        let visibleSessions = visibleActivitySessions
-        let liveSelectedSignal = visibleSessions
-            .map(\.signal)
-            .max { lhs, rhs in
-                lhs.displayState.priority < rhs.displayState.priority
-            } ?? .idle
-        let selectedSignal: AgentSignal = model.isLightDebugModeEnabled ? .idle : liveSelectedSignal
-        let updatedAt = visibleSessions.map(\.updatedAt).max()
+        // Follow the light agent selection, as the status bar and floating lights do; the
+        // session list below remains the all-agent overview.
+        let summary = model.signalLightSummary
+        let selectedSignal: AgentSignal = model.isLightDebugModeEnabled ? .idle : summary.signal
+        let updatedAt = summary.updatedAt
 
-        return HStack(alignment: .top, spacing: 12) {
+        return HStack(alignment: .center, spacing: ASB.Space.l) {
             ActivitySignalLampView(
                 model: model,
                 signalOverride: model.isLightDebugModeEnabled ? nil : selectedSignal
             )
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(model.isLightDebugModeEnabled ? model.text("调试模式", "Debug mode") : model.displayName(for: selectedSignal))
-                    .font(settingsSubsectionTitleFont)
+                HStack(spacing: ASB.Space.s) {
+                    Text(model.isLightDebugModeEnabled ? model.text("调试模式", "Debug mode") : model.displayName(for: selectedSignal))
+                        .font(ASB.Typeface.title)
+                    if !model.isLightDebugModeEnabled, let following = model.signalLightFollowingText {
+                        ASBStatusPill(text: following, tone: .neutral)
+                    }
+                }
                 Text(model.isLightDebugModeEnabled
                     ? model.text("正常 Agent 灯效已暂停。", "Normal agent lighting is paused.")
                     : model.summary(for: selectedSignal)
                 )
-                    .font(settingsBodyFont)
+                    .font(ASB.Typeface.body)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Text(model.isLightDebugModeEnabled
                     ? model.text("由灯光调试按钮驱动", "Driven by light debug controls")
                     : (updatedAt.map(activityUpdatedText) ?? model.text("等待运行", "Waiting to launch"))
+                        + " · \(summary.sessionCount) \(model.text("个会话", "sessions"))"
                 )
-                    .font(settingsDetailFont)
-                    .foregroundStyle(.tertiary)
+                    .font(ASB.Typeface.caption)
+                    .foregroundStyle(.secondary)
             }
 
-            Spacer(minLength: 16)
+            Spacer(minLength: ASB.Space.m)
 
-            VStack(alignment: .trailing, spacing: 4) {
+            Button {
+                model.toggleMonitoring()
+            } label: {
                 Label(
-                    activitySummaryModeLabel,
-                    systemImage: activitySummaryModeIcon
+                    model.isMonitoringPaused ? model.text("恢复监控", "Resume") : model.text("暂停监控", "Pause"),
+                    systemImage: model.isMonitoringPaused ? "play.fill" : "pause.fill"
                 )
-                .font(settingsDetailStrongFont)
-                .foregroundStyle(activitySummaryModeColor)
-
-                Text("\(visibleSessions.count) \(model.text("个会话", "sessions"))")
-                    .font(settingsDetailFont)
-                    .foregroundStyle(.tertiary)
+                .font(ASB.Typeface.body)
             }
+            .controlSize(.regular)
+            .help(activitySummaryModeLabel)
         }
-        .padding(10)
     }
 
     private var activitySummaryModeLabel: String {
@@ -1426,21 +1441,12 @@ struct DebugWindowView: View {
         return model.isMonitoringPaused ? model.text("监控已暂停", "Monitoring paused") : model.text("实时监控", "Live monitoring")
     }
 
-    private var activitySummaryModeIcon: String {
-        if model.isLightDebugModeEnabled {
-            return "ladybug"
-        }
-        return model.isMonitoringPaused ? "pause.circle" : "dot.radiowaves.left.and.right"
+    @ViewBuilder private var agentQuotaSummaryCard: some View {
+        if selectedUsagePlatform == .claude { claudeUsageSection(.quota) }
+        else { codexQuotaSummaryCard }
     }
 
-    private var activitySummaryModeColor: Color {
-        if model.isLightDebugModeEnabled {
-            return .orange
-        }
-        return model.isMonitoringPaused ? .orange : .secondary
-    }
-
-    private var agentQuotaSummaryCard: some View {
+    private var codexQuotaSummaryCard: some View {
         let quota = selectedUsageQuota
         let codexQuotaState = model.codexQuotaSummaryState()
         let displayedQuota = selectedUsagePlatform == .codex
@@ -1500,8 +1506,8 @@ struct DebugWindowView: View {
                 }
             }
         }
-        .padding(8)
-        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(ASB.Space.m)
+        .asbGroupBackground()
         .onAppear {
             if selectedUsagePlatform.supportsQuotaRefresh {
                 model.pollCodexRateLimitsIfNeeded()
@@ -1543,8 +1549,8 @@ struct DebugWindowView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .padding(ASB.Space.m)
+                    .asbGroupBackground()
                     .help(presentation.helpText)
                     .accessibilityElement(children: .combine)
                 }
@@ -1563,88 +1569,35 @@ struct DebugWindowView: View {
         let activeSavedAccount = model.codexSavedAccounts.first { model.isActiveCodexAccount($0) }
         let currentAccount = model.codexCurrentAccount
         let shouldShowSaveCurrent = currentAccount != nil && activeSavedAccount == nil
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text(model.text("账户", "Account"))
-                    .font(settingsSubsectionTitleFont)
-
-                Spacer(minLength: 12)
-
-                if isSelectedUsagePlatformRefreshing {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.65)
+        return UsageAccountCard(model: model,
+            title: currentAccount?.displayName ?? model.text("未找到 Codex 登录", "No Codex login found"),
+            detail: codexAccountPlanDetail, isActive: currentAccount != nil,
+            badge: currentAccount == nil ? nil : model.text("默认", "Default"),
+            isRefreshing: isSelectedUsagePlatformRefreshing, isBusy: model.isCodexAccountActionRunning,
+            refreshHelp: model.text("刷新 Codex 账户、会话和 Token 使用", "Refresh Codex account, session, and token usage"),
+            refresh: { refreshSelectedUsagePlatform(force: true) }, detailsExpanded: $isUsageAccountDetailsExpanded) {
+                UsageActionButton(model: model, title: model.text("添加账号", "Add"), systemImage: "person.crop.circle.badge.plus",
+                                  disabled: model.isCodexAccountActionRunning) { model.addCodexAccount() }
+                if shouldShowSaveCurrent {
+                    UsageActionButton(model: model, title: model.text("保存当前", "Save Current"), systemImage: "tray.and.arrow.down",
+                                      width: 86, disabled: model.isCodexAccountActionRunning) { model.saveCurrentCodexAccount() }
                 }
-
-                Button {
-                    refreshSelectedUsagePlatform(force: true)
-                } label: {
-                    settingsIconActionSurface(systemImage: "arrow.clockwise")
+                codexAccountSwitchMenu
+                codexAccountMoreMenu(activeSavedAccount: activeSavedAccount)
+            } details: {
+                VStack(alignment: .leading, spacing: 10) {
+                    codexUsageSourceControls
+                    Divider().opacity(0.35)
+                    codexProviderDetailsContent
                 }
-                .buttonStyle(.plain)
-                .disabled(isSelectedUsagePlatformRefreshing)
-                .help(model.text("刷新 Codex 账户、会话和 Token 使用", "Refresh Codex account, session, and token usage"))
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                usageAccountIdentityRow(
-                    title: model.codexCurrentAccount?.displayName ?? model.text("未找到 Codex 登录", "No Codex login found"),
-                    detail: codexAccountPlanDetail,
-                    isActive: model.codexCurrentAccount != nil,
-                    badge: currentAccount == nil ? nil : model.text("默认", "Default")
-                )
-
-                HStack(alignment: .center, spacing: 8) {
-                    connectionActionButton(
-                        model.text("添加账号", "Add"),
-                        systemImage: "person.crop.circle.badge.plus",
-                        width: 83,
-                        disabled: model.isCodexAccountActionRunning,
-                        action: { model.addCodexAccount() }
-                    )
-
-                    if shouldShowSaveCurrent {
-                        connectionActionButton(
-                            model.text("保存当前", "Save Current"),
-                            systemImage: "tray.and.arrow.down",
-                            width: 86,
-                            disabled: model.isCodexAccountActionRunning,
-                            action: { model.saveCurrentCodexAccount() }
-                        )
-                    }
-
-                    codexAccountSwitchMenu
-                    codexAccountMoreMenu(activeSavedAccount: activeSavedAccount)
-
-                    if model.isCodexAccountActionRunning {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.65)
-                    }
-
-                    Spacer(minLength: 0)
+            } messages: {
+                if let message = model.codexAccountMessage {
+                    Text(message).font(settingsDetailFont)
+                        .foregroundStyle(model.isCodexAccountMessageError ? .red : .secondary)
+                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 }
-
-                codexProviderDetailsDisclosure
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
-            .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            if let message = model.codexAccountMessage {
-                Text(message)
-                    .font(settingsDetailFont)
-                    .foregroundStyle(model.isCodexAccountMessageError ? .red : .secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-        }
-        .padding(8)
-        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .onAppear {
-            model.refreshCodexProviderDetails()
-        }
+            .onAppear { model.refreshCodexProviderDetails() }
     }
 
     private var codexAccountSwitchMenu: some View {
@@ -1665,7 +1618,7 @@ struct DebugWindowView: View {
                 }
             }
         } label: {
-            settingsTextMenuSurface(model.text("切换", "Switch"), width: 65)
+            UsageControlSurface(model: model, title: model.text("切换", "Switch"), width: 65)
         }
         .menuStyle(.borderlessButton)
         .disabled(model.codexSavedAccounts.isEmpty || model.isCodexAccountActionRunning)
@@ -1692,61 +1645,11 @@ struct DebugWindowView: View {
                 .disabled(model.isCodexAccountActionRunning)
             }
         } label: {
-            settingsIconActionSurface(systemImage: "ellipsis")
+            UsageControlSurface(model: model, systemImage: "ellipsis")
         }
         .menuStyle(.borderlessButton)
         .disabled(model.isCodexAccountActionRunning)
         .help(model.text("更多账户操作", "More account actions"))
-    }
-
-    private func codexAccountBadge(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(.secondary.opacity(0.12), in: Capsule())
-            .lineLimit(1)
-    }
-
-    private func usageAccountIdentityRow(
-        title: String,
-        detail: String?,
-        isActive: Bool,
-        badge: String?
-    ) -> some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: isActive ? "person.crop.circle.fill" : "person.crop.circle.badge.questionmark")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
-                .frame(width: 24)
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 7) {
-                    Text(title)
-                        .font(usageAccountStatusTitleFont)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .minimumScaleFactor(0.82)
-                        .frame(height: 17, alignment: .leading)
-
-                    if let badge {
-                        codexAccountBadge(badge)
-                    }
-                }
-
-                if let detail, !detail.isEmpty {
-                    Text(detail)
-                        .font(settingsDetailFont)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .truncationMode(.tail)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Spacer(minLength: 10)
-        }
     }
 
     private var codexProviderSubtitle: String {
@@ -1921,69 +1824,6 @@ struct DebugWindowView: View {
             .textSelection(.enabled)
     }
 
-    private var claudeAccountStatusCard: some View {
-        let sessions = claudeUsageSessions
-        let isActive = model.isClaudeDesktopMonitoringEnabled || !sessions.isEmpty
-        let latestSession = sessions.max { lhs, rhs in lhs.updatedAt < rhs.updatedAt }
-        let title = if !sessions.isEmpty {
-            model.text("Claude 已检测到", "Claude detected")
-        } else if model.isClaudeDesktopMonitoringEnabled {
-            model.text("Claude 监控已开启", "Claude monitoring enabled")
-        } else {
-            model.text("Claude 未连接", "Claude not connected")
-        }
-        let detail = latestSession
-            .map { activityUpdatedText($0.updatedAt) }
-            ?? model.text(
-                "启用 Claude Desktop 或 Claude Code Hook 后显示活动。",
-                "Enable Claude Desktop or Claude Code hooks to show activity."
-            )
-
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Text(model.text("账户", "Account"))
-                    .font(settingsSubsectionTitleFont)
-
-                if !sessions.isEmpty {
-                    Text("\(sessions.count) \(model.text("个会话", "sessions"))")
-                        .font(settingsDetailFont)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 12)
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
-                usageAccountIdentityRow(
-                    title: title,
-                    detail: detail,
-                    isActive: isActive,
-                    badge: nil
-                )
-
-                HStack(spacing: 8) {
-                    connectionActionButton(
-                        model.text("连接", "Connect"),
-                        systemImage: "link",
-                        width: 78,
-                        action: {
-                            closeSettingsDropdown()
-                            selectedSettingsTab = .connections
-                        }
-                    )
-
-                    Spacer(minLength: 0)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10)
-            .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-        .padding(10)
-        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
     private func quotaWindowTiles(for quota: AgentQuotaStatus) -> some View {
         HStack(alignment: .top, spacing: 8) {
             ForEach(model.quotaBadgeWindows(for: quota), id: \.self) { badgeWindow in
@@ -2058,7 +1898,7 @@ struct DebugWindowView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
-        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .background(ASBTone.caution.background, in: RoundedRectangle(cornerRadius: ASB.Radius.control, style: .continuous))
     }
 
     private var claudeUsageSessions: [SessionStatus] {
@@ -2068,22 +1908,10 @@ struct DebugWindowView: View {
     private func quotaWindowTile(_ badgeWindow: FloatingSignalQuotaBadgeWindow, quota: AgentQuotaStatus) -> some View {
         let window = model.quotaWindow(for: badgeWindow, quota: quota)
 
-        return VStack(alignment: .leading, spacing: 3) {
-            Text(model.quotaTitleLine(for: badgeWindow, quota: quota))
-                .font(settingsBodyStrongFont)
-                .lineLimit(1)
-                .truncationMode(.tail)
-
-            Text(model.quotaResetText(for: window, badgeWindow: badgeWindow))
-                .font(settingsDetailFont)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
-        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        return UsageQuotaWindowTile(language: model.appLanguage,
+                                    title: model.quotaTitleLine(for: badgeWindow, quota: quota),
+                                    reset: model.quotaResetText(for: window, badgeWindow: badgeWindow),
+                                    remainingPercent: window?.remainingPercent)
     }
 
     private func quotaWindowPlaceholderTile(_ badgeWindow: FloatingSignalQuotaBadgeWindow) -> some View {
@@ -2107,10 +1935,15 @@ struct DebugWindowView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 9)
         .padding(.vertical, 6)
-        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .asbInsetTile()
     }
 
-    private var usageTokenSummaryCard: some View {
+    @ViewBuilder private var usageTokenSummaryCard: some View {
+        if selectedUsagePlatform == .claude { claudeUsageSection(.history) }
+        else { codexTokenSummaryCard }
+    }
+
+    private var codexTokenSummaryCard: some View {
         let chartDays = selectedUsageTokenActivityChartDays
         let peakTokens = chartDays.map(\.totalTokens).max() ?? 0
 
@@ -2123,7 +1956,7 @@ struct DebugWindowView: View {
 
                 if selectedUsagePlatform == .codex {
                     Image(systemName: "info.circle")
-                        .font(settingsDetailFont)
+                        .font(settingsBodyFont)
                         .foregroundStyle(.secondary)
                         .accessibilityLabel(model.text("统计范围", "Usage scope"))
                         .help(model.text(
@@ -2146,41 +1979,12 @@ struct DebugWindowView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 }
                 CodexTokenScanProgressView(model: model)
-                VStack(alignment: .leading, spacing: 8) {
-                    LazyVGrid(
-                        columns: [
-                            GridItem(.flexible(minimum: 120), alignment: .leading),
-                            GridItem(.flexible(minimum: 120), alignment: .leading),
-                        ],
-                        alignment: .leading,
-                        spacing: 6
-                    ) {
-                        tokenUsageDashboardMetric(
-                            title: model.text("今日", "Today"),
-                            value: tokenActivityCurrencyText(selectedTokenActivityTodayEstimatedCostUSD, partial: model.tokenActivityCostIsPartial(for: .today))
-                        )
-
-                        tokenUsageDashboardMetric(
-                            title: model.text("近 30 天费用", "Last 30 days cost"),
-                            value: tokenActivityCurrencyText(selectedTokenActivityLast30EstimatedCostUSD, partial: model.tokenActivityCostIsPartial(for: .last30Days))
-                        )
-
-                        tokenUsageDashboardMetric(
-                            title: model.text("今日 token 用量", "Today token usage"),
-                            value: tokenActivityCountText(for: .today)
-                        )
-
-                        tokenUsageDashboardMetric(
-                            title: model.text("近 30 天 token 用量", "Last 30 days token usage"),
-                            value: tokenActivityCountText(for: .last30Days)
-                        )
-                    }
-
+                UsageTokenDashboard(language: model.appLanguage,
+                    todayCost: tokenActivityCurrencyText(selectedTokenActivityTodayEstimatedCostUSD, partial: model.tokenActivityCostIsPartial(for: .today)),
+                    monthCost: tokenActivityCurrencyText(selectedTokenActivityLast30EstimatedCostUSD, partial: model.tokenActivityCostIsPartial(for: .last30Days)),
+                    todayTokens: tokenActivityCountText(for: .today), monthTokens: tokenActivityCountText(for: .last30Days)) {
                     tokenUsageBarChart(days: chartDays, peakTokens: peakTokens)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-                .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             } else {
                 usageUnavailableRow(
                     icon: "number",
@@ -2192,8 +1996,8 @@ struct DebugWindowView: View {
                 )
             }
         }
-        .padding(8)
-        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(ASB.Space.m)
+        .asbGroupBackground()
     }
 
     private var selectedUsageTokenActivityChartDays: [CodexTokenActivityDay] {
@@ -2252,395 +2056,8 @@ struct DebugWindowView: View {
         .help("\(title): \(value)")
     }
 
-    private func tokenUsageBarChart(
-        days: [CodexTokenActivityDay],
-        peakTokens: Int,
-        prominent: Bool = false
-    ) -> some View {
-        let hoveredDay = hoveredTokenActivityDay(in: days)
-
-        return VStack(alignment: .leading, spacing: 8) {
-            GeometryReader { geometry in
-                HStack(alignment: .bottom, spacing: 3) {
-                    ForEach(days) { day in
-                        tokenUsageBar(
-                            day: day,
-                            peakTokens: peakTokens,
-                            prominent: prominent,
-                            isSelected: hoveredTokenActivityDayID == day.id
-                        )
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .contentShape(Rectangle())
-                .onContinuousHover { phase in
-                    switch phase {
-                    case let .active(location):
-                        guard !days.isEmpty, geometry.size.width > 0 else { return }
-                        let stride = (geometry.size.width + 3) / CGFloat(days.count)
-                        let index = min(max(Int(location.x / stride), 0), days.count - 1)
-                        hoveredTokenActivityDayID = days[index].id
-                    case .ended:
-                        hoveredTokenActivityDayID = nil
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, minHeight: 48, maxHeight: 48, alignment: .bottom)
-            .padding(.top, 2)
-
-            HStack(alignment: .firstTextBaseline) {
-                if let firstDay = days.first {
-                    Text(tokenActivityShortDateText(firstDay.day))
-                        .font(settingsDetailFont)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 12)
-
-                if let lastDay = days.last {
-                    Text(tokenActivityShortDateText(lastDay.day))
-                        .font(settingsDetailFont)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-
-            TokenUsageInlineDetail {
-                if let hoveredDay {
-                    tokenUsageDayDetail(for: hoveredDay)
-                } else {
-                    tokenUsageHoverHint()
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-
-    private struct TokenUsageBarSegment: Identifiable {
-        let model: String
-        let tokens: Int
-
-        var id: String { model }
-    }
-
-    private struct TokenUsageBarSlice: Identifiable {
-        let segment: TokenUsageBarSegment
-        let height: CGFloat
-
-        var id: String { segment.id }
-    }
-
-    private func tokenUsageBar(
-        day: CodexTokenActivityDay,
-        peakTokens: Int,
-        prominent: Bool = false,
-        isSelected: Bool = false
-    ) -> some View {
-        let normalized = peakTokens > 0 ? CGFloat(day.totalTokens) / CGFloat(peakTokens) : 0
-        let barHeight = day.totalTokens > 0 ? max(5, normalized * 44) : 4
-        let opacity = day.totalTokens > 0 ? 0.35 + (normalized * 0.55) : 0.12
-        let segments = tokenUsageBarSegments(for: day)
-        let slices = tokenUsageBarSlices(segments: segments, barHeight: barHeight)
-
-        return ZStack(alignment: .bottom) {
-            if isSelected {
-                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                    .fill(Color.secondary.opacity(colorScheme == .dark ? 0.18 : 0.14))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-
-                ZStack(alignment: .top) {
-                    if day.totalTokens > 0 {
-                        VStack(spacing: 0) {
-                            ForEach(slices) { slice in
-                                Rectangle()
-                                    .fill(tokenUsageModelColor(
-                                        slice.segment.model,
-                                        normalized: normalized,
-                                        prominent: prominent,
-                                        isSelected: isSelected
-                                    ))
-                                    .frame(height: slice.height)
-                            }
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
-                    } else {
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(Color.secondary.opacity(opacity))
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: barHeight)
-            }
-        }
-        .frame(maxWidth: .infinity, minHeight: 48, maxHeight: 48, alignment: .bottom)
-        .contentShape(Rectangle())
-        .accessibilityLabel(tokenUsageHelpText(for: day))
-    }
-
-    private func tokenUsageBarSlices(
-        segments: [TokenUsageBarSegment],
-        barHeight: CGFloat
-    ) -> [TokenUsageBarSlice] {
-        guard segments.isEmpty == false else { return [] }
-
-        let segmentTotal = max(segments.map(\.tokens).reduce(0, +), 1)
-        var slices = segments
-            .reversed()
-            .map { segment in
-                let rawHeight = barHeight * CGFloat(segment.tokens) / CGFloat(segmentTotal)
-                return TokenUsageBarSlice(
-                    segment: segment,
-                    height: max(rawHeight, tokenUsageMinimumVisibleSegmentHeight(
-                        rawHeight: rawHeight,
-                        barHeight: barHeight,
-                        segmentCount: segments.count
-                    ))
-                )
-            }
-
-        let totalHeight = slices.map(\.height).reduce(0, +)
-        guard totalHeight > barHeight,
-              let tallestIndex = slices.indices.max(by: { slices[$0].height < slices[$1].height })
-        else {
-            return slices
-        }
-
-        let overflow = totalHeight - barHeight
-        let tallest = slices[tallestIndex]
-        slices[tallestIndex] = TokenUsageBarSlice(
-            segment: tallest.segment,
-            height: max(1, tallest.height - overflow)
-        )
-        return slices
-    }
-
-    private func tokenUsageMinimumVisibleSegmentHeight(
-        rawHeight: CGFloat,
-        barHeight: CGFloat,
-        segmentCount: Int
-    ) -> CGFloat {
-        guard segmentCount > 1,
-              rawHeight > 0,
-              barHeight >= 12
-        else {
-            return rawHeight
-        }
-        return min(3, max(1.5, barHeight * 0.055))
-    }
-
-    private func tokenUsageBarSegments(for day: CodexTokenActivityDay) -> [TokenUsageBarSegment] {
-        guard day.totalTokens > 0 else {
-            return []
-        }
-
-        var totals = day.modelTokenTotals.filter { _, tokens in tokens > 0 }
-        let knownTotal = totals.values.reduce(0, +)
-        if day.totalTokens > knownTotal {
-            totals["__other__"] = day.totalTokens - knownTotal
-        }
-        if totals.isEmpty {
-            totals["__other__"] = day.totalTokens
-        }
-
-        return totals
-            .sorted { lhs, rhs in
-                let leftRank = tokenUsageModelSortRank(lhs.key)
-                let rightRank = tokenUsageModelSortRank(rhs.key)
-                if leftRank != rightRank {
-                    return leftRank < rightRank
-                }
-                return lhs.key.localizedStandardCompare(rhs.key) == .orderedAscending
-            }
-            .map { TokenUsageBarSegment(model: $0.key, tokens: $0.value) }
-    }
-
-    private func tokenUsageModelSortRank(_ modelName: String) -> Int {
-        CodexModelPresentation.forModel(modelName).sortRank
-    }
-
-    private func tokenUsageModelColor(
-        _ modelName: String,
-        normalized: CGFloat,
-        prominent: Bool,
-        isSelected: Bool
-    ) -> Color {
-        let baseColor = CodexModelPresentation.forModel(modelName).color
-
-        let baseOpacity = prominent
-            ? 0.48 + (normalized * 0.42)
-            : 0.42 + (normalized * 0.48)
-        return baseColor.opacity(isSelected ? min(baseOpacity + 0.18, 1) : baseOpacity)
-    }
-
-    private func tokenUsageHelpText(for day: CodexTokenActivityDay) -> String {
-        let summary = model.text(
-            "\(tokenActivityDateText(day.day))：\(model.compactTokenCountText(day.totalTokens)) 个 Token",
-            "\(tokenActivityDateText(day.day)): \(model.compactTokenCountText(day.totalTokens)) tokens"
-        )
-        let breakdown = tokenUsageBarSegments(for: day)
-            .filter { $0.model != "__other__" }
-            .map { "\(tokenUsageModelDisplayName($0.model)): \(model.compactTokenCountText($0.tokens))" }
-            .joined(separator: " / ")
-
-        return breakdown.isEmpty ? summary : "\(summary)\n\(breakdown)"
-    }
-
-    private func tokenUsageModelDisplayName(_ modelName: String) -> String {
-        if modelName == "__other__" { return model.text("其他", "Other") }
-        return CodexModelPresentation.forModel(modelName).displayName
-    }
-
-    private func tokenUsageDaySummaryText(for day: CodexTokenActivityDay) -> String {
-        let cost = tokenActivityCurrencyText(day.estimatedCostUSD, partial: day.costIsPartial)
-        return model.text(
-            "\(tokenActivityShortDateText(day.day))：\(cost) · \(model.compactTokenCountText(day.totalTokens)) token",
-            "\(tokenActivityShortDateText(day.day)): \(cost) · \(model.compactTokenCountText(day.totalTokens)) tokens"
-        )
-    }
-
-    private func tokenUsageSegmentCostText(
-        _ segment: TokenUsageBarSegment,
-        day: CodexTokenActivityDay
-    ) -> String? {
-        if let cost = day.modelEstimatedCostTotals[segment.model] {
-            return tokenActivityCurrencyText(cost, partial: (day.modelUnpricedTokenTotals?[segment.model] ?? 0) > 0)
-        }
-        return nil
-    }
-
-    private func tokenUsageDayDetail(for day: CodexTokenActivityDay) -> some View {
-        let segments = tokenUsageBarSegments(for: day)
-        let visibleSegments = segments.filter { $0.tokens > 0 }
-
-        return VStack(alignment: .leading, spacing: 7) {
-            Text(tokenUsageDaySummaryText(for: day))
-                .font(settingsBodyStrongFont)
-                .foregroundStyle(.primary.opacity(0.9))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.78)
-
-            if visibleSegments.isEmpty {
-                Text(model.text("暂无模型明细", "No model details"))
-                    .font(settingsDetailFont)
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: 5) {
-                    ForEach(visibleSegments) { segment in
-                        tokenUsageModelDetailRow(segment, day: day)
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
-    }
-
-    private func tokenUsageHoverHint() -> some View {
-        Text(model.text("悬停在柱形图上查看详情", "Hover over a bar to view details"))
-            .font(settingsDetailFont)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .allowsHitTesting(false)
-    }
-
-    private func tokenUsageModelDetailRow(
-        _ segment: TokenUsageBarSegment,
-        day: CodexTokenActivityDay
-    ) -> some View {
-        let percent = day.totalTokens > 0
-            ? Int((Double(segment.tokens) / Double(day.totalTokens) * 100).rounded())
-            : 0
-        let cost = tokenUsageSegmentCostText(segment, day: day)
-        let detailText = [
-            cost,
-            "\(model.compactTokenCountText(segment.tokens)) token",
-            "\(percent)%"
-        ]
-            .compactMap { $0 }
-            .joined(separator: " · ")
-        let modeDetailText = tokenUsageModelModeDetailText(segment.model, day: day)
-
-        return HStack(alignment: .top, spacing: 7) {
-            RoundedRectangle(cornerRadius: 1, style: .continuous)
-                .fill(tokenUsageModelColor(
-                    segment.model,
-                    normalized: 1,
-                    prominent: false,
-                    isSelected: true
-                ))
-                .frame(width: 3, height: 28)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(tokenUsageModelDisplayName(segment.model))
-                    .font(settingsDetailStrongFont)
-                    .lineLimit(1)
-
-                Text(detailText)
-                    .font(settingsDetailFont)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-
-                if let modeDetailText {
-                    Text(modeDetailText)
-                        .font(settingsDetailFont)
-                        .foregroundStyle(.secondary.opacity(0.92))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                }
-            }
-        }
-    }
-
-    private func tokenUsageModelModeDetailText(
-        _ modelName: String,
-        day: CodexTokenActivityDay
-    ) -> String? {
-        guard modelName != "__other__" else { return nil }
-        let standardTokens = day.modelStandardTokenTotals[modelName] ?? 0
-        let priorityTokens = day.modelPriorityTokenTotals[modelName] ?? 0
-        guard standardTokens > 0 || priorityTokens > 0 else { return nil }
-
-        let standard = tokenUsageModePiece(
-            label: model.text("标准", "Std"),
-            tokens: standardTokens,
-            cost: day.modelStandardEstimatedCostTotals[modelName],
-            partial: (day.modelStandardUnpricedTokenTotals?[modelName] ?? 0) > 0
-        )
-        let priority = tokenUsageModePiece(
-            label: model.text("快速", "Fast"),
-            tokens: priorityTokens,
-            cost: day.modelPriorityEstimatedCostTotals[modelName],
-            partial: (day.modelPriorityUnpricedTokenTotals?[modelName] ?? 0) > 0
-        )
-        return [standard, priority]
-            .compactMap { $0 }
-            .joined(separator: " / ")
-    }
-
-    private func tokenUsageModePiece(
-        label: String,
-        tokens: Int,
-        cost: Double?,
-        partial: Bool
-    ) -> String? {
-        guard tokens > 0 else { return nil }
-        var parts: [String] = [label]
-        if let cost {
-            parts.append(tokenActivityCurrencyText(cost, partial: partial))
-        }
-        parts.append("\(model.compactTokenCountText(tokens)) token")
-        return parts.joined(separator: " ")
-    }
-
-    private func hoveredTokenActivityDay(in days: [CodexTokenActivityDay]) -> CodexTokenActivityDay? {
-        guard let hoveredTokenActivityDayID else { return nil }
-        return days.first { $0.id == hoveredTokenActivityDayID }
+    private func tokenUsageBarChart(days: [CodexTokenActivityDay], peakTokens: Int, prominent: Bool = false) -> some View {
+        UsageTokenHistoryChart(model: model, days: days, peakTokens: peakTokens, prominent: prominent)
     }
 
     private var tokenActivityChartDays: [CodexTokenActivityDay] {
@@ -2815,17 +2232,13 @@ struct DebugWindowView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
-        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .asbInsetTile()
     }
 
     private var activitySessions: some View {
         let sessionRows = activitySessionRows
 
         return VStack(alignment: .leading, spacing: 8) {
-            Text(model.text("当前会话", "Active Sessions"))
-                .font(settingsBodyStrongFont)
-                .foregroundStyle(.secondary)
-
             if sessionRows.isEmpty {
                 emptyActivityRow(
                     icon: "checkmark.circle",
@@ -2870,10 +2283,6 @@ struct DebugWindowView: View {
         let recentEvents = activityRecentEvents
 
         return VStack(alignment: .leading, spacing: 8) {
-            Text(model.text("最近事件", "Recent Events"))
-                .font(settingsBodyStrongFont)
-                .foregroundStyle(.secondary)
-
             if recentEvents.isEmpty {
                 emptyActivityRow(
                     icon: "clock",
@@ -2956,7 +2365,8 @@ struct DebugWindowView: View {
             settingRow(model.text("状态栏风格", "Status bar style")) {
                 compactSegmentedControl(
                     options: statusBarStyleOptions,
-                    selection: statusBarStyleBinding
+                    selection: statusBarStyleBinding,
+                    width: 216
                 ) { style in
                     model.displayName(for: style)
                 }
@@ -3117,31 +2527,6 @@ struct DebugWindowView: View {
         }
     }
 
-    private var advancedSettings: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(model.text("高级设置", "Advanced Settings"))
-                .font(settingsSectionTitleFont)
-
-            debugVisibilitySettings
-
-            Divider()
-
-            cliInstallSettings
-
-            Divider()
-
-            statusBarSettings
-
-            Divider()
-
-            floatingSignalSettings
-
-            Divider()
-
-            manualSignalSettings
-        }
-    }
-
     private var cliInstallSettings: some View {
         settingsSection(model.text("命令行工具", "Command Line Tool")) {
             VStack(alignment: .leading, spacing: 8) {
@@ -3172,7 +2557,7 @@ struct DebugWindowView: View {
     }
 
     private var debugVisibilitySettings: some View {
-        settingsSection(model.text("调试", "Debug")) {
+        settingsSection(model.text("开发者", "Developer")) {
             settingRow(model.text("显示调试设置", "Show debug settings")) {
                 settingsSwitch(debugSettingsVisibleBinding)
                     .help(model.text(
@@ -3540,6 +2925,19 @@ struct DebugWindowView: View {
                 }
             }
 
+            VStack(alignment: .leading, spacing: 8) {
+                Text(model.codexConnectionMessage).font(settingsBodyFont).foregroundStyle(.secondary).textSelection(.enabled)
+                Text(model.resolvedCodexDataDirectory).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                HStack {
+                    Button(model.text("选择数据目录…", "Choose data directory…")) { model.chooseCodexDataDirectory() }
+                    if !model.codexDataDirectory.isEmpty {
+                        Button(model.text("使用默认目录", "Use default directory")) { model.setCodexDataDirectory("") }
+                    }
+                    Button(model.text("检查连接", "Check connection")) { model.checkConnections() }
+                        .disabled(model.isConnectionCheckRunning)
+                }
+            }
+
             Divider()
 
             connectionItem(
@@ -3560,10 +2958,10 @@ struct DebugWindowView: View {
             Divider()
 
             connectionItem(
-                title: model.text("Claude（尚未测试）", "Claude (Untested)"),
+                title: "Claude",
                 subtitle: model.text(
-                    "支持 Claude Desktop",
-                    "Supports Claude Desktop"
+                    "支持 Claude Code Desktop、CLI 和 IDE；普通聊天显示应用活动",
+                    "Claude Code Desktop, CLI, and IDE; ordinary chat shows app activity"
                 ),
                 systemImage: "sparkles"
             ) {
@@ -3584,10 +2982,10 @@ struct DebugWindowView: View {
             Divider()
 
             connectionItem(
-                title: model.text("Claude Hook（可选）", "Claude Hook (Optional)"),
+                title: model.text("Claude Code Hook", "Claude Code Hook"),
                 subtitle: model.text(
-                    "Claude Code 全局 Hook 可单独检查或安装",
-                    "Claude Code global hooks can be checked or installed separately"
+                    "接入思考、工作、授权等待与完成状态",
+                    "Connect thinking, working, permission, and completion states"
                 ),
                 systemImage: "terminal"
             ) {
@@ -3597,6 +2995,26 @@ struct DebugWindowView: View {
                     uninstall: { model.uninstallClaudeHooks() }
                 )
             }
+
+            Toggle(model.text("读取 Claude 桌面回复状态（可选）", "Read Claude desktop response status (optional)"), isOn: Binding(
+                get: { model.isClaudeUIStatusMonitoringEnabled },
+                set: { model.setClaudeUIStatusMonitoringEnabled($0) }
+            ))
+            .disabled(!model.isClaudeDesktopMonitoringEnabled)
+            Text(model.text("只读检查当前 Claude 窗口的回复按钮，不保存聊天内容；不判断后台任务完成。", "Read-only checks of response controls in Claude windows; no chat content is saved and background completion is not inferred."))
+                .font(settingsBodyFont).foregroundStyle(.secondary)
+            Text(model.claudeUIConnectionMessage)
+                .font(settingsBodyFont).foregroundStyle(.secondary)
+            if model.isClaudeUIStatusMonitoringEnabled {
+                Button(model.text("打开辅助功能设置", "Open Accessibility Settings")) {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+
+            Text(model.claudeConnectionMessage)
+                .font(settingsBodyFont).foregroundStyle(.secondary).textSelection(.enabled)
 
             if model.isHookInstallRunning {
                 ProgressView()
@@ -3663,20 +3081,19 @@ struct DebugWindowView: View {
         }
     }
 
+    /// A titled grouped box (UI 2.0). The box never clips, so inline dropdowns overflow it.
     private func settingsSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(settingsSectionTitleFont)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        let rows = content()
+        return ASBSection(title: title) { rows }
     }
 
     private func settingsSubsection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
+            Divider().opacity(0.6)
             Text(title)
                 .font(settingsSubsectionTitleFont)
                 .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -3689,8 +3106,8 @@ struct DebugWindowView: View {
                 .lineLimit(2)
                 .allowsTightening(true)
                 .minimumScaleFactor(0.88)
-                .padding(.top, 5)
-            Spacer()
+                .padding(.top, 3)
+            Spacer(minLength: ASB.Space.m)
             content()
         }
     }
@@ -4369,7 +3786,7 @@ struct DebugWindowView: View {
     }
 
     private var statusBarStyleOptions: [TrafficSignalStyle] {
-        [.macOS, .trafficLight]
+        [.macOS, .trafficLight, .singleLamp]
     }
 
     private func activitySessionRow(_ session: SessionStatus) -> some View {
@@ -4494,8 +3911,8 @@ struct DebugWindowView: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(ASB.Space.m)
+        .asbGroupBackground()
     }
 
     private func debugTextBox(_ text: String, minHeight: CGFloat) -> some View {
@@ -4626,8 +4043,8 @@ struct DebugWindowView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(10)
-        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(ASB.Space.m)
+        .asbGroupBackground()
     }
 
     private func connectionMessage(title: String, message: String, lineLimit: Int) -> some View {
@@ -4823,6 +4240,13 @@ struct DebugWindowView: View {
         Binding(
             get: { model.isCodexDesktopMonitoringEnabled },
             set: { model.setCodexDesktopMonitoringEnabled($0) }
+        )
+    }
+
+    private var signalLightIdleFallbackBinding: Binding<Bool> {
+        Binding(
+            get: { model.isSignalLightIdleFallbackEnabled },
+            set: { model.setSignalLightIdleFallbackEnabled($0) }
         )
     }
 
@@ -5086,7 +4510,6 @@ private struct SettingsGlassBackdropView: NSViewRepresentable {
         view.state = .followsWindowActiveState
     }
 
-
 }
 
 private struct SettingsWindowDragRegionView: NSViewRepresentable {
@@ -5235,26 +4658,26 @@ private struct RecentEventsScrollConfigurator: NSViewRepresentable {
     }
 }
 
-private enum HookConnectionMode {
+enum HookConnectionMode {
     case dryRun
     case installed
 }
 
-private enum HookConnectionStatus {
+enum HookConnectionStatus {
     case ready
     case needsInstall
     case installed
     case unknown
 }
 
-private struct HookConnectionItem: Identifiable {
+struct HookConnectionItem: Identifiable {
     var id: String { name }
     let name: String
     let status: HookConnectionStatus
     let file: String?
 }
 
-private struct HookConnectionSummary {
+struct HookConnectionSummary {
     let mode: HookConnectionMode
     let items: [HookConnectionItem]
     let diagnostics: [String]
@@ -5310,6 +4733,9 @@ private struct HookConnectionSummary {
                     mode = .dryRun
                 } else if modeText == "installed" {
                     mode = .installed
+                } else {
+                    // Informational runtime records are not Hook configuration items or warnings.
+                    continue
                 }
 
                 let rest = line[line.index(after: modeEnd)...]

@@ -119,7 +119,8 @@ assert sheet.exists() and sheet.stat().st_size > 10_000
 assert manifest.exists()
 data = json.loads(manifest.read_text())
 records = data["records"]
-assert len(records) == 48
+assert len(records) == 72  # 3 styles x 2 layouts x 12 states
+assert any(item["style"] == "singleLamp" for item in records)
 assert any(item["style"] == "macOS" and item["layout"] == "vertical" and item["state"] == "working-high" for item in records)
 assert any(item["style"] == "trafficLight" and item["layout"] == "horizontal" and item["state"] == "all-lights-on" for item in records)
 for item in records:
@@ -478,8 +479,10 @@ import sys
 from pathlib import Path
 
 data = json.loads(Path(sys.argv[1]).read_text())
-assert data["aggregate"] == "blocked"
-assert data["sessions"]["doctor-normalized-claude"]["signal"] == "blocked"
+# A failed tool step is handed back to the agent, so it maps to tool_done, not blocked.
+# Both sessions are equally active; either may be chosen as the aggregate.
+assert data["aggregate"] in ("working", "tool_done")
+assert data["sessions"]["doctor-normalized-claude"]["signal"] == "tool_done"
 assert data["sessions"]["codex-cli:doctor-normalized-codex"]["signal"] == "working"
 PY
   then
@@ -575,11 +578,11 @@ import sys
 from pathlib import Path
 
 data = json.loads(Path(sys.argv[1]).read_text())
-assert data["aggregate"] == "blocked"
-assert data["sessions"]["doctor-claude-fail"]["signal"] == "blocked"
+assert data["aggregate"] != "blocked"
+assert data["sessions"]["doctor-claude-fail"]["signal"] == "tool_done"
 PY
   then
-    pass "Claude failure payload maps to blocked"
+    pass "Claude tool-step failure payload stays non-blocking"
   else
     fail "Claude failure payload schema check failed"
   fi
@@ -725,23 +728,30 @@ if [[ -f "$CODEX_HOOKS_FILE" ]]; then
 fi
 
 if [[ -f "$CLAUDE_SETTINGS_FILE" ]]; then
-  if /usr/bin/python3 - "$CLAUDE_SETTINGS_FILE" "$ROOT_DIR/scripts/claude-code-signal-hook" <<'PY'
+  if /usr/bin/python3 - "$CLAUDE_SETTINGS_FILE" "$ROOT_DIR/scripts/claude-code-signal-hook" "$ROOT_DIR/script/install_hooks.py" <<'PY'
 import json
+import runpy
 import sys
 from pathlib import Path
 
 data = json.loads(Path(sys.argv[1]).read_text())
 needle = sys.argv[2]
-events = [
-    "ConfigChange", "CwdChanged", "Elicitation", "ElicitationResult",
-    "FileChanged", "InstructionsLoaded", "SessionStart", "TaskCreated",
-    "TaskCompleted", "TeammateIdle", "UserPromptExpansion", "UserPromptSubmit",
-    "PreToolUse", "PostToolBatch", "PostToolUse", "PostToolUseFailure",
-    "PreCompact", "PostCompact", "SubagentStart", "SubagentStop",
-    "PermissionRequest", "PermissionDenied", "Notification", "Stop",
-    "StopFailure", "WorktreeCreate", "WorktreeRemove", "SessionEnd",
-]
+installer = runpy.run_path(sys.argv[3])
+events = installer["CLAUDE_EVENTS"]
+spec = installer["TargetSpec"](
+    name="Claude Code", path=Path(sys.argv[1]), wrapper=Path(needle),
+    events=events, pass_event_argument=False, matcher="",
+)
 hooks = data.get("hooks", {})
+unsafe = []
+for event in installer["CLAUDE_WORKTREE_EVENTS"]:
+    _, removed = installer["remove_stale_agent_signal_commands"](
+        hooks.get(event, []), spec=spec, current_command="",
+    )
+    if removed:
+        unsafe.append(event)
+if unsafe:
+    raise SystemExit("status hooks override worktree management: " + ", ".join(unsafe))
 missing = []
 for event in events:
     blocks = hooks.get(event, [])
@@ -754,16 +764,25 @@ PY
   then
     pass "Claude hooks configured for current checkout"
   else
-    warn "Claude settings file exists but is missing current checkout wrapper/events; run ./script/install_hooks.py --target claude --install"
+    warn "Claude settings file has missing/stale hooks or status hooks overriding worktree management; run ./script/install_hooks.py --target claude --install"
   fi
 else
   warn "Claude settings file not found at $CLAUDE_SETTINGS_FILE; run ./script/install_hooks.py --target claude --install"
 fi
 
-if command -v claude >/dev/null 2>&1; then
-  pass "Claude Code CLI found at $(command -v claude)"
+CLAUDE_CLI_PATH="$(command -v claude 2>/dev/null || true)"
+if [[ -z "$CLAUDE_CLI_PATH" ]]; then
+  for claude_candidate in "$HOME/.local/bin/claude" "$HOME/.npm-global/bin/claude" "$HOME/.bun/bin/claude" /opt/homebrew/bin/claude /usr/local/bin/claude; do
+    if [[ -x "$claude_candidate" && -f "$claude_candidate" ]]; then
+      CLAUDE_CLI_PATH="$claude_candidate"
+      break
+    fi
+  done
+fi
+if [[ -n "$CLAUDE_CLI_PATH" ]]; then
+  pass "Claude Code CLI found at $CLAUDE_CLI_PATH"
 else
-  warn "Claude Code CLI not found in PATH; terminal Claude Code sessions cannot exercise the hook"
+  warn "Claude Code CLI not found in PATH or standard installation directories; choose its executable in Claude usage settings"
 fi
 
 if [[ -f "$CLAUDE_DESKTOP_LOG" ]]; then

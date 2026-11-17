@@ -513,10 +513,22 @@ extension MenuBarStatusModel {
         let window = quotaWindow(for: badgeWindow, quota: quota)
         let title = displayName(for: window, fallback: badgeWindow)
         let percent = quotaPercentText(for: window)
-        return text(
-            "\(title) · 剩余 \(percent)",
-            "\(title) · \(percent) left"
-        )
+        return quotaTitleLine(title: title, percentText: percent)
+    }
+
+    /// The window name alone ("5 小时"), for layouts that show the percent separately.
+    func quotaWindowTitle(for badgeWindow: FloatingSignalQuotaBadgeWindow, quota: AgentQuotaStatus) -> String {
+        displayName(for: quotaWindow(for: badgeWindow, quota: quota), fallback: badgeWindow)
+    }
+
+    func quotaRemainingText(_ remainingPercent: Double?) -> String {
+        guard let remainingPercent, remainingPercent.isFinite else { return text("剩余 --", "-- left") }
+        let value = Int(remainingPercent.rounded())
+        return text("剩余 \(value)%", "\(value)% left")
+    }
+
+    func quotaTitleLine(title: String, percentText: String) -> String {
+        text("\(title) · 剩余 \(percentText)", "\(title) · \(percentText) left")
     }
 
     func quotaUnavailableTitleLine(for badgeWindow: FloatingSignalQuotaBadgeWindow) -> String {
@@ -600,18 +612,20 @@ extension MenuBarStatusModel {
         for window: AgentQuotaWindowStatus?,
         badgeWindow: FloatingSignalQuotaBadgeWindow? = nil
     ) -> String {
-        guard let resetsAt = window?.resetsAt else {
-            return text("重置时间未知", "reset time unavailable")
-        }
-        let shouldShowDate = badgeWindow == .weekly || (window?.windowMinutes ?? 0) >= 24 * 60
-        let resetTime = shouldShowDate
-            ? localizedMonthDayTimeString(for: resetsAt)
-            : localizedTimeString(for: resetsAt)
+        quotaResetText(resetsAt: window?.resetsAt,
+                       showsDate: badgeWindow == .weekly || (window?.windowMinutes ?? 0) >= 24 * 60)
+    }
+
+    func quotaResetText(resetsAt: Date?, showsDate: Bool) -> String {
+        guard let resetsAt else { return text("重置时间未知", "reset time unavailable") }
+        let resetTime = showsDate ? localizedMonthDayTimeString(for: resetsAt) : localizedTimeString(for: resetsAt)
         return text("重置 \(resetTime)", "resets \(resetTime)")
     }
 
-    func quotaUpdatedText(for quota: AgentQuotaStatus) -> String {
-        "\(text("更新", "Updated")) \(localizedTimeString(for: quota.updatedAt))"
+    func quotaUpdatedText(for quota: AgentQuotaStatus) -> String { quotaUpdatedText(for: quota.updatedAt) }
+
+    func quotaUpdatedText(for date: Date) -> String {
+        "\(text("更新", "Updated")) \(localizedTimeString(for: date))"
     }
 
     func tokenUsageTitleLine(for tokenWindow: FloatingSignalTokenBadgeWindow, tokens: Int) -> String {
@@ -821,6 +835,8 @@ extension MenuBarStatusModel {
             return text("经典灯牌", "Classic Lamp")
         case .macOS:
             return text("极简圆点", "Minimal Dots")
+        case .singleLamp:
+            return text("单灯", "Single Lamp")
         }
     }
 

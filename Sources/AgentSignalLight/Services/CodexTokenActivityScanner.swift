@@ -235,6 +235,7 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
 
     init(
         sessionRootURLs: [URL]? = nil,
+        selectedPath: String? = nil,
         fileManager: FileManager = .default,
         calendar: Calendar = .autoupdatingCurrent,
         readChunkBytes: Int = 4 * 1024 * 1024,
@@ -247,7 +248,7 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
         self.fileManager = fileManager
         self.sessionRootURLs = sessionRootURLs ?? Self.defaultSessionRootURLs(
             fileManager: fileManager,
-            environment: environment
+            environment: environment, selectedPath: selectedPath
         )
         self.calendar = calendar
         self.readChunkBytes = readChunkBytes
@@ -257,10 +258,7 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
             fileManager: fileManager,
             cacheURL: cacheURL
         )
-        self.priorityDatabaseURL = priorityDatabaseURL ?? Self.defaultPriorityDatabaseURL(
-            fileManager: fileManager,
-            environment: environment
-        )
+        self.priorityDatabaseURL = priorityDatabaseURL ?? CodexDataPaths.primaryRoot(home: fileManager.homeDirectoryForCurrentUser, environment: environment, selectedPath: selectedPath).appendingPathComponent("logs_2.sqlite")
     }
 
     func scanDailyActivity(
@@ -1811,25 +1809,10 @@ final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Se
         return index
     }
 
-    private static func defaultSessionRootURLs(
-        fileManager: FileManager,
-        environment: [String: String]
-    ) -> [URL] {
+    private static func defaultSessionRootURLs(fileManager: FileManager, environment: [String: String], selectedPath: String?) -> [URL] {
         let home = fileManager.homeDirectoryForCurrentUser
-        if let codexHome = environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !codexHome.isEmpty {
-            let root = URL(fileURLWithPath: (codexHome as NSString).expandingTildeInPath, isDirectory: true)
-            return [
-                root.appendingPathComponent("sessions", isDirectory: true),
-                root.appendingPathComponent("archived_sessions", isDirectory: true)
-            ]
-        }
-
-        return [
-            home.appendingPathComponent(".codex/sessions", isDirectory: true),
-            home.appendingPathComponent(".codex/archived_sessions", isDirectory: true),
-            home.appendingPathComponent("Library/Developer/Xcode/CodingAssistant/codex/sessions", isDirectory: true)
-        ] + jetBrainsCodexSessionRootURLs(home: home, fileManager: fileManager)
+        return CodexDataPaths.activityRoots(home: home, environment: environment, selectedPath: selectedPath, fileManager: fileManager).map(\.url)
+            + [CodexDataPaths.primaryRoot(home: home, environment: environment, selectedPath: selectedPath).appendingPathComponent("archived_sessions")]
     }
 
     private static func defaultPriorityDatabaseURL(

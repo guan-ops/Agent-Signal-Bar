@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 
 agent_signal_swift() {
+  if [[ -n "${AGENT_SIGNAL_LIGHT_SWIFT_SCRATCH_PATH:-}" && ( "$1" == "build" || "$1" == "test" ) ]]; then
+    local action="$1"
+    shift
+    set -- "$action" --scratch-path "$AGENT_SIGNAL_LIGHT_SWIFT_SCRATCH_PATH" "$@"
+  fi
   if [[ -n "${DEVELOPER_DIR:-}" ]]; then
     swift "$@"
   elif [[ -n "${XCODE_DEVELOPER_DIR:-}" && -d "$XCODE_DEVELOPER_DIR" ]]; then

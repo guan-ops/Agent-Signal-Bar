@@ -4257,7 +4257,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             updatedAt: updatedAt,
             source: .oauth
         )
-        let quota = usageStatus.quota
+        let quota = try XCTUnwrap(usageStatus.quota)
 
         XCTAssertEqual(quota.remainingPercent, 97.5, accuracy: 0.01)
         XCTAssertEqual(quota.usedPercent ?? -1, 2.5, accuracy: 0.01)
@@ -4307,8 +4307,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
             source: .unknown
         )
 
-        XCTAssertEqual(usageStatus.quota.remainingPercent, 95, accuracy: 0.01)
-        XCTAssertEqual(usageStatus.quota.primaryWindow?.windowMinutes, 43_200)
+        XCTAssertEqual(try XCTUnwrap(usageStatus.quota).remainingPercent, 95, accuracy: 0.01)
+        XCTAssertEqual(usageStatus.quota?.primaryWindow?.windowMinutes, 43_200)
         XCTAssertNil(usageStatus.credits)
     }
 
@@ -4497,7 +4497,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             now: Date(timeIntervalSince1970: 1_781_700_000),
             route: .oauthAPI
         )
-        let quota = usage.quota
+        let quota = try XCTUnwrap(usage.quota)
 
         XCTAssertEqual(quota.usedPercent ?? -1, 10, accuracy: 0.01)
         XCTAssertEqual(usage.source, .apiKey)
@@ -4545,7 +4545,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             route: .manualCookie("-H 'Cookie: foo=bar; baz=qux'")
         )
 
-        XCTAssertEqual(usage.quota.usedPercent ?? -1, 25, accuracy: 0.01)
+        XCTAssertEqual(usage.quota?.usedPercent ?? -1, 25, accuracy: 0.01)
         XCTAssertEqual(usage.source, .manualCookie)
     }
 
@@ -4600,7 +4600,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
         let usage = try await fetcher.fetchUsageStatus(route: .oauthAPI)
 
-        XCTAssertEqual(usage.quota.usedPercent ?? -1, 15, accuracy: 0.01)
+        XCTAssertEqual(usage.quota?.usedPercent ?? -1, 15, accuracy: 0.01)
         XCTAssertEqual(usage.source, .oauth)
         XCTAssertEqual(importer.callCount, 0)
     }
@@ -4647,7 +4647,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             route: .automatic(cookieHeader: nil, importsBrowserCookies: true)
         )
 
-        XCTAssertEqual(usage.quota.usedPercent ?? -1, 35, accuracy: 0.01)
+        XCTAssertEqual(usage.quota?.usedPercent ?? -1, 35, accuracy: 0.01)
         XCTAssertEqual(usage.source, .browserCookie)
     }
 
@@ -4728,7 +4728,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             route: .automatic(cookieHeader: "session=expired", importsBrowserCookies: false)
         )
 
-        XCTAssertEqual(usage.quota.usedPercent ?? -1, 45, accuracy: 0.01)
+        XCTAssertEqual(usage.quota?.usedPercent ?? -1, 45, accuracy: 0.01)
         XCTAssertEqual(usage.source, .oauth)
         XCTAssertEqual(recorder.requests.count, 3)
         XCTAssertEqual(recorder.requests.first?.url?.path, "/backend-api/me")
@@ -4808,7 +4808,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             route: .automatic(cookieHeader: "session=other-account", importsBrowserCookies: false)
         )
 
-        XCTAssertEqual(usage.quota.usedPercent ?? -1, 33, accuracy: 0.01)
+        XCTAssertEqual(usage.quota?.usedPercent ?? -1, 33, accuracy: 0.01)
         XCTAssertEqual(usage.source, .oauth)
         XCTAssertEqual(recorder.requests.count, 2)
         XCTAssertEqual(recorder.requests.first?.url?.path, "/backend-api/me")
@@ -5297,7 +5297,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             credentialPersistence: manager
         ).fetchUsageStatus(route: .oauthAPI)
 
-        XCTAssertEqual(usage.quota.usedPercent ?? -1, 19, accuracy: 0.01)
+        XCTAssertEqual(usage.quota?.usedPercent ?? -1, 19, accuracy: 0.01)
         let activeAuth = try String(contentsOf: authURL)
         XCTAssertTrue(activeAuth.contains("active-refreshed-access"))
         XCTAssertTrue(activeAuth.contains("active-refreshed-refresh"))
@@ -12342,7 +12342,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
             CodexHookAdapter.chooseSignal(
                 eventName: "PostToolUse",
                 payload: ["exitStatus": 1]
-            ).displayState == .blocked
+            ) == .toolDone,
+            "A failed tool step is reported back to the agent, which carries on"
         )
         XCTAssert(
             CodexHookAdapter.chooseSignal(
@@ -12426,9 +12427,35 @@ final class AgentSignalLightCoreTests: XCTestCase {
             "codex-vscode"
         )
         XCTAssertEqual(
-            CodexHookAdapter.chooseSignal(eventName: "PostToolUse", payload: payload),
+            CodexHookAdapter.chooseSignal(eventName: "Stop", payload: payload),
             .blocked
         )
+    }
+
+    func testSingleToolFailuresNeverTurnTheLightRed() {
+        // Shape of a real Claude Code PostToolUseFailure payload for a non-zero Bash exit.
+        let claudeFailure: [String: Any] = [
+            "hook_event_name": "PostToolUseFailure",
+            "session_id": "fixture-session",
+            "tool_name": "Bash",
+            "tool_input": ["command": "grep fixture missing.txt"],
+            "error": "Exit code 1",
+            "is_interrupt": false
+        ]
+        XCTAssertEqual(ClaudeHookAdapter.chooseSignal(eventName: nil, payload: claudeFailure), .toolDone)
+        XCTAssertEqual(ClaudeHookAdapter.chooseSignal(eventName: "PostToolUseFailure", payload: claudeFailure), .toolDone)
+        XCTAssertEqual(ClaudeHookAdapter.displayEventName(eventName: nil, payload: claudeFailure),
+                       "PostToolUseFailure:Bash", "The failure stays visible in recent events")
+        XCTAssertEqual(CodexHookAdapter.chooseSignal(eventName: "PostToolUse",
+                                                     payload: ["tool_response": ["error": "exit 2"], "status": "failed"]), .toolDone)
+        XCTAssertEqual(GenericHookAdapter.chooseSignal(eventName: "ToolFailed", payload: ["error": "boom"]), .toolDone)
+        XCTAssertEqual(GenericHookAdapter.chooseSignal(eventName: "PreToolUse", payload: ["signal": "permission"]), .permission,
+                       "An explicit signal still wins")
+
+        // Turn-level failures still need attention.
+        XCTAssertEqual(ClaudeHookAdapter.chooseSignal(eventName: "StopFailure", payload: ["error": "rate_limit"]).displayState, .blocked)
+        XCTAssertEqual(ClaudeHookAdapter.chooseSignal(eventName: "Stop", payload: ["error": "api failure"]).displayState, .blocked)
+        XCTAssertEqual(GenericHookAdapter.chooseSignal(eventName: "RunFailed", payload: [:]).displayState, .blocked)
     }
 
     func testCodexHookAgentNameRecognizesJetBrainsTerminalEnvironment() {
@@ -12468,7 +12495,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "PostCompact", payload: [:]) == .toolDone)
         XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "WorktreeCreate", payload: [:]) == .working)
         XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "WorktreeRemove", payload: [:]).displayState == .needsReview)
-        XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "post_tool_use_failure", payload: [:]) == .blocked)
+        XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "post_tool_use_failure", payload: [:]) == .toolDone)
         XCTAssert(
             ClaudeHookAdapter.chooseSignal(
                 eventName: nil,
@@ -12503,7 +12530,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
             ClaudeHookAdapter.chooseSignal(
                 eventName: "PostToolUse",
                 payload: ["exitStatus": 1]
-            ).displayState == .blocked
+            ) == .toolDone,
+            "A failed tool step is reported back to the agent, which carries on"
         )
         XCTAssert(
             ClaudeHookAdapter.chooseSignal(
@@ -14229,6 +14257,39 @@ final class AgentSignalLightCoreTests: XCTestCase {
                 "Older active fallback should not revive after completion for \(item.agent)."
             )
         }
+    }
+
+    @MainActor
+    func testExpiredSessionDoesNotFallBackToToolFailureAfterLaterWork() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let failedAt = now.addingTimeInterval(-60 * 60)
+        let sessionID = "claude-fixture-session"
+        func event(_ id: String, _ signal: AgentSignal, _ name: String, _ date: Date) -> SignalEventRecord {
+            SignalEventRecord(id: id, sessionID: sessionID, agent: "claude-code", signal: signal, event: name, updatedAt: date)
+        }
+        func snapshot(_ events: [SignalEventRecord]) throws -> SignalSnapshot {
+            try writeDocument(SignalStateDocument(aggregate: .idle, updatedAt: now, sessions: [:], events: events),
+                              in: fixture.store)
+            return makeMenuBarStatusModel(store: fixture.store).activitySnapshot
+        }
+
+        let resumed = try snapshot([
+            event("failure", .blocked, "PostToolUseFailure:Bash", failedAt),
+            event("next-tool", .working, "PreToolUse:Bash", failedAt.addingTimeInterval(30)),
+            event("tool-done", .toolDone, "PostToolUse:Bash", failedAt.addingTimeInterval(31))
+        ])
+        XCTAssertFalse(resumed.sessions.contains { $0.signal.displayState == .blocked },
+                       "Work after the failure shows the agent was not blocked")
+        XCTAssertNotEqual(resumed.aggregate.displayState, .blocked)
+
+        let unresolved = try snapshot([
+            event("earlier-tool", .working, "PreToolUse:Bash", failedAt.addingTimeInterval(-30)),
+            event("failure", .blocked, "PostToolUseFailure:Bash", failedAt)
+        ])
+        XCTAssertTrue(unresolved.sessions.contains { $0.signal.displayState == .blocked },
+                      "A failure with nothing after it is still reported")
     }
 
     @MainActor

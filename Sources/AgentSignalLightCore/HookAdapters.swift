@@ -32,6 +32,7 @@ public enum CodexHookAdapter {
         "UserPromptSubmit": .thinking,
         "PreToolUse": .working,
         "PostToolUse": .toolDone,
+        "PostToolUseFailure": .toolDone,
         "PermissionRequest": .permissionRequest,
         "Stop": .done,
         "SessionEnd": .sessionEnd
@@ -41,6 +42,13 @@ public enum CodexHookAdapter {
         if let explicit = firstString(payload, keys: ["signal", "signal_name", "lamp_signal"]),
            let signal = AgentSignal.normalized(explicit) {
             return signal
+        }
+
+        if let toolStep = toolStepSignal(
+            for: eventName ?? firstString(payload, keys: ["hook_event_name", "event_name", "event", "hook", "type"]),
+            in: eventToSignal
+        ) {
+            return toolStep
         }
 
         if let status = firstString(payload, keys: ["status", "state"]) {
@@ -204,7 +212,7 @@ public enum ClaudeHookAdapter {
         "PreToolUse": .working,
         "PostToolBatch": .toolDone,
         "PostToolUse": .toolDone,
-        "PostToolUseFailure": .blocked,
+        "PostToolUseFailure": .toolDone,
         "PreCompact": .working,
         "PostCompact": .toolDone,
         "SubagentStart": .subagentStart,
@@ -252,6 +260,10 @@ public enum ClaudeHookAdapter {
             return signal
         }
 
+        if let toolStep = toolStepSignal(for: eventName ?? self.eventName(payload: payload), in: eventToSignal) {
+            return toolStep
+        }
+
         if let status = firstString(payload, keys: ["status", "state"]) {
             let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if let signal = AgentSignal.normalized(normalizedStatus) {
@@ -280,6 +292,24 @@ public enum ClaudeHookAdapter {
         }
 
         return signal(for: resolvedEvent, in: eventToSignal) ?? .attention
+    }
+
+    /// Which Claude Code host started the hook. Claude Code exports its entrypoint to hook
+    /// processes; the desktop app's Code tab runs the same CLI binary, so the binary name or an
+    /// inherited `TERM_PROGRAM` cannot tell desktop from terminal.
+    public static func agentName(environment: [String: String]) -> String {
+        let entrypoint = (environment["CLAUDE_CODE_ENTRYPOINT"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !entrypoint.isEmpty {
+            if entrypoint == "claude-desktop" { return "claude-desktop" }
+            if entrypoint.contains("vscode") { return "claude-vscode" }
+            if entrypoint.contains("jetbrains") || entrypoint.contains("intellij") { return "claude-jetbrains" }
+            return "claude-code"
+        }
+        // Older desktop builds may not export an entrypoint. A terminal process carries its
+        // terminal's bundle identifier instead, so this does not misclassify the CLI.
+        if environment["__CFBundleIdentifier"] == "com.anthropic.claudefordesktop" { return "claude-desktop" }
+        return "claude-code"
     }
 
     public static func sessionKey(payload: [String: Any], environment: [String: String]) -> String {
@@ -405,6 +435,14 @@ public enum GenericHookAdapter {
             return signal
         }
 
+        if let toolStep = toolStepSignal(
+            for: eventName
+                ?? firstString(payload, keys: ["hook_event_name", "event_name", "event", "hook", "type", "action", "name"]),
+            in: eventToSignal
+        ) {
+            return toolStep
+        }
+
         if let status = firstString(payload, keys: ["status", "state", "phase", "result", "outcome"]) {
             if let signal = AgentSignal.normalized(status) {
                 return signal
@@ -515,6 +553,20 @@ private func normalizedEventMap(_ events: [String: AgentSignal]) -> [String: Age
 private func signal(for eventName: String?, in events: [String: AgentSignal]) -> AgentSignal? {
     guard let eventName else { return nil }
     return events[normalizedEventName(eventName)]
+}
+
+/// Events about a single tool step. A failed step (a non-zero exit, a missing file, a
+/// rejected edit) is handed back to the agent, which carries on, so it never means the
+/// agent is blocked. Turn-level failures such as `StopFailure` still do.
+private let toolStepEvents = Set([
+    "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+    "ToolStart", "ToolCall", "ToolDone", "ToolFinished", "ToolCompleted", "ToolFailed", "ToolError"
+].map(normalizedEventName))
+
+/// The signal for a tool-step event, ignoring failure fields in its payload; nil for other events.
+private func toolStepSignal(for eventName: String?, in events: [String: AgentSignal]) -> AgentSignal? {
+    guard let eventName, toolStepEvents.contains(normalizedEventName(eventName)) else { return nil }
+    return signal(for: eventName, in: events) ?? .toolDone
 }
 
 private func normalizedEventName(_ value: String) -> String {

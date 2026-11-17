@@ -40,7 +40,9 @@ final class KeychainSecretStore: SecretStoring, @unchecked Sendable {
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let status = KeychainInteractionPolicy.perform(allowInteraction: true) {
+            SecItemCopyMatching(query as CFDictionary, &result)
+        }
         if status == errSecItemNotFound {
             return nil
         }
@@ -59,11 +61,13 @@ final class KeychainSecretStore: SecretStoring, @unchecked Sendable {
         query[kSecUseAuthenticationContext as String] = context
 
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let status = KeychainInteractionPolicy.perform(allowInteraction: false) {
+            SecItemCopyMatching(query as CFDictionary, &result)
+        }
         switch status {
         case errSecSuccess:
             return result as? Data
-        case errSecItemNotFound, errSecInteractionNotAllowed, errSecUserCanceled, errSecAuthFailed:
+        case errSecItemNotFound, errSecInteractionRequired, errSecInteractionNotAllowed, errSecUserCanceled, errSecAuthFailed:
             return nil
         default:
             throw StoreError.unexpectedStatus(status)
@@ -86,7 +90,7 @@ final class KeychainSecretStore: SecretStoring, @unchecked Sendable {
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let updateStatus = KeychainInteractionPolicy.perform(allowInteraction: true) { SecItemUpdate(query as CFDictionary, attributes as CFDictionary) }
         if updateStatus == errSecSuccess {
             return
         }
@@ -95,7 +99,7 @@ final class KeychainSecretStore: SecretStoring, @unchecked Sendable {
         }
 
         attributes.forEach { query[$0.key] = $0.value }
-        let addStatus = SecItemAdd(query as CFDictionary, nil)
+        let addStatus = KeychainInteractionPolicy.perform(allowInteraction: true) { SecItemAdd(query as CFDictionary, nil) }
         guard addStatus == errSecSuccess else {
             throw StoreError.unexpectedStatus(addStatus)
         }
@@ -106,7 +110,7 @@ final class KeychainSecretStore: SecretStoring, @unchecked Sendable {
     }
 
     func delete(key: String) throws {
-        let status = SecItemDelete(baseQuery(for: key) as CFDictionary)
+        let status = KeychainInteractionPolicy.perform(allowInteraction: true) { SecItemDelete(baseQuery(for: key) as CFDictionary) }
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw StoreError.unexpectedStatus(status)
         }

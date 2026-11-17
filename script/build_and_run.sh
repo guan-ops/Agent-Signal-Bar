@@ -75,6 +75,24 @@ exit(hasDebugWindow ? 0 : 1)
 SWIFT
 }
 
+verify_debug_window_health() {
+  local health_file="$1"
+  /usr/bin/python3 - "$health_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.exists():
+    raise SystemExit("debug window health file missing")
+data = json.loads(path.read_text())
+if data.get("window_visible") is not True:
+    raise SystemExit(f"window_visible was {data.get('window_visible')!r}, expected True")
+if data.get("title") != "Agent Signal Bar":
+    raise SystemExit(f"title was {data.get('title')!r}, expected 'Agent Signal Bar'")
+PY
+}
+
 verify_status_item_health() {
   local health_file="$1"
   /usr/bin/python3 - "$health_file" <<'PY'
@@ -155,15 +173,21 @@ case "$MODE" in
     restore_normal_menu_bar_launch
     ;;
   --ui-verify|ui-verify)
-    run_app_binary --debug-window
+    HEALTH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-signal-debug-window-health.XXXXXX")"
+    HEALTH_FILE="$HEALTH_DIR/debug-window-health.json"
+    trap 'rm -rf "$HEALTH_DIR"' EXIT
+    run_app_binary --debug-window --debug-window-health "$HEALTH_FILE"
+    # The app reports its own window; reading window titles from CGWindowList needs Screen
+    # Recording permission, so that check alone fails on machines that never granted it.
     for _ in 1 2 3 4 5 6 7 8 9 10; do
-      if pgrep -x "$APP_NAME" >/dev/null && verify_debug_window; then
+      if pgrep -x "$APP_NAME" >/dev/null \
+        && { verify_debug_window_health "$HEALTH_FILE" >/dev/null 2>&1 || verify_debug_window; }; then
         exit 0
       fi
       sleep 0.5
     done
     pgrep -x "$APP_NAME" >/dev/null
-    verify_debug_window
+    verify_debug_window_health "$HEALTH_FILE" || verify_debug_window
     ;;
   *)
     usage >&2

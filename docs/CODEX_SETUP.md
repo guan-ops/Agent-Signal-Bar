@@ -90,3 +90,11 @@ Codex CLI/TUI 仍推荐项目级 hook，也就是当前仓库里的 `.codex/hook
 ```
 
 完整事件列表以 `./script/install_hooks.py --target codex --codex-scope project --dry-run` 输出为准。
+
+## 数据目录与连接检查
+
+应用内“连接”页支持选择包含 `sessions` 文件夹的 Codex 数据目录。优先使用用户选择的路径，其次使用应用进程收到的 `CODEX_HOME`，最后使用 `~/.codex`。从 Finder 启动时若终端环境变量不可见，可直接选择目录。活动监控、Token 历史扫描和应用内 Codex Hook 安装共用该路径；目录选择不切换账号凭据。
+
+“检查连接”会检查目录及 Hook 配置。目录不存在、不可读取、没有日志和已读取事件分别显示；已读取事件会显示最近事件时间。Hook 已配置并不表示已收到客户端事件，请在客户端发起一个任务确认。
+
+应用内 Hook 的预览、安装、修复与卸载由内置 Swift 代码执行，不需要 Python。随包 CLI 也支持 `agent-signal install-hooks --target codex --install`。源码中的 Python 安装脚本仍作为开发维护工具保留。

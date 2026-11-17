@@ -274,8 +274,8 @@ struct AgentSignalChecks {
             "Codex hook event matching should tolerate snake case and whitespace"
         )
         try expect(
-            ClaudeHookAdapter.chooseSignal(eventName: "post_tool_use_failure", payload: [:]) == .blocked,
-            "Claude hook event matching should tolerate snake case"
+            ClaudeHookAdapter.chooseSignal(eventName: "post_tool_use_failure", payload: [:]) == .toolDone,
+            "Claude hook event matching should tolerate snake case; a failed tool step is not blocked"
         )
         try expect(
             ClaudeHookAdapter.chooseSignal(eventName: "StopFailure", payload: [:]) == .blocked,
@@ -322,7 +322,7 @@ struct AgentSignalChecks {
             "Claude display event should include tool name"
         )
         try expect(
-            CodexHookAdapter.chooseSignal(eventName: "PostToolUse", payload: ["exitStatus": 1]) == .blocked,
+            CodexHookAdapter.chooseSignal(eventName: "Stop", payload: ["exitStatus": 1]) == .blocked,
             "failure marker keys should tolerate camelCase"
         )
     }
@@ -377,21 +377,27 @@ struct AgentSignalChecks {
     }
 
     private static func checkCodexFailurePayloadMapsToBlocked() throws {
-        let signal = CodexHookAdapter.chooseSignal(
-            eventName: "PostToolUse",
-            payload: ["exit_status": 1]
+        // A failed tool step is handed back to the agent; only turn-level failures block.
+        try expect(
+            CodexHookAdapter.chooseSignal(eventName: "PostToolUse", payload: ["exit_status": 1]) == .toolDone,
+            "a failed tool step should map to tool done"
         )
-
-        try expect(signal == .blocked, "non-zero exit status should map to blocked")
+        try expect(
+            CodexHookAdapter.chooseSignal(eventName: "Stop", payload: ["exit_status": 1]) == .blocked,
+            "a turn-level non-zero exit status should map to blocked"
+        )
     }
 
     private static func checkClaudeFailurePayloadMapsToBlocked() throws {
-        let signal = ClaudeHookAdapter.chooseSignal(
-            eventName: "PostToolUse",
-            payload: ["exit_status": 1]
+        // A failed tool step is handed back to the agent; only turn-level failures block.
+        try expect(
+            ClaudeHookAdapter.chooseSignal(eventName: "PostToolUse", payload: ["exit_status": 1]) == .toolDone,
+            "Claude failed tool step should map to tool done"
         )
-
-        try expect(signal == .blocked, "Claude non-zero exit status should map to blocked")
+        try expect(
+            ClaudeHookAdapter.chooseSignal(eventName: "StopFailure", payload: [:]) == .blocked,
+            "Claude turn-level failure should map to blocked"
+        )
     }
 
     private static func checkCodexDesktopSessionParserMapsDesktopEvents() throws {

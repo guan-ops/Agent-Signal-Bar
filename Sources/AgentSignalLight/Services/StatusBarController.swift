@@ -8,7 +8,7 @@ import SwiftUI
 final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NSWindowDelegate {
     private let model: MenuBarStatusModel
     private let updater: SparkleUpdaterService
-    private let claudeSupport = ClaudeSupportModel()
+    private var claudeSupport: ClaudeSupportModel { model.claudeSupport }
     private let usageNavigation = UsageMenuNavigation()
     private var statusItem: NSStatusItem?
     private lazy var nativeStatusMenu: NSMenu = {
@@ -77,6 +77,15 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     private func bind() {
+        model.$claudeUsageRevision.sink { [weak self] _ in
+            Task { @MainActor in self?.writeStatusItemHealth() }
+        }.store(in: &cancellables)
+        model.$codexConnectionHealth.sink { [weak self] _ in
+            Task { @MainActor in self?.writeStatusItemHealth() }
+        }.store(in: &cancellables)
+        model.$claudeHooksConfigured.sink { [weak self] _ in
+            Task { @MainActor in self?.writeStatusItemHealth() }
+        }.store(in: &cancellables)
         model.$snapshot.sink { [weak self] _ in
             Task { @MainActor in self?.updateStatusItem() }
         }
@@ -734,6 +743,19 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         let button = statusItem?.button
         let payload: [String: Any] = [
             "schema_version": 1,
+            "floating_usage_provider": model.floatingUsageProviderName,
+            "codex_credit_badge": !model.isClaudeFloatingUsage && model.codexFloatingCredits != nil,
+            "codex_credits_remaining": model.latestCodexCredits.map { $0.remaining as Any } ?? NSNull(),
+            "floating_usage_tokens": model.floatingUsageTokens(for: model.floatingSignalTokenBadgeWindow).map { $0 as Any } ?? NSNull(),
+            "claude_source": model.claudeSupport.snapshot?.source as Any? ?? NSNull(),
+            "claude_badge": model.claudeFloatingBadgeText,
+            "claude_window_count": model.claudeSupport.snapshot?.windows.count as Any? ?? NSNull(),
+            "claude_history_incomplete": model.claudeSupport.historySummary().month.incompleteRequests,
+            "claude_quota_available": model.claudeFloatingRemainingPercent() != nil,
+            "claude_quota_message": model.claudeFloatingQuotaMessage,
+            "codex_connection": model.codexConnectionMessage,
+            "claude_connection": model.claudeConnectionMessage,
+            "codex_data_directory": model.resolvedCodexDataDirectory,
             "status_bar_icon_enabled": model.isStatusBarIconEnabled,
             "status_item_exists": statusItem != nil,
             "button_exists": button != nil,
@@ -925,6 +947,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
             recoveryWindow.makeKeyAndOrderFront(nil)
+            writeDebugWindowHealth(recoveryWindow)
             return
         }
 
@@ -954,6 +977,25 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        writeDebugWindowHealth(window)
+    }
+
+    private func writeDebugWindowHealth(_ window: NSWindow) {
+        guard let healthFileURL = DebugLaunchOptions.debugWindowHealthFileURL else { return }
+        let payload: [String: Any] = [
+            "schema_version": 1,
+            "title": window.title,
+            "window_visible": window.isVisible,
+            "updated_at": ISO8601DateFormatter().string(from: Date())
+        ]
+        do {
+            try FileManager.default.createDirectory(at: healthFileURL.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: healthFileURL, options: .atomic)
+        } catch {
+            model.lastError = "Debug window health export failed: \(error.localizedDescription)"
+        }
     }
 
     private func configureRecoveryWindowChrome(_ window: NSWindow) {

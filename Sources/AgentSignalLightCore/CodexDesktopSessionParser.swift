@@ -543,7 +543,7 @@ private extension CodexDesktopSessionParser {
         if containsAny(originator, tokens: ["jetbrains"]) {
             return "codex-jetbrains"
         }
-        if containsAny(originator, tokens: ["codex desktop"]) {
+        if containsAny(originator, tokens: ["codex desktop", "codex_work_desktop", "codex_desktop"]) {
             return "codex-desktop"
         }
         if containsAny(combined, tokens: ["idea", "intellij"]) {

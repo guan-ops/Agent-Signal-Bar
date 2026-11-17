@@ -35,6 +35,10 @@ CODEX_EVENTS = [
     "Stop",
 ]
 
+# These hooks replace Claude Code's worktree lifecycle; a status-only command
+# must never register for them. merge_hooks removes registrations from old installs.
+CLAUDE_WORKTREE_EVENTS = ("WorktreeCreate", "WorktreeRemove")
+
 CLAUDE_EVENTS = [
     "ConfigChange",
     "CwdChanged",
@@ -61,8 +65,6 @@ CLAUDE_EVENTS = [
     "Notification",
     "Stop",
     "StopFailure",
-    "WorktreeCreate",
-    "WorktreeRemove",
     "SessionEnd",
 ]
 
@@ -965,6 +967,21 @@ def command_exists(command: str) -> bool:
     return shutil.which(command) is not None
 
 
+def resolve_claude_cli(home: Path) -> str | None:
+    custom = os.environ.get("AGENT_SIGNAL_CLAUDE_EXECUTABLE")
+    if custom:
+        return custom if Path(custom).is_file() and os.access(custom, os.X_OK) else None
+    discovered = shutil.which("claude")
+    if discovered:
+        return discovered
+    for directory in [home / ".local/bin", home / ".npm-global/bin", home / ".bun/bin",
+                      Path("/opt/homebrew/bin"), Path("/usr/local/bin")]:
+        candidate = directory / "claude"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def process_is_running(pattern: str) -> bool:
     try:
         result = subprocess.run(
@@ -994,11 +1011,13 @@ def print_claude_runtime_diagnostics(home: Path) -> None:
     log_path = home / "Library" / "Logs" / "Claude" / "main.log"
     log_text = read_recent_text(log_path)
     desktop_running = process_is_running("Claude")
-    cli_available = command_exists("claude")
+    cli_available = resolve_claude_cli(home)
 
     if not cli_available:
-        print("[diagnostic] Claude CLI: not found in PATH")
-        print("  effect: terminal Claude Code sessions cannot be exercised with `claude` from this environment.")
+        print("[diagnostic] Claude CLI: not found in PATH or standard installation directories")
+        print("  effect: install Claude Code or choose its executable in Claude usage settings.")
+    else:
+        print(f"[info] Claude Code CLI: {cli_available}")
 
     if "Claude Code requires a Pro or Max subscription" in log_text:
         print("[diagnostic] Claude Code runtime: blocked")
@@ -1009,7 +1028,7 @@ def print_claude_runtime_diagnostics(home: Path) -> None:
         print(f"  log: {log_path}")
         print("  effect: Claude Code hook events may not fire until Claude Code authorization succeeds.")
     elif desktop_running:
-        print("[diagnostic] Claude Desktop: running")
+        print("[info] Claude Desktop: running")
         print("  note: Desktop app presence alone is not a Claude Code hook event; thinking/working states require Claude Code/local-agent hook events.")
 
 

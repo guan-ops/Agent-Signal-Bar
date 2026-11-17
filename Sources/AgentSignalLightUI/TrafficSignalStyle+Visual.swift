@@ -5,7 +5,7 @@ extension TrafficSignalStyle {
         switch self {
         case .trafficLight:
             return .trafficLight
-        case .macOS:
+        case .macOS, .singleLamp:
             return .macOS
         }
     }

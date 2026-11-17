@@ -16,7 +16,7 @@ enum CostUsageCacheIO {
         case .codex:
             16
         case .claude, .vertexai:
-            4
+            6 // Reparse Cowork aliases, requestless deduplication and incomplete proxy rows.
         default:
             1
         }

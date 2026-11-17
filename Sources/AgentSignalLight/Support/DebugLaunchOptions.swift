@@ -30,13 +30,27 @@ enum DebugLaunchOptions {
     }
 
     static var statusItemHealthFileURL: URL? {
-        let arguments = ProcessInfo.processInfo.arguments
-        if let index = arguments.firstIndex(of: "--status-item-health"),
+        healthFileURL(argument: "--status-item-health", environmentKey: "AGENT_SIGNAL_LIGHT_STATUS_ITEM_HEALTH_FILE")
+    }
+
+    /// Where `--ui-verify` reads whether the main window opened. Window titles from CGWindowList need
+    /// Screen Recording permission, so the app reports its own window instead.
+    static var debugWindowHealthFileURL: URL? {
+        healthFileURL(argument: "--debug-window-health", environmentKey: "AGENT_SIGNAL_LIGHT_DEBUG_WINDOW_HEALTH_FILE")
+    }
+
+    static func healthFileURL(
+        argument: String,
+        environmentKey: String,
+        arguments: [String] = ProcessInfo.processInfo.arguments,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL? {
+        if let index = arguments.firstIndex(of: argument),
            arguments.indices.contains(arguments.index(after: index)) {
             return URL(fileURLWithPath: arguments[arguments.index(after: index)])
         }
 
-        guard let rawValue = ProcessInfo.processInfo.environment["AGENT_SIGNAL_LIGHT_STATUS_ITEM_HEALTH_FILE"],
+        guard let rawValue = environment[environmentKey],
               !rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
             return nil

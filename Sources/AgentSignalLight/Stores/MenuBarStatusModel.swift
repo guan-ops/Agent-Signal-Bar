@@ -26,6 +26,21 @@ enum SignalLightAgentScopeGroup: Int, CaseIterable, Hashable {
     case other
 }
 
+enum SignalLightProvider: String, CaseIterable {
+    case codex = "Codex"
+    case claude = "Claude"
+
+    var scopes: Set<SignalLightAgentScope> {
+        self == .codex ? SignalLightAgentScope.codexCases : SignalLightAgentScope.claudeCases
+    }
+
+    static func matching(_ session: SessionStatus) -> Self? {
+        if SignalLightAgentScope.codex.matches(session: session) { return .codex }
+        if SignalLightAgentScope.claude.matches(session: session) { return .claude }
+        return nil
+    }
+}
+
 enum SignalLightAgentScope: String, CaseIterable, Hashable {
     case codex
     case claude
@@ -178,8 +193,7 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
                 || normalizedAgent == "codex-jetbrains"
                 || normalizedSessionID.hasPrefix("codex-idea:")
         case .claudeCode:
-            return sourceKey == "claude:terminal"
-                || sourceKey == "claude:desktop"
+            return sourceKey.hasPrefix("claude:")
                 || normalizedAgent == "claude-code"
                 || normalizedAgent == "claude-cli"
                 || normalizedAgent == "claude-desktop"
@@ -409,6 +423,10 @@ final class MenuBarStatusModel: ObservableObject {
     @Published private(set) var signalLightAgentSelectionMode: SignalLightAgentSelectionMode
     @Published var statusMenuMode: StatusMenuMode
     @Published var isCodexDesktopMonitoringEnabled: Bool
+    @Published var isClaudeUIStatusMonitoringEnabled: Bool
+    /// In manual selection, light up another agent's activity while the selected agents are idle.
+    @Published private(set) var isSignalLightIdleFallbackEnabled: Bool
+    @Published private(set) var claudeUIObservation: ClaudeDesktopUIActivityMonitor.Observation = .disabled
     @Published var isClaudeDesktopMonitoringEnabled: Bool
     @Published var appLanguage: AppLanguage
     @Published var appTheme: AppTheme
@@ -419,7 +437,11 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var settingsGlassEffect: SettingsGlassEffect
     @Published var isLowPowerModeEnabled: Bool
     @Published var isNewZealandTrafficLightModeEnabled: Bool
-    @Published var isMonitoringPaused = false
+    @Published var isMonitoringPaused = false {
+        // Every Claude refresh entry point (menu, settings, floating panel) goes through
+        // ClaudeSupportModel.refresh, so pausing there covers them all, as Codex does.
+        didSet { claudeSupport.isMonitoringPaused = isMonitoringPaused }
+    }
     @Published var isFloatingSignalEnabled: Bool
     @Published var floatingSignalScale: FloatingSignalScale
     @Published var floatingSignalVisualScale: CGFloat
@@ -502,16 +524,31 @@ final class MenuBarStatusModel: ObservableObject {
     private let store: SignalStateStore
     private let userDefaults: UserDefaults
     private let launchAtLoginManager: LaunchAtLoginManager
+    @Published private(set) var codexDataDirectory: String = ""
+    @Published private(set) var codexConnectionHealth: CodexConnectionHealth?
+    @Published private(set) var lastCodexActivityAt: Date?
+    @Published private(set) var claudeHooksConfigured: Bool?
+    @Published private(set) var claudeHookCheckError: String?
+    @Published private(set) var isConnectionCheckRunning = false
+    private var connectionCheckGeneration = 0
+    private var connectionCheckPending = false
+
+    let claudeSupport: ClaudeSupportModel
+    @Published private(set) var claudeUsageRevision = 0
+    @Published private(set) var claudeFloatingQuotaWindowID: String = "five_hour"
+    private var claudeUsageObservation: AnyCancellable?
+    private let startsBackgroundMonitoring: Bool
+
     private let hookInstallManager: HookInstallManager
     private let diagnosticsExportManager: DiagnosticsExportManager
-    private let codexDesktopActivityMonitor: CodexDesktopActivityMonitor
+    private var codexDesktopActivityMonitor: CodexDesktopActivityMonitor
     private let codexAccountManager: any CodexAccountManaging
     private let codexUsageSnapshotStore: CodexAccountUsageSnapshotStore
     private let codexCLIStatusProbe: any CodexCLIStatusProbing
     private let codexRPCStatusProbe: any CodexRPCStatusProbing
     private let codexServiceStatusFetcher: any CodexServiceStatusFetching
     private let codexRateLimitFetcher: CodexRateLimitFetcher
-    private let codexTokenActivityScanner: any CodexTokenActivityScanning
+    private var codexTokenActivityScanner: any CodexTokenActivityScanning
     private let tokenActivityScanObserver: ((TokenActivityScanDisposition) -> Void)?
     private let performsAccountSwitchBackgroundRefreshes: Bool
     private let nowProvider: @Sendable () -> Date
@@ -585,6 +622,7 @@ final class MenuBarStatusModel: ObservableObject {
     // Continue periodic discovery for CLI-only/new files, without a minute-by-minute
     // scan of unchanged history. Live token changes retain the normal 60-second interval.
     private static let tokenActivityIdleRefreshInterval: TimeInterval = 300
+    private static let signalLightIdleFallbackKey = "signalLightIdleFallbackEnabled"
     private static let tokenActivityRetryBaseInterval: TimeInterval = 5
     private static let unknownLiveTokenSessionKey = "__unknown__"
     private static let cachedLatestAgentQuotaKey = "cachedLatestAgentQuota"
@@ -665,7 +703,7 @@ final class MenuBarStatusModel: ObservableObject {
         launchAtLoginManager: LaunchAtLoginManager = LaunchAtLoginManager(),
         hookInstallManager: HookInstallManager = HookInstallManager(),
         diagnosticsExportManager: DiagnosticsExportManager = DiagnosticsExportManager(),
-        codexDesktopActivityMonitor: CodexDesktopActivityMonitor = CodexDesktopActivityMonitor(replaysInitialHistory: true),
+        codexDesktopActivityMonitor: CodexDesktopActivityMonitor? = nil,
         codexDesktopPollQueue: DispatchQueue = DispatchQueue(
             label: "com.agentsignallight.codex-desktop-poll"
         ),
@@ -675,20 +713,27 @@ final class MenuBarStatusModel: ObservableObject {
         codexRPCStatusProbe: any CodexRPCStatusProbing = CodexRPCStatusProbe(),
         codexServiceStatusFetcher: any CodexServiceStatusFetching = CodexServiceStatusFetcher(),
         codexRateLimitFetcher: CodexRateLimitFetcher? = nil,
-        codexTokenActivityScanner: any CodexTokenActivityScanning = CodexTokenActivityScanner(),
+        codexTokenActivityScanner: (any CodexTokenActivityScanning)? = nil,
         tokenActivityScanObserver: ((TokenActivityScanDisposition) -> Void)? = nil,
         performsAccountSwitchBackgroundRefreshes: Bool = true,
         nowProvider: @escaping @Sendable () -> Date = { Date() },
         codexPlatformPresenceMonitor: CodexPlatformPresenceMonitor = CodexPlatformPresenceMonitor(),
-        updateChecker: GitHubReleaseUpdateChecker = GitHubReleaseUpdateChecker()
+        updateChecker: GitHubReleaseUpdateChecker = GitHubReleaseUpdateChecker(),
+        claudeSupport: ClaudeSupportModel? = nil
     ) {
+        self.startsBackgroundMonitoring = startsMonitoring
+        self.claudeSupport = claudeSupport ?? ClaudeSupportModel(defaults: userDefaults,
+            versionDetector: { ClaudeCodeVersion.detect(binary: $0, allowExecution: $1) })
+        self.claudeFloatingQuotaWindowID = userDefaults.string(forKey: "claude.floatingQuotaWindow") ?? "five_hour"
         self.store = store
         self.userDefaults = userDefaults
         self.costCurrency = CostCurrencyStore(defaults: userDefaults, now: nowProvider)
         self.launchAtLoginManager = launchAtLoginManager
         self.hookInstallManager = hookInstallManager
         self.diagnosticsExportManager = diagnosticsExportManager
-        self.codexDesktopActivityMonitor = codexDesktopActivityMonitor
+        let selectedDirectory = userDefaults.string(forKey: CodexDataPaths.preferenceKey)
+        self.codexDataDirectory = selectedDirectory ?? ""
+        self.codexDesktopActivityMonitor = codexDesktopActivityMonitor ?? CodexDesktopActivityMonitor(selectedPath: selectedDirectory, replaysInitialHistory: true)
         self.codexDesktopPollQueue = codexDesktopPollQueue
         self.codexAccountManager = codexAccountManager
         self.codexUsageSnapshotStore = codexUsageSnapshotStore
@@ -698,7 +743,7 @@ final class MenuBarStatusModel: ObservableObject {
         self.codexRateLimitFetcher = codexRateLimitFetcher ?? CodexRateLimitFetcher(
             credentialPersistence: codexAccountManager as? any CodexRefreshedCredentialPersisting
         )
-        self.codexTokenActivityScanner = codexTokenActivityScanner
+        self.codexTokenActivityScanner = codexTokenActivityScanner ?? CodexTokenActivityScanner(selectedPath: selectedDirectory)
         self.tokenActivityScanObserver = tokenActivityScanObserver
         self.performsAccountSwitchBackgroundRefreshes = performsAccountSwitchBackgroundRefreshes
         self.nowProvider = nowProvider
@@ -985,6 +1030,9 @@ final class MenuBarStatusModel: ObservableObject {
         }
         isCodexDesktopMonitoringEnabled =
             userDefaults.object(forKey: "isCodexDesktopMonitoringEnabled") as? Bool ?? true
+        isClaudeUIStatusMonitoringEnabled = userDefaults.bool(forKey: "isClaudeUIStatusMonitoringEnabled")
+        isSignalLightIdleFallbackEnabled =
+            userDefaults.object(forKey: Self.signalLightIdleFallbackKey) as? Bool ?? true
         isClaudeDesktopMonitoringEnabled =
             userDefaults.object(forKey: "isClaudeDesktopMonitoringEnabled") as? Bool ?? true
         let resolvedAutomaticUpdateCheckEnabled = false
@@ -1034,6 +1082,9 @@ final class MenuBarStatusModel: ObservableObject {
         currencyObservation = costCurrency.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+        claudeUsageObservation = self.claudeSupport.objectWillChange.sink { [weak self] _ in
+            Task { @MainActor [weak self] in self?.claudeUsageRevision &+= 1 }
+        }
         guard startsMonitoring else { return }
         Task { [weak self] in await self?.costCurrency.refreshIfNeeded() }
         desktopAppSessions = filteredPlatformPresenceSessions(codexPlatformPresenceMonitor.detectSessions())
@@ -1042,6 +1093,7 @@ final class MenuBarStatusModel: ObservableObject {
         }
         watcher?.start()
         startTimers()
+        checkConnections()
     }
 
     func reload() {
@@ -1782,6 +1834,8 @@ final class MenuBarStatusModel: ObservableObject {
         let resolvedScopes = scopes.intersection(selectableScopes)
         guard !resolvedScopes.isEmpty else { return }
 
+        followedSignalLightAgentScopeMemo = nil
+        idleFallbackSignalLightScopeMemo = nil
         signalLightAgentScopes = resolvedScopes
         signalLightAgentSelectionMode = .manual
         userDefaults.set(
@@ -1795,6 +1849,55 @@ final class MenuBarStatusModel: ObservableObject {
             forKey: "signalLightAgentSelectionMode"
         )
     }
+
+    /// Provider selection is exclusive, persistent, and does not disable monitoring of other providers.
+    func selectSignalLightProvider(_ provider: SignalLightProvider) {
+        setSignalLightAgentScopes(provider.scopes)
+        refreshFloatingUsage()
+    }
+
+    func followSignalLightAutomatically() {
+        followedSignalLightAgentScopeMemo = nil
+        idleFallbackSignalLightScopeMemo = nil
+        signalLightAgentSelectionMode = .following
+        userDefaults.set(signalLightAgentSelectionMode.rawValue, forKey: "signalLightAgentSelectionMode")
+    }
+
+    var selectedSignalLightProvider: SignalLightProvider? {
+        let scopes = displaySignalLightAgentScopes
+        guard !scopes.isEmpty else { return nil }
+        if scopes.allSatisfy({ $0.group == .codex }) { return .codex }
+        if scopes.allSatisfy({ $0.group == .claude }) { return .claude }
+        return nil
+    }
+
+    func selectClaudeFloatingQuotaWindow(_ id: String) {
+        guard id == "automatic" || claudeSupport.snapshot?.windows.contains(where: { $0.id == id }) == true
+            || (id == "extra_usage" && claudeSupport.snapshot?.hasExtraBudget == true)
+            || (id == "prepaid" && claudeSupport.snapshot?.prepaidBalance != nil) else { return }
+        claudeFloatingQuotaWindowID = id
+        userDefaults.set(id, forKey: "claude.floatingQuotaWindow")
+    }
+
+    func refreshFloatingUsage(force: Bool = false) {
+        guard !isMonitoringPaused, (startsBackgroundMonitoring || force) else { return }
+        if isClaudeFloatingUsage {
+            if isFloatingSignalEnabled || force { claudeSupport.refresh(force: force) }
+        } else if force { refreshTokenActivityIfNeeded(force: true) }
+    }
+
+    /// Opening the floating token panel is not a manual refresh: it keeps the normal
+    /// throttles, so it neither repeats quota requests nor starts the Claude CLI.
+    func refreshFloatingUsageForPanel() {
+        guard !isMonitoringPaused else { return }
+        if isClaudeFloatingUsage {
+            claudeSupport.refresh()
+        } else {
+            refreshTokenActivityIfNeeded(force: tokenActivityDays.isEmpty)
+        }
+    }
+
+    var showsCodexFloatingUsage: Bool { selectedSignalLightProvider != .claude }
 
     func toggleSignalLightAgentScope(_ scope: SignalLightAgentScope) {
         if signalLightAgentSelectionMode == .following {
@@ -1854,6 +1957,93 @@ final class MenuBarStatusModel: ObservableObject {
         invalidateCodexUsageRefresh()
     }
 
+    var resolvedCodexDataDirectory: String {
+        CodexDataPaths.primaryRoot(selectedPath: codexDataDirectory).path
+    }
+
+    var codexConnectionMessage: String {
+        if isMonitoringPaused { return text("监控已暂停", "Monitoring paused") }
+        if !isCodexDesktopMonitoringEnabled { return text("Codex 自动监控已关闭", "Codex auto monitoring is off") }
+        guard let health = codexConnectionHealth else { return text("正在检查会话目录…", "Checking session directories…") }
+        if !health.unreadable.isEmpty { return text("无法读取目录：", "Cannot read directory: ") + health.unreadable.joined(separator: ", ") }
+        if health.existingRoots == 0 { return text("未找到会话目录。请启动 Codex 任务或选择数据目录。", "No session directory found. Start a Codex task or select its data directory.") }
+        if health.recentFiles == 0 { return text("尚未找到会话日志。请在 Codex 中发起任务。", "No session logs yet. Start a task in Codex.") }
+        if let lastCodexActivityAt {
+            return text("已连接 · 最近事件：", "Connected · Last event: ") + lastCodexActivityAt.formatted(date: .abbreviated, time: .standard)
+        }
+        return text("已找到日志，等待新事件。请在 Codex 中发起任务。", "Logs found; waiting for an event. Start a task in Codex.")
+    }
+
+    var claudeConnectionMessage: String {
+        if isMonitoringPaused { return text("监控已暂停", "Monitoring paused") }
+        if let claudeHookCheckError {
+            // Running from a disk image is not a check failure; say what to do instead.
+            if claudeHookCheckError == localizedClaudeText(NativeHookInstaller.temporaryLocationMessage) { return claudeHookCheckError }
+            return text("无法检查 Hook：", "Cannot check hooks: ") + claudeHookCheckError
+        }
+        guard let configured = claudeHooksConfigured else { return text("尚未检查 Hook", "Hooks have not been checked") }
+        guard configured else { return text("Hook 未配置或需要修复，请点击安装。", "Hooks are missing or need repair. Click Install.") }
+        let latest = snapshot.recentEvents.filter { SignalLightProvider.matching(SessionStatus(sessionID: $0.sessionID, signal: $0.signal, updatedAt: $0.updatedAt, agent: $0.agent, lastEvent: $0.event)) == .claude && !($0.event ?? "").hasPrefix("PlatformPresence:") }.map(\.updatedAt).max()
+        if let latest { return text("Hook 已配置 · 最近事件：", "Hooks configured · Last event: ") + latest.formatted(date: .abbreviated, time: .standard) }
+        return text("Hook 已配置，尚未收到事件。请新建 Claude Code 会话并发送任务。", "Hooks configured; no event received yet. Start a new Claude Code session and send a task.")
+    }
+
+    func chooseCodexDataDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true
+        panel.message = text("选择包含 sessions 文件夹的 Codex 数据目录", "Select the Codex data directory containing the sessions folder")
+        if panel.runModal() == .OK, let url = panel.url { setCodexDataDirectory(url.path) }
+    }
+
+    func setCodexDataDirectory(_ path: String) {
+        let selected = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard selected != codexDataDirectory else { return }
+        codexDataDirectory = selected
+        userDefaults.set(selected, forKey: CodexDataPaths.preferenceKey)
+        invalidateCodexDevicePollContext()
+        invalidateTokenActivityScan()
+        clearLatestAgentTokenUsageCache()
+        clearTokenActivityCache()
+        latestLocalAgentQuotaObservation = nil
+        latestLocalAgentQuotaObservationCursor = nil
+        lastCodexActivityAt = nil; codexConnectionHealth = nil
+        codexDesktopActivityMonitor = CodexDesktopActivityMonitor(selectedPath: selected, replaysInitialHistory: true)
+        codexTokenActivityScanner = CodexTokenActivityScanner(selectedPath: selected)
+        checkConnections()
+        refreshTokenActivityIfNeeded(force: true)
+    }
+
+    func checkConnections() {
+        pollCodexDesktopActivity()
+        guard !isConnectionCheckRunning else { connectionCheckPending = true; return }
+        isConnectionCheckRunning = true
+        connectionCheckGeneration += 1
+        let generation = connectionCheckGeneration
+        var manager = hookInstallManager
+        manager.selectedCodexPath = codexDataDirectory
+        let capturedManager = manager
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let result = Result { try capturedManager.previewClaude() }
+            Task { @MainActor [weak self] in
+                guard let self, self.connectionCheckGeneration == generation else { return }
+                self.isConnectionCheckRunning = false
+                switch result {
+                case .success(let preview):
+                    self.claudeHookCheckError = nil
+                    self.claudeHooksConfigured = preview.output.contains(": already configured")
+                case .failure(let error):
+                    self.claudeHooksConfigured = nil
+                    self.claudeHookCheckError = self.localizedClaudeText(error.localizedDescription)
+                }
+                if self.connectionCheckPending {
+                    self.connectionCheckPending = false
+                    self.checkConnections()
+                }
+            }
+        }
+    }
+
     func setCodexDesktopMonitoringEnabled(_ enabled: Bool) {
         isCodexDesktopMonitoringEnabled = enabled
         userDefaults.set(enabled, forKey: "isCodexDesktopMonitoringEnabled")
@@ -1869,6 +2059,35 @@ final class MenuBarStatusModel: ObservableObject {
             invalidateTokenActivityScan()
         }
         pollDesktopAppPresence()
+    }
+
+    func setClaudeUIStatusMonitoringEnabled(_ enabled: Bool) {
+        isClaudeUIStatusMonitoringEnabled = enabled
+        userDefaults.set(enabled, forKey: "isClaudeUIStatusMonitoringEnabled")
+        if !enabled {
+            claudeUIObservation = .disabled
+            desktopAppSessions.removeAll { $0.sessionID == "claude-desktop:ui" }
+        }
+        pollDesktopAppPresence()
+    }
+
+    var claudeUIConnectionMessage: String {
+        if isMonitoringPaused { return text("监控已暂停", "Monitoring paused") }
+        if !isClaudeDesktopMonitoringEnabled { return text("Claude 自动监控已关闭", "Claude monitoring is off") }
+        switch claudeUIObservation {
+        case .disabled:
+            return text("云端 Code／Cowork 不一定产生本地 Hook；可开启桌面回复状态检测。", "Cloud Code/Cowork may emit no local hooks. Enable desktop response detection if needed.")
+        case .permissionRequired:
+            return text("需要为 Agent Signal Bar 开启辅助功能权限；无需钥匙串授权。", "Enable Accessibility for Agent Signal Bar; no Keychain access is needed.")
+        case .working:
+            return text("已识别 Claude 窗口正在回复。若灯仍显示 Codex，请选择 Claude 活动卡片。", "Claude is responding. Select the Claude activity card if the light is pinned to Codex.")
+        case .notResponding:
+            return text("当前窗口未显示正在回复；不代表后台任务已经完成。", "No response observed in the current window; background completion is unknown.")
+        case .notRunning:
+            return text("未发现 Claude 桌面应用", "Claude desktop is not running")
+        case .unavailable:
+            return text("暂时无法读取 Claude 窗口状态，请打开任务会话；后台任务状态未知。", "Cannot read Claude window status. Open the task conversation; background state is unknown.")
+        }
     }
 
     func setClaudeDesktopMonitoringEnabled(_ enabled: Bool) {
@@ -2268,7 +2487,9 @@ final class MenuBarStatusModel: ObservableObject {
 
     var displaySnapshot: SignalSnapshot {
         let displaySessions = combinedDisplaySessions()
-        let displayScopes = signalLightAgentScopesForDisplay(from: displaySessions)
+        let selectedScopes = signalLightAgentScopesForDisplay(from: displaySessions)
+        let displayScopes = signalLightIdleFallbackScope(from: displaySessions, selectedScopes: selectedScopes)
+            .map { [$0] } ?? selectedScopes
         let scopedDisplaySessions = displaySessions.filter { Self.session($0, matches: displayScopes) }
         let deduplicatedSessions = deduplicatedDisplaySessions(scopedDisplaySessions)
         let scopedRecentEvents = snapshot.recentEvents
@@ -2288,6 +2509,29 @@ final class MenuBarStatusModel: ObservableObject {
             stateFileURL: snapshot.stateFileURL,
             updatedAt: displayUpdatedAt
         )
+    }
+
+    /// What the status bar and floating lights show for the selected light agents, before
+    /// pause or debug overrides. The settings summary card must not mix in other agents.
+    var signalLightSummary: (signal: AgentSignal, updatedAt: Date?, sessionCount: Int) {
+        let display = displaySnapshot
+        let sessions = ActivityPresentation.visibleSessions(from: display, limit: nil)
+            .filter { session in SignalLightAgentScope.visibleCases.contains { $0.matches(session: session) } }
+        return (display.aggregate, display.updatedAt, sessions.count)
+    }
+
+    /// Which agent the light is showing, for the settings hero card and the menu bar panel.
+    var signalLightFollowingText: String? {
+        if let borrowed = signalLightIdleFallbackScope {
+            return text("暂时显示 ", "Showing ") + displayName(for: borrowed)
+        }
+        let scopes = displaySignalLightAgentScopes
+        if signalLightAgentSelectionMode == .following {
+            return scopes.isEmpty
+                ? text("自动跟随", "Auto Follow")
+                : text("自动跟随 · ", "Following ") + displayName(for: scopes)
+        }
+        return scopes.isEmpty ? nil : displayName(for: scopes)
     }
 
     var activitySnapshot: SignalSnapshot {
@@ -2740,6 +2984,7 @@ final class MenuBarStatusModel: ObservableObject {
         let pollTimer = Timer(timeInterval: timingProfile.statePollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.reloadFromWatcher()
+                self?.refreshFloatingUsage()
             }
         }
         pollTimer.tolerance = timingProfile.statePollTolerance
@@ -3185,6 +3430,10 @@ final class MenuBarStatusModel: ObservableObject {
                     else {
                         return
                     }
+                    self.codexConnectionHealth = pollResult.connection
+                    if let latest = pollResult.activities.compactMap(\.timestamp).max() {
+                        self.lastCodexActivityAt = max(self.lastCodexActivityAt ?? .distantPast, latest)
+                    }
                     let accountContextMatches =
                         self.codexLiveObservationGeneration == observationGeneration
                         && self.codexUsageAccountIdentity(for: self.codexCurrentAccount)
@@ -3195,6 +3444,14 @@ final class MenuBarStatusModel: ObservableObject {
                     // so retain them after an account switch. Quota remains
                     // account-scoped and is written only for the captured
                     // account context.
+                    // A selected activity directory can belong to another account.
+                    // Local tokens/activity are device observations; account quota needs matching provenance.
+                    let accountQuotaUpdates = self.codexDataDirectory.isEmpty ? quotaUpdates : quotaUpdates.filter { update in
+                        guard let accountRoot = self.codexCurrentAccount?.authFileURL.deletingLastPathComponent(),
+                              let source = update.tokenObservationCursor?.sourceID else { return false }
+                        let sessions = accountRoot.appendingPathComponent("sessions").resolvingSymlinksInPath().path + "/"
+                        return URL(fileURLWithPath: source).resolvingSymlinksInPath().path.hasPrefix(sessions)
+                    }
                     var latestSnapshot: SignalSnapshot?
                     var errorMessage: String?
                     do {
@@ -3208,7 +3465,7 @@ final class MenuBarStatusModel: ObservableObject {
                             )
                         }
                         if accountContextMatches {
-                            for quotaUpdate in quotaUpdates.sorted(by: {
+                            for quotaUpdate in accountQuotaUpdates.sorted(by: {
                                 $0.quota.updatedAt < $1.quota.updatedAt
                             }) {
                                 latestSnapshot = try store.applySessionQuota(
@@ -3223,7 +3480,7 @@ final class MenuBarStatusModel: ObservableObject {
                         errorMessage = error.localizedDescription
                     }
                     let applicableLocalQuotaUpdates = accountContextMatches
-                        ? quotaUpdates.filter {
+                        ? accountQuotaUpdates.filter {
                             self.shouldApplyLocalQuotaObservation(updatedAt: $0.quota.updatedAt)
                         }
                         : []
@@ -4279,7 +4536,7 @@ final class MenuBarStatusModel: ObservableObject {
                     lastSuccessfulAt: retainsCachedUsage ? previousState?.lastSuccessfulAt : nil,
                     lastAttemptedAt: usageAttemptedAt,
                     errorMessage: self.codexFetchErrorMessage(error),
-                    isStale: retainsCachedUsage && self.latestAgentQuota != nil
+                    isStale: retainsCachedUsage && (self.latestAgentQuota != nil || self.latestCodexCredits != nil)
                 )
                 self.persistCodexUsageSnapshotForCurrentAccount()
                 return
@@ -4299,22 +4556,28 @@ final class MenuBarStatusModel: ObservableObject {
                 return
             }
 
-            let quota = usageStatus.quota.attributed(to: expectedAccountScopeID)
+            let quota = usageStatus.quota?.attributed(to: expectedAccountScopeID)
             self.codexUsageFetchState = CodexUsageFetchState(
                 source: usageStatus.source,
-                lastSuccessfulAt: quota.updatedAt,
+                lastSuccessfulAt: quota?.updatedAt ?? usageStatus.credits?.updatedAt ?? usageAttemptedAt,
                 lastAttemptedAt: usageAttemptedAt,
                 errorMessage: nil,
                 isStale: false
             )
-            self.updateLatestAgentQuota(quota)
+            if let quota { self.updateLatestAgentQuota(quota) }
+            else {
+                // Credits only: no rate window may survive from an earlier response.
+                self.latestAgentQuota = nil
+                self.userDefaults.removeObject(forKey: Self.cachedLatestAgentQuotaKey)
+                self.clearStoredRemoteCodexQuota()
+            }
             self.latestCodexCredits = usageStatus.credits
             self.persistCodexUsageSnapshotForCurrentAccount()
 
-            do {
+            if let quota { do {
                 let snapshot = try store.applySessionQuota(
                     quota,
-                    sessionID: "codex-rate-limits",
+                    sessionID: Self.remoteCodexQuotaSessionID,
                     agent: "Codex",
                     updatedAt: quota.updatedAt
                 )
@@ -4324,7 +4587,7 @@ final class MenuBarStatusModel: ObservableObject {
                     "用量已获取，但无法更新本地状态：\(error.localizedDescription)",
                     "Usage was fetched, but local state could not be updated: \(error.localizedDescription)"
                 )
-            }
+            } }
 
             let resetCreditsAttemptedAt = Date()
             do {
@@ -4424,9 +4687,11 @@ final class MenuBarStatusModel: ObservableObject {
 
         isPlatformPresencePollInFlight = true
         let monitor = codexPlatformPresenceMonitor
+        let readClaudeUI = isClaudeDesktopMonitoringEnabled && isClaudeUIStatusMonitoringEnabled
 
         platformPresencePollQueue.async { [weak self] in
-            let detectedSessions = monitor.detectSessions()
+            let presence = monitor.detectSessions()
+            let observation = ClaudeDesktopUIActivityMonitor.observe(enabled: readClaudeUI)
 
             DispatchQueue.main.async { [weak self] in
                 Task { @MainActor in
@@ -4438,13 +4703,18 @@ final class MenuBarStatusModel: ObservableObject {
                         }
                         return
                     }
-                    let latestSessions = self.filteredPlatformPresenceSessions(detectedSessions)
-                    if latestSessions != self.desktopAppSessions {
-                        self.desktopAppSessions = latestSessions
-                    }
+                    self.acceptDesktopPresence(presence, claudeUI: observation)
                 }
             }
         }
+    }
+
+    func acceptDesktopPresence(_ presence: [SessionStatus], claudeUI observation: ClaudeDesktopUIActivityMonitor.Observation) {
+        guard !isMonitoringPaused else { desktopAppSessions = []; return }
+        let enabled = isClaudeDesktopMonitoringEnabled && isClaudeUIStatusMonitoringEnabled
+        claudeUIObservation = enabled ? observation : .disabled
+        let sessions = ClaudeDesktopUIActivityMonitor.applying(claudeUIObservation, to: presence)
+        desktopAppSessions = filteredPlatformPresenceSessions(sessions)
     }
 
     private var shouldPollPlatformPresence: Bool {
@@ -4504,13 +4774,37 @@ final class MenuBarStatusModel: ObservableObject {
             sessions.append(desktopSession)
         }
 
-        return sessions.sorted(by: Self.displaySessionSortPrecedes)
+        return Self.removingSupersededCodexRuntimeAliases(sessions).sorted(by: Self.displaySessionSortPrecedes)
+    }
+
+    /// A rollout can change its runtime label after a parser fix or reopening in another client.
+    /// Keep the latest observation of that exact UUID, without combining unrelated sessions.
+    static func removingSupersededCodexRuntimeAliases(_ sessions: [SessionStatus]) -> [SessionStatus] {
+        func rolloutID(_ session: SessionStatus) -> UUID? {
+            let parts = session.sessionID.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2,
+                  ["codex-desktop", "codex-vscode"].contains(String(parts[0])),
+                  session.lastEvent?.hasPrefix("Desktop") == true else { return nil }
+            return UUID(uuidString: String(parts[1]))
+        }
+        var newest: [UUID: SessionStatus] = [:]
+        for session in sessions {
+            guard let id = rolloutID(session) else { continue }
+            if let prior = newest[id], prior.updatedAt > session.updatedAt { continue }
+            if let prior = newest[id], prior.updatedAt == session.updatedAt,
+               prior.agent == "codex-desktop" { continue }
+            newest[id] = session
+        }
+        return sessions.filter { session in
+            guard let id = rolloutID(session), let selected = newest[id] else { return true }
+            return selected.sessionID == session.sessionID
+        }
     }
 
     private func recentActivityFallbackSessions(
         from recentEvents: [RecentSignalEvent],
         existingSessions: [SessionStatus],
-        completionCutoffsBySourceKey: [String: Date],
+        completionCutoffsBySourceKey: [String: CompletionCutoff],
         resolvingCutoffsBySourceKey: [String: Date],
         now: Date
     ) -> [SessionStatus] {
@@ -4521,12 +4815,29 @@ final class MenuBarStatusModel: ObservableObject {
             sessions.max(by: { lhs, rhs in lhs.updatedAt < rhs.updatedAt })
         }
         var handledSourceKeys: Set<String> = []
+        var latestResumedAtBySourceKey: [String: Date] = [:]
         var fallbackSessions: [SessionStatus] = []
 
         for event in recentEvents.sorted(by: { $0.updatedAt > $1.updatedAt }) {
             let sourceKey = ActivityPresentation.activitySourceKey(for: event)
             guard !handledSourceKeys.contains(sourceKey)
             else {
+                continue
+            }
+
+            // Newer real work from the same source means the agent got past the failure,
+            // even when that work is too old to show by itself. The store already lets such
+            // work overwrite `blocked`; without this an expired session fell back to the
+            // older failure and stayed red indefinitely.
+            if event.signal.displayState == .active, !Self.isPassiveActiveEvent(event) {
+                latestResumedAtBySourceKey[sourceKey] = max(
+                    latestResumedAtBySourceKey[sourceKey] ?? event.updatedAt,
+                    event.updatedAt
+                )
+            } else if event.signal.displayState == .blocked,
+                      let resumedAt = latestResumedAtBySourceKey[sourceKey],
+                      resumedAt > event.updatedAt {
+                handledSourceKeys.insert(sourceKey)
                 continue
             }
 
@@ -4711,15 +5022,30 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
-    private static func latestCompletionCutoffsBySourceKey(_ events: [RecentSignalEvent]) -> [String: Date] {
-        var cutoffs: [String: Date] = [:]
+    private struct CompletionCutoff {
+        let updatedAt: Date
+        let resumedSessionIDs: Set<String>
+        let resumedEventIDs: Set<String>
+    }
 
-        for event in events where event.signal.displayState == .completed {
+    private static func latestCompletionCutoffsBySourceKey(_ events: [RecentSignalEvent]) -> [String: CompletionCutoff] {
+        var cutoffs: [String: CompletionCutoff] = [:]
+        var newerActiveEvents: [String: [RecentSignalEvent]] = [:]
+
+        // recentEvents preserves newest-first append order. Persisted timestamps have
+        // second precision, so an earlier Stop must not hide a later task in that second.
+        for event in events {
             let sourceKey = ActivityPresentation.activitySourceKey(for: event)
-            if let existing = cutoffs[sourceKey], existing >= event.updatedAt {
+            if event.signal.displayState == .active, !isPassiveActiveEvent(event), event.event != "DesktopToolDone" {
+                newerActiveEvents[sourceKey, default: []].append(event)
+            }
+            guard event.signal.displayState == .completed else { continue }
+            if let existing = cutoffs[sourceKey], existing.updatedAt >= event.updatedAt {
                 continue
             }
-            cutoffs[sourceKey] = event.updatedAt
+            let resumed = newerActiveEvents[sourceKey, default: []].filter { $0.updatedAt == event.updatedAt }
+            cutoffs[sourceKey] = CompletionCutoff(updatedAt: event.updatedAt,
+                resumedSessionIDs: Set(resumed.map(\.sessionID)), resumedEventIDs: Set(resumed.map(\.id)))
         }
 
         return cutoffs
@@ -4741,7 +5067,7 @@ final class MenuBarStatusModel: ObservableObject {
 
     private static func isSupersededByCompletedRecentEvent(
         _ session: SessionStatus,
-        completionCutoffsBySourceKey: [String: Date]
+        completionCutoffsBySourceKey: [String: CompletionCutoff]
     ) -> Bool {
         guard !isPresenceSession(session),
               shouldCompletedEventSupersedeDisplayState(session.signal.displayState)
@@ -4750,27 +5076,27 @@ final class MenuBarStatusModel: ObservableObject {
         }
 
         let sourceKey = ActivityPresentation.activitySourceKey(for: session)
-        guard let completedAt = completionCutoffsBySourceKey[sourceKey] else {
+        guard let cutoff = completionCutoffsBySourceKey[sourceKey] else {
             return false
         }
-
-        return completedAt >= session.updatedAt
+        if cutoff.updatedAt == session.updatedAt, cutoff.resumedSessionIDs.contains(session.sessionID) { return false }
+        return cutoff.updatedAt >= session.updatedAt
     }
 
     private static func isSupersededByCompletedRecentEvent(
         _ event: RecentSignalEvent,
-        completionCutoffsBySourceKey: [String: Date]
+        completionCutoffsBySourceKey: [String: CompletionCutoff]
     ) -> Bool {
         guard event.signal.displayState == .active else {
             return false
         }
 
         let sourceKey = ActivityPresentation.activitySourceKey(for: event)
-        guard let completedAt = completionCutoffsBySourceKey[sourceKey] else {
+        guard let cutoff = completionCutoffsBySourceKey[sourceKey] else {
             return false
         }
-
-        return completedAt >= event.updatedAt
+        if cutoff.updatedAt == event.updatedAt, cutoff.resumedEventIDs.contains(event.id) { return false }
+        return cutoff.updatedAt >= event.updatedAt
     }
 
     private static func isSupersededByResolvingRecentEvent(
@@ -4938,6 +5264,13 @@ final class MenuBarStatusModel: ObservableObject {
 
     var signalLightAgentUnavailableHint: String? {
         guard signalLightAgentSelectionMode == .manual else { return nil }
+        if let borrowed = signalLightIdleFallbackScope {
+            let name = displayName(for: borrowed)
+            return text(
+                "已选 Agent 空闲，灯效暂时显示 \(name) 的状态；已选 Agent 开始工作后自动切回。",
+                "The selected agent is idle, so the light shows \(name) until the selected agent starts working."
+            )
+        }
         let selectedVisibleScopes = signalLightAgentScopes.intersection(Set(SignalLightAgentScope.visibleCases))
         guard !selectedVisibleScopes.isEmpty else { return nil }
 
@@ -5024,26 +5357,96 @@ final class MenuBarStatusModel: ObservableObject {
         return .following
     }
 
+    func setSignalLightIdleFallbackEnabled(_ enabled: Bool) {
+        isSignalLightIdleFallbackEnabled = enabled
+        userDefaults.set(enabled, forKey: Self.signalLightIdleFallbackKey)
+    }
+
+    /// The agent the light is borrowing right now, if any. The selection itself (menu
+    /// highlight, usage provider) is unchanged; only the lamp shows the other agent.
+    var signalLightIdleFallbackScope: SignalLightAgentScope? {
+        let displaySessions = combinedDisplaySessions()
+        return signalLightIdleFallbackScope(
+            from: displaySessions,
+            selectedScopes: signalLightAgentScopesForDisplay(from: displaySessions)
+        )
+    }
+
+    /// In manual mode, when no selected agent has anything beyond an idle session, light up
+    /// the most important other agent that is doing something. A selected agent that is
+    /// working, waiting or just finished always keeps the light.
+    private func signalLightIdleFallbackScope(
+        from displaySessions: [SessionStatus],
+        selectedScopes: Set<SignalLightAgentScope>
+    ) -> SignalLightAgentScope? {
+        guard isSignalLightIdleFallbackEnabled,
+              signalLightAgentSelectionMode == .manual,
+              !selectedScopes.isEmpty else { return nil }
+        func hasActivity(_ session: SessionStatus) -> Bool {
+            Self.isFollowCandidateSession(session) && session.signal.displayState != .ready
+        }
+        let selectedIsBusy = displaySessions.contains { session in
+            Self.session(session, matches: selectedScopes) && hasActivity(session)
+        }
+        guard !selectedIsBusy else { return nil }
+        let others = SignalLightAgentScope.visibleCases.filter { !selectedScopes.contains($0) }
+        let otherSessions = displaySessions.filter { session in
+            hasActivity(session) && !Self.session(session, matches: selectedScopes)
+        }
+        let candidate = followedSignalLightAgentScope(in: otherSessions, among: others)
+        idleFallbackSignalLightScopeMemo = stickySignalLightScope(
+            candidate, previous: idleFallbackSignalLightScopeMemo, sessions: otherSessions)
+        return idleFallbackSignalLightScopeMemo
+    }
+
     private func signalLightAgentScopesForDisplay(from displaySessions: [SessionStatus]) -> Set<SignalLightAgentScope> {
         switch signalLightAgentSelectionMode {
         case .manual:
             return signalLightAgentScopes.intersection(Set(SignalLightAgentScope.visibleCases))
         case .following:
-            guard let scope = followedSignalLightAgentScope(in: displaySessions) else {
-                return []
-            }
-            return [scope]
+            let candidate = followedSignalLightAgentScope(in: displaySessions)
+            followedSignalLightAgentScopeMemo = stickySignalLightScope(
+                candidate, previous: followedSignalLightAgentScopeMemo, sessions: displaySessions)
+            return followedSignalLightAgentScopeMemo.map { [$0] } ?? []
         }
     }
 
-    private func followedSignalLightAgentScope(in displaySessions: [SessionStatus]) -> SignalLightAgentScope? {
+    /// The agent the light followed last time, so two agents that are both working do not
+    /// make it flip on every event. Plain state: it is not observed by any view.
+    private var followedSignalLightAgentScopeMemo: SignalLightAgentScope?
+    private var idleFallbackSignalLightScopeMemo: SignalLightAgentScope?
+
+    /// Keep the previous choice while it is still working and nothing more urgent appeared.
+    /// A waiting, failing or blocked agent still takes over at once, and a finished or idle
+    /// agent hands over to one that is working.
+    private func stickySignalLightScope(
+        _ candidate: SignalLightAgentScope?,
+        previous: SignalLightAgentScope?,
+        sessions: [SessionStatus]
+    ) -> SignalLightAgentScope? {
+        guard let candidate else { return nil }
+        guard let previous, previous != candidate else { return candidate }
+        func topState(_ scope: SignalLightAgentScope) -> DisplayState? {
+            sessions.filter { scope.matches(session: $0) && Self.isFollowCandidateSession($0) }
+                .map(\.signal.displayState)
+                .max { $0.priority < $1.priority }
+        }
+        guard let previousState = topState(previous), previousState == .active,
+              topState(candidate)?.priority == previousState.priority else { return candidate }
+        return previous
+    }
+
+    private func followedSignalLightAgentScope(
+        in displaySessions: [SessionStatus],
+        among scopes: [SignalLightAgentScope] = SignalLightAgentScope.visibleCases
+    ) -> SignalLightAgentScope? {
         struct Candidate {
             let scope: SignalLightAgentScope
             let priority: Int
             let updatedAt: Date
         }
 
-        let candidates = SignalLightAgentScope.visibleCases.compactMap { scope -> Candidate? in
+        let candidates = scopes.compactMap { scope -> Candidate? in
             let matchingSessions = displaySessions.filter {
                 scope.matches(session: $0) && Self.isFollowCandidateSession($0)
             }
@@ -5299,7 +5702,25 @@ final class MenuBarStatusModel: ObservableObject {
         codexUsageFetchState = nil
         codexResetCreditsFetchState = nil
         userDefaults.removeObject(forKey: Self.cachedLatestAgentQuotaKey)
+        clearStoredRemoteCodexQuota()
     }
+
+    /// The fetched quota is also kept in the state file, where reloads and the next launch
+    /// would restore it. Drop it whenever the in-memory copy is no longer trusted (another
+    /// account, no account, or a response without rate windows). Local session-log quotas
+    /// are separate observations and are left alone.
+    private func clearStoredRemoteCodexQuota() {
+        do {
+            snapshot = try store.clearSessionQuota(sessionID: Self.remoteCodexQuotaSessionID)
+        } catch {
+            lastError = text(
+                "无法清除本地保存的旧额度：\(error.localizedDescription)",
+                "Could not clear the previously saved quota: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private static let remoteCodexQuotaSessionID = "codex-rate-limits"
 
     private func clearLatestAgentTokenUsageCache() {
         latestAgentTokenUsage = nil
@@ -5417,7 +5838,7 @@ final class MenuBarStatusModel: ObservableObject {
         codexUsageFetchState = snapshot.usageFetchState
         codexResetCreditsFetchState = snapshot.resetCreditsFetchState
         let now = nowProvider()
-        if latestAgentQuota != nil,
+        if latestAgentQuota != nil || latestCodexCredits != nil,
            let lastSuccessfulAt = codexUsageFetchState?.lastSuccessfulAt,
            now.timeIntervalSince(lastSuccessfulAt) >= Self.codexRateLimitRefreshInterval {
             codexUsageFetchState?.isStale = true
@@ -6446,6 +6867,8 @@ final class MenuBarStatusModel: ObservableObject {
         switch normalized {
         case "claude", "claude-code", "claude-desktop", "claude-cli",
              "claude-terminal", "terminal-claude", "claude-ide",
+             "claude-vscode", "vscode-claude", "claude-xcode", "xcode-claude",
+             "claude-idea", "claude-intellij", "claude-jetbrains",
              "idea-claude", "intellij-claude", "jetbrains-claude":
             return "claude"
         case "codex", "codex-desktop", "codex-cli", "codex-ide", "codex-xcode",
@@ -6606,10 +7029,12 @@ final class MenuBarStatusModel: ObservableObject {
         hookInstallMessage = text("正在处理 hooks...", "Processing hooks...")
         lastError = nil
 
-        let manager = hookInstallManager
+        var manager = hookInstallManager
+        manager.selectedCodexPath = codexDataDirectory
+        let capturedManager = manager
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result {
-                try action(manager)
+                try action(capturedManager)
             }
 
             Task { @MainActor in
@@ -6617,9 +7042,10 @@ final class MenuBarStatusModel: ObservableObject {
                 switch result {
                 case .success(let output):
                     self.hookInstallMessage = output.displayText
+                    self.checkConnections()
                     self.lastError = nil
                 case .failure(let error):
-                    self.lastError = error.localizedDescription
+                    self.lastError = self.localizedClaudeText(error.localizedDescription)
                     self.hookInstallMessage = nil
                 }
             }

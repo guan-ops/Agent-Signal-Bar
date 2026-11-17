@@ -22,7 +22,7 @@ struct MenuBarPanelView: View {
          usageNavigation: UsageMenuNavigation? = nil,
          onOpenUsage: @escaping (UsageMenuNavigation.Provider) -> Void = { _ in },
          onOpenSettings: (() -> Void)? = nil) {
-        self.claudeSupport = claudeSupport ?? ClaudeSupportModel()
+        self.claudeSupport = claudeSupport ?? model.claudeSupport
         self.usageNavigation = usageNavigation ?? UsageMenuNavigation()
         self.onOpenUsage = onOpenUsage
         self.model = model
@@ -36,40 +36,48 @@ struct MenuBarPanelView: View {
                 .ignoresSafeArea()
                 .zIndex(0)
 
-            VStack(spacing: 0) {
-                Group {
-                    VStack(alignment: .leading, spacing: 14) {
-                        header
-                        MenuUsageSummaryView(model: model, claude: claudeSupport,
-                                             navigation: usageNavigation, onOpenSettings: onOpenUsage)
+            // UI 2.0: state first (what is happening, who needs you), then usage, then
+            // menu-style actions that match the native status menu.
+            VStack(alignment: .leading, spacing: ASB.Space.m) {
+                header
 
-                        if let lastError = viewState.lastError {
-                            Text(lastError)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                                .lineLimit(2)
+                if !visibleAgentSessions.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(visibleAgentSessions.prefix(3)) { session in
+                            SessionRowView(model: model, session: session)
                         }
                     }
-                    .padding(.horizontal, Self.contentInset)
-                    .padding(.top, 16)
-                    .padding(.bottom, 12)
-                    .frame(width: Self.panelWidth, alignment: .leading)
                 }
-                .contentShape(Rectangle())
-
-                .zIndex(0)
 
                 Divider()
-                    .padding(.horizontal, Self.contentInset)
-                    .zIndex(0)
 
-                mainActions
-                    .padding(.horizontal, Self.contentInset)
-                    .padding(.top, 10)
-                    .padding(.bottom, 10)
-                    .frame(width: Self.panelWidth, alignment: .leading)
-                    .zIndex(1)
+                MenuUsageSummaryView(model: model, claude: claudeSupport,
+                                     navigation: usageNavigation, onOpenSettings: onOpenUsage)
+
+                if let lastError = viewState.lastError {
+                    Text(lastError)
+                        .font(ASB.Typeface.caption)
+                        .foregroundStyle(ASBTone.critical.foreground)
+                        .lineLimit(2)
+                }
+
+                Divider()
+
+                VStack(spacing: 0) {
+                    ASBMenuRow(title: model.text("设置…", "Settings…"), shortcut: "⌘,") {
+                        onOpenSettings?()
+                    }
+                    .keyboardShortcut(",", modifiers: .command)
+                    ASBMenuRow(title: model.text("退出 Agent Signal Bar", "Quit Agent Signal Bar"), shortcut: "⌘Q") {
+                        NSApplication.shared.terminate(nil)
+                    }
+                    .keyboardShortcut("q", modifiers: .command)
+                }
+                .padding(.horizontal, -ASB.Space.s)
             }
+            .padding(Self.contentInset)
+            .frame(width: Self.panelWidth, alignment: .leading)
+            .zIndex(1)
         }
         .frame(width: Self.panelWidth)
         .fixedSize(horizontal: false, vertical: true)
@@ -77,71 +85,38 @@ struct MenuBarPanelView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Circle().fill(statusColor)
-                .frame(width: 7, height: 7)
-            Text("Agent Signal Bar").fontWeight(.semibold)
-            Spacer()
-            Text(model.displayName(for: viewState.lightSnapshot.aggregate))
-                .foregroundStyle(.secondary).lineLimit(1)
-        }.font(.caption)
-    }
-
-    private var statusColor: Color {
-        switch viewState.lightSnapshot.aggregate.displayState {
-        case .ready, .active, .completed: return .green
-        case .needsReview, .stale, .paused: return .yellow
-        case .permission, .blocked: return .red
-        }
-    }
-
-    private var statusSummary: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text(model.summary(for: viewState.lightSnapshot.aggregate))
-                .font(.subheadline)
-                .lineLimit(2)
-                .allowsTightening(true)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 8) {
-                if let updatedAt = viewState.snapshot.updatedAt {
-                    Text("\(model.text("实时", "Live")) \(updatedAt.formatted(date: .omitted, time: .shortened))")
-                } else {
-                    Text(model.text("等待状态", "Waiting for status"))
-                }
-
-                if viewState.isMonitoringPaused {
-                    Text(model.text("已暂停", "Paused"))
-                        .foregroundStyle(.orange)
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-            if visibleAgentSessions.isEmpty {
-                Text(model.text("暂无运行中的 Agent", "No active agent sessions"))
-                    .font(.caption)
+        HStack(spacing: 10) {
+            PanelTrafficSignalView(model: model)
+                .fixedSize()
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.displayName(for: viewState.lightSnapshot.aggregate))
+                    .font(ASB.Typeface.bodyStrong)
+                    .lineLimit(1)
+                Text(headerSubtitle)
+                    .font(ASB.Typeface.caption)
                     .foregroundStyle(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(visibleAgentSessions) { session in
-                        SessionRowView(model: model, session: session)
-                    }
-                }
+                    .lineLimit(1)
             }
-
-            if !menuRecentEvents.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(model.text("最近", "Recent"))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    ForEach(menuRecentEvents) { event in
-                        EventRowView(model: model, event: event)
-                    }
-                }
+            Spacer(minLength: ASB.Space.s)
+            Button {
+                model.toggleMonitoring()
+            } label: {
+                Image(systemName: viewState.isMonitoringPaused ? "play.fill" : "pause.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 26, height: 26)
+                    .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: ASB.Radius.control, style: .continuous))
             }
+            .buttonStyle(.plain)
+            .help(viewState.isMonitoringPaused ? model.text("继续监控", "Resume") : model.text("暂停监控", "Pause"))
+            .accessibilityLabel(viewState.isMonitoringPaused ? model.text("继续监控", "Resume") : model.text("暂停监控", "Pause"))
         }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var headerSubtitle: String {
+        if viewState.isMonitoringPaused { return model.text("监控已暂停", "Monitoring paused") }
+        return model.signalLightFollowingText ?? "Agent Signal Bar"
     }
 
     private var visibleAgentSessions: [SessionStatus] {
@@ -151,126 +126,9 @@ struct MenuBarPanelView: View {
         )
     }
 
-    private var menuRecentEvents: [RecentSignalEvent] {
-        ActivityPresentation.recentEvents(
-            from: viewState.activitySnapshot,
-            excluding: visibleAgentSessions,
-            limit: menuRecentEventLimit
-        )
-    }
-
-    private var menuRecentEventLimit: Int {
-        switch visibleAgentSessions.count {
-        case 0, 1:
-            return 3
-        case 2:
-            return 2
-        case 3:
-            return 1
-        default:
-            return 0
-        }
-    }
-
-    private var mainActions: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: Self.actionColumnSpacing) {
-                Button {
-                    model.toggleMonitoring()
-                } label: {
-                    actionSurface(
-                        viewState.isMonitoringPaused ? model.text("继续监控", "Resume") : model.text("暂停监控", "Pause"),
-                        systemImage: viewState.isMonitoringPaused ? "play.fill" : "pause.fill"
-                    )
-                }
-                .buttonStyle(.plain)
-                .frame(width: actionButtonWidth, height: actionButtonHeight)
-
-                Button {
-                    onOpenSettings?()
-                } label: {
-                    actionSurface(model.text("设置", "Settings"), systemImage: "gearshape")
-                }
-                .buttonStyle(.plain)
-                .frame(width: actionButtonWidth, height: actionButtonHeight)
-            }
-            .frame(maxWidth: .infinity, alignment: .center)
-
-            HStack {
-                Spacer()
-                Button {
-                    NSApplication.shared.terminate(nil)
-                } label: {
-                    Label(model.text("退出", "Quit"), systemImage: "power")
-                }
-            }
-            .buttonStyle(.borderless)
-        }
-    }
-
-    private var actionButtonWidth: CGFloat {
-        (Self.panelWidth - Self.contentInset * 2 - Self.actionColumnSpacing) / 2
-    }
-
-    private var actionButtonHeight: CGFloat {
-        28
-    }
-
-    private var panelActionFont: Font {
-        .system(size: usesCompactLatinLayout ? 12 : 13, weight: .semibold)
-    }
-
     private var usesCompactLatinLayout: Bool {
         viewState.appLanguage.usesCompactLatinLayout
     }
-
-    private func actionSurface(
-        _ title: String,
-        systemImage: String,
-        showsChevron: Bool = false,
-        isExpanded: Bool = false,
-        width: CGFloat? = nil
-    ) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .semibold))
-                .frame(width: 16)
-
-            Text(title)
-                .lineLimit(1)
-                .allowsTightening(true)
-                .minimumScaleFactor(0.72)
-
-            if showsChevron {
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 10)
-            }
-        }
-        .font(panelActionFont)
-        .foregroundStyle(.primary)
-        .frame(width: width ?? actionButtonWidth, height: actionButtonHeight, alignment: .center)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(panelMenuBarFill)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(solidControlStroke, lineWidth: 0.5)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    }
-
-    private var panelMenuBarFill: some ShapeStyle {
-        .tertiary.opacity(0.08)
-    }
-
-    private var solidControlStroke: Color {
-        colorScheme == .dark
-            ? Color(nsColor: NSColor(calibratedWhite: 0.34, alpha: 1))
-            : Color(nsColor: NSColor(calibratedWhite: 0.78, alpha: 1))
-    }
-
 }
 
 @MainActor
@@ -434,74 +292,28 @@ private struct SessionRowView: View {
     let session: SessionStatus
 
     var body: some View {
-        HStack(spacing: 8) {
+        let tone = ASBTone.forDisplayState(session.signal.displayState)
+        let needsYou = tone == .critical || tone == .caution
+        HStack(spacing: ASB.Space.s) {
             Circle()
-                .fill(signalColor(session.signal))
-                .frame(width: 7, height: 7)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(displayTitle)
-                    .font(.caption)
-                    .lineLimit(1)
-                Text(displaySubtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
+                .fill(tone.lamp)
+                .frame(width: 8, height: 8)
+            (Text(model.activitySessionTitle(for: session)).fontWeight(.semibold)
+                + Text(" · " + model.activitySessionStatusSubtitle(for: session)))
+                .font(.system(size: 12))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: ASB.Space.xs)
+            Text(session.updatedAt.formatted(date: .omitted, time: .shortened))
+                .font(ASB.Typeface.caption)
+                .foregroundStyle(.secondary)
         }
-    }
-
-    private var displayTitle: String {
-        model.activitySessionTitle(for: session)
-    }
-
-    private var displaySubtitle: String {
-        model.activitySessionStatusSubtitle(for: session)
-    }
-}
-
-private struct EventRowView: View {
-    let model: MenuBarStatusModel
-    let event: RecentSignalEvent
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(signalColor(event.signal))
-                .frame(width: 6, height: 6)
-                .padding(.top, 5)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption2)
-                    .lineLimit(1)
-                Text("\(model.activityEventSubtitle(for: event)) · \(event.updatedAt.formatted(date: .omitted, time: .shortened))")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-        }
-        .frame(minHeight: 30, alignment: .leading)
-    }
-
-    private var title: String {
-        model.activityEventTitle(for: event)
-    }
-}
-
-private func signalColor(_ signal: AgentSignal) -> Color {
-    switch signal.displayState {
-    case .ready, .active, .completed:
-        return Color(red: 0.16, green: 0.78, blue: 0.34)
-    case .needsReview:
-        return Color(red: 0.97, green: 0.72, blue: 0.16)
-    case .permission, .blocked:
-        return Color(red: 0.94, green: 0.20, blue: 0.18)
-    case .stale, .paused:
-        return .secondary
+        .padding(.horizontal, ASB.Space.s)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(needsYou ? tone.lamp.opacity(0.12) : Color.clear)
+        )
+        .accessibilityElement(children: .combine)
     }
 }

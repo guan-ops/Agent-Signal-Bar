@@ -25,8 +25,12 @@ enum SingleInstanceGuard {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private lazy var placeholderSettingsWindowGuard = PlaceholderSettingsWindowGuard()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        placeholderSettingsWindowGuard.start()
         if DebugLaunchOptions.shouldOpenDebugWindow {
             NSApp.setActivationPolicy(.regular)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {

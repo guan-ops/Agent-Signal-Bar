@@ -38,6 +38,8 @@ enum SignalIconGeometry {
 
     private static func metrics(layout: TrafficSignalLayout, style: TrafficSignalStyle) -> SignalIconMetrics {
         switch (layout, style) {
+        case (_, .singleLamp):
+            return SignalIconMetrics(iconSize: CGSize(width: 14, height: 18), lampDiameter: 10, lampSpacing: 0)
         case (.horizontal, .trafficLight):
             return trafficLightMetrics(layout: layout)
         case (.vertical, .trafficLight):
