@@ -47,16 +47,38 @@ PopupWindow {
         visible: !App.paused
         Layout.fillWidth: true
         spacing: 2
+        // SessionRowView: dot, "Codex · 终端运行中 · 思考中", time; tinted when it needs you.
         Repeater {
-            model: Demo.sessions(Theme.t).slice(0, 3)
-            RowLayout {
+            model: (App.liveData ? App.sessions : Demo.sessions(Theme.t)).slice(0, 3)
+            Rectangle {
+                id: row
                 required property var modelData
+                readonly property string tone: Theme.toneForState(modelData.state)
                 Layout.fillWidth: true
-                spacing: 8
-                Rectangle { width: 7; height: 7; radius: 3.5; color: Theme.toneLamp(Theme.toneForState(modelData.state)) }
-                AsbText { text: modelData.agent; strong: true }
-                StatusPill { text: modelData.pill; tone: Theme.toneForState(modelData.state) }
-                AsbText { text: modelData.detail; caption: true; secondary: true; Layout.fillWidth: true }
+                implicitHeight: rowContent.implicitHeight + 10
+                radius: 7
+                color: tone === "critical" || tone === "caution"
+                    ? Qt.rgba(Theme.toneLamp(tone).r, Theme.toneLamp(tone).g, Theme.toneLamp(tone).b, 0.12) : "transparent"
+                RowLayout {
+                    id: rowContent
+                    anchors.fill: parent
+                    anchors.leftMargin: Theme.s
+                    anchors.rightMargin: Theme.s
+                    spacing: Theme.s
+                    Rectangle { width: 8; height: 8; radius: 4; color: Theme.toneLamp(row.tone) }
+                    // Plain text only: tool names come from log files.
+                    RowLayout {
+                        spacing: 4
+                        Layout.fillWidth: true
+                        AsbText { text: row.modelData.title; strong: true; textFormat: Text.PlainText; elide: Text.ElideNone }
+                        AsbText {
+                            text: "· " + row.modelData.detail
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                        }
+                    }
+                    AsbText { text: row.modelData.time; caption: true; secondary: true }
+                }
             }
         }
     }

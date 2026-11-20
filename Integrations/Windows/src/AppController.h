@@ -3,15 +3,18 @@
 #include "SignalModel.h"
 
 #include <QColor>
+#include <QVariantList>
 #include <QObject>
 #include <QPoint>
 #include <QQmlPropertyMap>
 #include <QRect>
 #include <QSettings>
 #include <QTimer>
+#include <QUrl>
 #include <memory>
 
 class QWindow;
+class SignalRuntime;
 
 // The bridge between QML and the platform: preferences, the shared animation tick,
 // the displayed signal, localisation and Windows integration (tray placement,
@@ -33,9 +36,21 @@ class AppController : public QObject {
     Q_PROPERTY(QString uiFont READ uiFont CONSTANT)
     // DWMWA_SYSTEMBACKDROP_TYPE needs Windows 11 22H2 (build 22621); older systems stay opaque.
     Q_PROPERTY(bool supportsBackdrop READ supportsBackdrop CONSTANT)
+    // True when the lamp follows Codex activity; false for capture and --signal demo runs.
+    Q_PROPERTY(bool liveData READ liveData CONSTANT)
+    // Visible sessions and recent events as QML-ready maps (title, detail, state, time, ...).
+    Q_PROPERTY(QVariantList sessions READ sessions NOTIFY activityChanged)
+    Q_PROPERTY(QVariantList events READ events NOTIFY activityChanged)
+    // home, roots, existingRoots, recentFiles, unreadable, polled, lastActivity.
+    Q_PROPERTY(QVariantMap codexConnection READ codexConnection NOTIFY activityChanged)
 
 public:
-    explicit AppController(const QString &settingsFile, const QString &captureDir, QObject *parent = nullptr);
+    // `live` starts the Codex monitor; capture and demo runs keep the synthetic signal.
+    // `codexDirOverride` replaces the data directory (and replays its recent history), for
+    // fixture-driven captures; it is not saved to the preferences.
+    AppController(const QString &settingsFile, const QString &captureDir, bool live,
+                  const QString &codexDirOverride = QString(), QObject *parent = nullptr);
+    ~AppController() override;
 
     int tick() const { return m_tick; }
     QString signalName() const;
@@ -52,6 +67,10 @@ public:
     QString captureDir() const { return m_captureDir; }
     QString uiFont() const;
     bool supportsBackdrop() const;
+    bool liveData() const { return m_runtime != nullptr; }
+    QVariantList sessions() const { return m_sessions; }
+    QVariantList events() const { return m_events; }
+    QVariantMap codexConnection() const { return m_codexConnection; }
 
     asb::EffectCustomization effectCustomization() const;
     void setTrayGeometry(const QRect &rect) { m_trayGeometry = rect; }
@@ -77,11 +96,15 @@ public:
     Q_INVOKABLE void previewSound(const QString &kind, const QString &sound) const;
     Q_INVOKABLE void applyBackdrop(QWindow *window, const QString &kind) const;
     Q_INVOKABLE QString settingsFilePath() const;
+    Q_INVOKABLE void checkCodexConnection();
+    // Local path from a FolderDialog URL, so QML can store it in prefs.codexDataDir.
+    Q_INVOKABLE QString localPath(const QUrl &url) const;
     Q_INVOKABLE void quit();
 
 signals:
     void tickChanged();
     void signalNameChanged();
+    void activityChanged();
     void languageChanged();
     void themeChanged();
     void settingsRequested(const QString &page);
@@ -92,8 +115,16 @@ private:
     void onPrefChanged(const QString &key, const QVariant &value);
     void restartTimer();
     void applyLaunchAtLogin(bool enabled) const;
+    void rebuildActivity();
+    QString liveSignal() const;
 
     QQmlPropertyMap *m_prefs;
+    SignalRuntime *m_runtime = nullptr;
+    QVariantList m_sessions;
+    QVariantList m_events;
+    QVariantMap m_codexConnection;
+    QString m_liveSignal = QStringLiteral("idle");
+    QString m_codexDirOverride;
     std::unique_ptr<QSettings> m_settings;
     QString m_captureDir;
     QTimer m_timer;

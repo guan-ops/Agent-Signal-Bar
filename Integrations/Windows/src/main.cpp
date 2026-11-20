@@ -1,15 +1,32 @@
 // Agent Signal Bar for Windows: Qt 6 tray app. Same layering as CodexBar's
 // Integrations/Linux desktop: a C++ controller plus QML windows.
 //
-//   --capture <dir>    render every surface and tray icon variant to PNGs, then quit
+//   --capture <dir>    render every surface and tray icon variant to PNGs (demo data), then quit
 //   --settings <file>  use this INI file instead of the per-user settings
-//   --signal <name>    start with this demo signal (working, permission, done, ...)
+//   --signal <name>    demo mode: show this signal (working, permission, done, ...) instead of
+//                      following Codex activity
+//   --probe <seconds>  print what the Codex monitor sees (roots, lamp, sessions), no windows
+//   --codex-dir <dir>  use this Codex data directory (replaying its recent history) for the
+//                      app, --probe or --capture; with --capture the screenshots show live data
+//
+// Without --capture or --signal the lamp follows the Codex rollout files under
+// <prefs codexDataDir | CODEX_HOME | %USERPROFILE%\.codex>\sessions.
 #include "AppController.h"
+#include "ActivityText.h"
+#include "SignalRuntime.h"
 #include "TrayIconRenderer.h"
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDateTime>
 #include <QDir>
+#include <QTextStream>
+#include <algorithm>
+#include <cstdio>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 #include <QPainter>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
@@ -61,6 +78,49 @@ void writeTraySheet(const QString &dir) {
     }
 }
 
+// --probe: run the live Codex pipeline without any window and print what it sees, so the
+// data directory can be checked from a terminal (also on Windows, where the GUI app
+// attaches to the calling console).
+int runProbe(QApplication &app, int seconds, const QString &dataDir) {
+#ifdef Q_OS_WIN
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        std::freopen("CONOUT$", "w", stdout);
+    }
+#endif
+    QTextStream out(stdout);
+    const QList<asb::codex::Root> roots = dataDir.isEmpty()
+        ? asb::codex::activityRoots(QDir::homePath(), qEnvironmentVariable("CODEX_HOME"), dataDir)
+        : asb::codex::rootsForDirectory(QDir::homePath(), dataDir);
+    out << "Codex home: "
+        << QDir::toNativeSeparators(asb::codex::primaryCodexHome(QDir::homePath(), qEnvironmentVariable("CODEX_HOME"), dataDir))
+        << "\n";
+    for (const auto &root : roots) out << "  root: " << QDir::toNativeSeparators(root.path) << "\n";
+    out.flush();
+
+    SignalRuntime runtime;
+    const bool zh = false;
+    QString last;
+    QObject::connect(&runtime, &SignalRuntime::changed, &app, [&] {
+        if (!runtime.hasPolled()) return;
+        const auto &health = runtime.connection();
+        QString report;
+        QTextStream line(&report);
+        line << "existing roots " << health.existingRoots << ", recent files " << health.recentFiles;
+        if (!health.unreadable.isEmpty()) line << ", unreadable: " << health.unreadable.join(", ");
+        line << "\nlamp: " << runtime.display().aggregate << "\n";
+        for (const asb::SessionStatus &s : runtime.visibleSessions())
+            line << "  session " << asb::text::sessionTitle(s, zh) << " | " << asb::text::sessionSubtitle(s, zh) << " | "
+                 << QDateTime::fromMSecsSinceEpoch(s.updatedAt).toString("HH:mm:ss") << "\n";
+        if (report == last) return;
+        last = report;
+        out << QDateTime::currentDateTime().toString("HH:mm:ss") << " " << report;
+        out.flush();
+    });
+    runtime.start(roots, false, /*replayRecentHistory=*/true); // show work already in progress
+    QTimer::singleShot(seconds * 1000, &app, &QCoreApplication::quit);
+    return app.exec();
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -76,8 +136,11 @@ int main(int argc, char *argv[]) {
     QCommandLineOption captureOption("capture", "Render all surfaces to PNG files in <dir> and quit.", "dir");
     QCommandLineOption settingsOption("settings", "Settings INI file.", "file");
     QCommandLineOption signalOption("signal", "Initial demo signal.", "name", "working");
-    parser.addOptions({captureOption, settingsOption, signalOption});
+    QCommandLineOption probeOption("probe", "Print what the Codex monitor sees for <seconds>, then quit.", "seconds");
+    QCommandLineOption codexDirOption("codex-dir", "Codex data directory (default: settings, CODEX_HOME or ~/.codex).", "dir");
+    parser.addOptions({captureOption, settingsOption, signalOption, probeOption, codexDirOption});
     parser.process(app);
+    if (parser.isSet(probeOption)) return runProbe(app, std::max(1, parser.value(probeOption).toInt()), parser.value(codexDirOption));
 
     const QString captureDir = parser.value(captureOption);
     QString settingsFile = parser.value(settingsOption);
@@ -91,7 +154,10 @@ int main(int argc, char *argv[]) {
         writeTraySheet(captureDir);
     }
 
-    AppController controller(settingsFile, captureDir);
+    // --codex-dir makes even a capture run live, against that (fixture) directory only.
+    const QString codexDir = parser.value(codexDirOption);
+    const bool live = !codexDir.isEmpty() || (captureDir.isEmpty() && !parser.isSet(signalOption));
+    AppController controller(settingsFile, captureDir, live, codexDir);
     controller.setDemoSignal(parser.value(signalOption));
     qmlRegisterSingletonInstance("AgentSignal", 1, 0, "App", &controller);
 

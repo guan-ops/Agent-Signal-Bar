@@ -5,6 +5,10 @@ import "DemoData.js" as Demo
 
 // 运行 / Activity: current state, which agent drives the light, sessions, recent events.
 SettingsPage {
+    readonly property var sessionRows: App.paused ? [] : (App.liveData ? App.sessions : Demo.sessions(Theme.t))
+    readonly property var eventRows: App.liveData ? App.events : Demo.events(Theme.t)
+    readonly property string updatedTime: App.liveData ? (App.codexConnection.lastActivity || "") : "16:05"
+
     // Current state card.
     AsbGroup {
         RowLayout {
@@ -23,7 +27,12 @@ SettingsPage {
                 spacing: 3
                 AsbText { text: Theme.stateTitle(App.displayState); strong: true; Layout.fillWidth: true }
                 AsbText { text: Theme.stateSummary(App.displayState); caption: true; secondary: true; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                AsbText { text: Theme.t("更新 16:05", "Updated 16:05"); caption: true; color: Theme.tertiary }
+                AsbText {
+                    visible: updatedTime.length > 0
+                    text: Theme.t("更新 ", "Updated ") + updatedTime
+                    caption: true
+                    color: Theme.tertiary
+                }
             }
             ColumnLayout {
                 Layout.alignment: Qt.AlignTop
@@ -41,7 +50,8 @@ SettingsPage {
                 }
                 AsbText {
                     Layout.alignment: Qt.AlignRight
-                    text: Theme.t("1 个会话", "1 session")
+                    text: Theme.t(sessionRows.length + " 个会话",
+                                  sessionRows.length === 1 ? "1 session" : sessionRows.length + " sessions")
                     caption: true
                     color: Theme.tertiary
                 }
@@ -79,7 +89,7 @@ SettingsPage {
     AsbSection {
         title: Theme.t("正在运行", "Running")
         Repeater {
-            model: App.paused ? [] : Demo.sessions(Theme.t)
+            model: sessionRows
             RowLayout {
                 required property var modelData
                 Layout.fillWidth: true
@@ -96,15 +106,18 @@ SettingsPage {
                     spacing: 2
                     Layout.fillWidth: true
                     RowLayout {
-                        AsbText { text: modelData.agent; strong: true }
+                        Layout.fillWidth: true
+                        AsbText { text: modelData.agent; strong: true; textFormat: Text.PlainText }
                         StatusPill { text: modelData.pill; tone: Theme.toneForState(modelData.state) }
+                        Item { Layout.fillWidth: true }
+                        AsbText { text: modelData.time; caption: true; color: Theme.tertiary }
                     }
-                    AsbText { text: modelData.detail; caption: true; secondary: true; Layout.fillWidth: true }
+                    AsbText { text: modelData.detail; caption: true; secondary: true; textFormat: Text.PlainText; Layout.fillWidth: true }
                 }
             }
         }
         ColumnLayout {
-            visible: App.paused
+            visible: sessionRows.length === 0
             spacing: 2
             AsbText { text: Theme.t("当前没有正在工作的 Agent", "No agent is working"); secondary: true }
             AsbText { text: Theme.t("空闲时不会点亮状态栏和悬浮信号灯。", "Idle agents do not light the tray or the floating signal."); caption: true; color: Theme.tertiary }
@@ -114,7 +127,7 @@ SettingsPage {
     AsbSection {
         title: Theme.t("最近事件", "Recent Events")
         Repeater {
-            model: Demo.events(Theme.t)
+            model: eventRows
             RowLayout {
                 required property var modelData
                 Layout.fillWidth: true
@@ -130,8 +143,8 @@ SettingsPage {
                 ColumnLayout {
                     spacing: 2
                     Layout.fillWidth: true
-                    AsbText { text: modelData.title; strong: true; Layout.fillWidth: true }
-                    AsbText { text: modelData.detail; caption: true; secondary: true; Layout.fillWidth: true }
+                    AsbText { text: modelData.title; strong: true; textFormat: Text.PlainText; Layout.fillWidth: true }
+                    AsbText { text: modelData.detail; caption: true; secondary: true; textFormat: Text.PlainText; Layout.fillWidth: true }
                 }
                 AsbText { text: modelData.time; caption: true; color: Theme.tertiary; Layout.alignment: Qt.AlignTop }
             }

@@ -129,6 +129,34 @@ QString displayStateKey(DisplayState state) {
     return "ready";
 }
 
+int priority(DisplayState state) {
+    switch (state) {
+    case DisplayState::Paused: return 100;
+    case DisplayState::Blocked: return 90;
+    case DisplayState::Permission: return 80;
+    case DisplayState::NeedsReview: return 70;
+    case DisplayState::Stale: return 60;
+    case DisplayState::Active: return 50;
+    case DisplayState::Completed: return 40;
+    case DisplayState::Ready: return 0;
+    }
+    return 0;
+}
+
+QString normalizedAggregateSignal(const QString &signal) {
+    switch (displayState(signal)) {
+    case DisplayState::Ready: return QStringLiteral("idle");
+    case DisplayState::Active: return normalizedSignal(signal).value_or(QStringLiteral("working"));
+    case DisplayState::Completed: return QStringLiteral("done");
+    case DisplayState::NeedsReview: return QStringLiteral("attention");
+    case DisplayState::Permission: return QStringLiteral("permission");
+    case DisplayState::Blocked: return QStringLiteral("blocked");
+    case DisplayState::Stale: return QStringLiteral("stale");
+    case DisplayState::Paused: return QStringLiteral("off");
+    }
+    return QStringLiteral("idle");
+}
+
 double intensity(LampColor color, const QString &signalRaw, int tick, bool allLightsOn,
                  const EffectCustomization &c) {
     if (allLightsOn) return 1;

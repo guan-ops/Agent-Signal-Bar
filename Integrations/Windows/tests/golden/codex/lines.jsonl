@@ -1,0 +1,57 @@
+{"timestamp":"2026-03-01T10:00:00.123Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-03-01T10:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"synthetic"}}
+{"timestamp":"2026-03-01T10:00:02.000Z","type":"event_msg","payload":{"type":"task_complete"}}
+{"timestamp":"2026-03-01T10:00:03.250Z","type":"event_msg","payload":{"type":"turn_aborted"}}
+{"timestamp":"2026-03-01T10:00:04.250Z","type":"event_msg","payload":{"type":"agent_message","phase":"final_answer"}}
+{"timestamp":"2026-03-01T10:00:05.250Z","type":"event_msg","payload":{"type":"agent_message","phase":"commentary"}}
+{"timestamp":"2026-03-01T10:00:06.250Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10}}}}
+{"timestamp":"2026-03-01T10:00:07.250Z","type":"event_msg","payload":{"type":"exec_command_begin"}}
+{"timestamp":"2026-03-01T10:00:08.250Z","type":"response_item","payload":{"type":"reasoning"}}
+{"timestamp":"2026-03-01T10:00:09.250Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}
+{"timestamp":"2026-03-01T10:00:10.250Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"rm\"],\"sandbox_permissions\":\"require_escalated\"}"}}
+{"timestamp":"2026-03-01T10:00:11.250Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"sandbox_permissions\": \"require_escalated\", \"command\":[\"rm\"]"}}
+{"timestamp":"2026-03-01T10:00:12.250Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"note\":\"require_escalated\",\"sandbox_permissions\":\"use_default\"}"}}
+{"timestamp":"2026-03-01T10:00:13.250Z","type":"response_item","payload":{"type":"function_call","name":"apply_patch","arguments":{"sandbox_permissions":"require_escalated"}}}
+{"timestamp":"2026-03-01T10:00:14.250Z","type":"response_item","payload":{"type":"custom_tool_call","name":"request_user_input"}}
+{"timestamp":"2026-03-01T10:00:15.250Z","type":"response_item","payload":{"type":"custom_tool_call","name":"  Request_User_Input  "}}
+{"timestamp":"2026-03-01T10:00:16.250Z","type":"response_item","payload":{"type":"function_call","name":"   "}}
+{"timestamp":"2026-03-01T10:00:17.250Z","type":"response_item","payload":{"type":"function_call"}}
+{"timestamp":"2026-03-01T10:00:18.250Z","type":"response_item","payload":{"type":"function_call_output","output":"ok"}}
+{"timestamp":"2026-03-01T10:00:19.250Z","type":"response_item","payload":{"type":"message","role":"user"}}
+{"timestamp":"2026-03-01T10:00:20.250Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer"}}
+{"timestamp":"2026-03-01T10:00:21.250Z","type":"response_item","payload":{"type":"message","role":"assistant"}}
+{"timestamp":"2026-03-01T10:00:22.250Z","type":"compacted","payload":{"message":"synthetic"}}
+{"timestamp":"2026-03-01T10:00:23.250Z","type":"turn_context","payload":{"cwd":"/tmp/x"}}
+{"timestamp":"2026-03-01T18:00:24.5+08:00","type":"event_msg","payload":{"type":"task_started","source":"exec"}}
+{"timestamp":"2026-03-01T10:00:25","type":"event_msg","payload":{"type":"task_started","source":"vscode"}}
+{"timestamp":"garbage","type":"event_msg","payload":{"type":"task_started","originator":"codex_vscode"}}
+{"timestamp":1772359226,"type":"event_msg","payload":{"type":"task_started","originator":"Codex Desktop"}}
+{"timestamp":"2026-03-01T10:00:27.123456Z","type":"event_msg","payload":{"type":"task_started","originator":"codex_cli_rs"}}
+{"type":"event_msg","payload":{"type":"task_started","originator":"JetBrains Gateway"}}
+{"type":"event_msg","payload":{"type":"task_started","originator":"IntelliJ IDEA"}}
+{"type":"event_msg","payload":{"type":"task_started","originator":"Xcode"}}
+{"type":"event_msg","payload":{"type":"task_started","client":"Some IDE"}}
+{"type":"event_msg","payload":{"type":"task_started","app":"desktop app"}}
+{"type":"event_msg","payload":{"type":"task_started","source":"  ","client":"terminal"}}
+{"type":"event_msg","payload":{"type":"task_started","source":"tui","originator":"Codex Desktop"}}
+{"type":"event_msg","payload":{"type":"task_started","entrypoint":"Visual Studio Code"}}
+{"type":"event_msg","payload":{"type":"task_started","runner":"jetbrains","originator":"xcode"}}
+{"type":"event_msg","payload":{"type":"task_started","threadId":"  thread-1  "}}
+{"type":"event_msg","payload":{"type":"task_started","thread_id":"thread-2","source":"cli"}}
+{"type":"event_msg","payload":{"type":"task_started","conversationId":"conv-3","originator":"IntelliJ"}}
+{"type":"event_msg","payload":{"type":"task_started","conversation_id":"conv-4","source":"vscode"}}
+{"type":"event_msg","payload":{"type":"task_started","threadId":"   ","conversation_id":"conv-5"}}
+{"type":"event_msg","payload":{"type":"task_started","threadId":42}}
+{"type":"event_msg","payload":"not-an-object"}
+{"type":"event_msg"}
+{"type":"response_item","payload":{"type":"function_call","name":"exec","source":42}}
+[1,2,3]
+not json at all
+{"timestamp":"2026-03-01T10:00:30.000Z","type":"session_meta","payload":{"id":"0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","source":"vscode","originator":"codex_vscode"}}
+{"type":"session_meta","payload":{"session_id":"parent-session","id":"  ","originator":"Codex Desktop","forked_from_id":"fork-parent-1"}}
+{"type":"session_meta","id":"top-level-id","payload":{"source":"exec"}}
+{"type":"session_meta","payload":{"sessionId":"camel","parent_session_id":"  parent-2 "}}
+{"type":"session_meta","payload":{"forkedFromId":"fork-3","originator":"codex_cli_rs"}}
+{"type":"session_meta","payload":"text","session_id":"top-snake"}
+{"type":"session_meta"}
+{"type":"event_msg","payload":{"id":"not-meta"}}

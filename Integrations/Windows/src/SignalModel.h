@@ -35,6 +35,12 @@ struct EffectCustomization {
 std::optional<QString> normalizedSignal(const QString &raw);
 DisplayState displayState(const QString &signal);
 QString displayStateKey(DisplayState state);
+// DisplayState.priority: paused 100 > blocked 90 > permission 80 > needs review 70 > stale 60
+// > active 50 > completed 40 > ready 0.
+int priority(DisplayState state);
+inline int priority(const QString &signal) { return priority(displayState(signal)); }
+// AgentSignal.normalizedAggregateSignal: the one signal that stands for a display state.
+QString normalizedAggregateSignal(const QString &signal);
 
 double intensity(LampColor color, const QString &signal, int tick, bool allLightsOn = false,
                  const EffectCustomization &customization = {});

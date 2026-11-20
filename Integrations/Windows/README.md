@@ -2,7 +2,7 @@
 
 Windows 版沿用 CodexBar `Integrations/Linux` 的分层方式：C++ 控制器 + QML 窗口，用 qmake 构建，代码放在主仓库的 `Integrations/Windows/` 下，和 macOS 版共享文档与素材。
 
-**当前阶段：界面壳。** 所有窗口和交互都已经做出来，数据使用合成演示数据（与 `docs/SCREENSHOTS.md` 的演示账号一致）。灯效引擎已经接入真实逻辑，并且与 Swift 版逐帧一致。读取 Codex 日志、账号与额度、Hook、CLI 等数据层还没有移植。
+**当前阶段：界面壳 + Codex 实时监控。** 所有窗口和交互都已经做出来。信号灯、托盘面板、“运行”页和悬浮灯会跟随 Codex 会话日志（`rollout-*.jsonl`）实时变化，解析、状态存储和显示规则都按 Swift 版移植，解析器和状态存储与 Swift 实现逐条比对。用量、额度和账号仍然是合成演示数据（界面上标了“演示数据”）。Hook、CLI、Claude 等其余数据层还没有移植。
 
 ## 目录
 
@@ -11,11 +11,16 @@ Windows 版沿用 CodexBar `Integrations/Linux` 的分层方式：C++ 控制器 
 | `src/SignalModel.*` | `AgentSignalLightCore` 灯语的移植，包括信号别名、显示状态、各灯效的亮度与缩放，以及低功耗模式和新西兰模式的节奏 |
 | `src/AppController.*` | 偏好设置（INI，键名对应 macOS UserDefaults）、共享动画时钟、语言、主题、托盘弹窗定位、Mica/亚克力背景、开机自启动（`HKCU\…\Run`）、试听提示音 |
 | `src/TrayIconRenderer.*` | 托盘图标绘制，提供经典灯牌、极简圆点、单灯三种风格，支持横向和竖向，并适配任务栏深浅色 |
+| `src/CodexSessionParser.*` | `CodexDesktopSessionParser.swift` 的移植：把 rollout 日志行转成思考、工作、等待授权、完成等活动 |
+| `src/CodexActivityMonitor.*` | `CodexDesktopActivityMonitor.swift` 的移植：找最近写入的 8 个 rollout 文件并只读新增的完整行；首次轮询不回放历史 |
+| `src/SignalStore.*` | `SignalStateStore.swift` 的移植（目前只在内存中）：会话、事件、过期与授权保持规则 |
+| `src/ActivityDisplay.*`、`src/ActivityText.*` | `ActivityPresentation.swift` 与 `MenuBarStatusModel` 显示规则的移植：哪些会话显示、按来源去重、灯显示什么，以及会话和事件的中英文文案 |
+| `src/SignalRuntime.*` | 后台线程每 2 秒（低功耗 6 秒）轮询一次，每 5 秒（15 秒）刷新显示，让完成和中断的会话按时消失 |
 | `qml/Theme.qml` | `DesignSystem.swift`（ASB）的移植，包括字号、间距、圆角、色调和灯色 |
 | `qml/*Page.qml`、`SettingsWindow.qml` | 设置窗口：运行、用量、灯效、连接、通用、调试、关于 |
 | `qml/TrayPanel.qml`、`SystemMenu.qml` | 托盘的两种展示方式：卡片面板和系统菜单 |
 | `qml/FloatingSignal.qml` | 桌面悬浮灯：置顶、拖动、右下角自由缩放、三个角标、右键菜单、点击弹出浮层 |
-| `tests/` | `tst_signalmodel` 与由 Swift 源码生成的 golden 数据（`tests/golden/generate.sh`）；`parity_strings.py` 用来对比 Swift 与 QML 的界面文案 |
+| `tests/` | `tst_signalmodel`（灯效）与 `tst_codex`（解析、状态存储、监控、显示规则），golden 数据由 Swift 源码生成（`tests/golden/generate.sh`）；`make_live_fixture.py` 生成合成 rollout 文件；`parity_strings.py` 用来对比 Swift 与 QML 的界面文案 |
 
 ## 在 Windows 上构建
 
@@ -30,7 +35,17 @@ Windows 版沿用 CodexBar `Integrations/Linux` 的分层方式：C++ 控制器 
 powershell -ExecutionPolicy Bypass -File Integrations\Windows\build.ps1 -QtDir C:\Qt\6.8.3\msvc2022_64
 ```
 
-脚本会先编译并运行灯效一致性测试，再编译 `AgentSignalBar.exe`，最后用 `windeployqt` 打包到 `%TEMP%\asb-windows-build\AgentSignalBar\`。
+脚本会先编译并运行灯效与 Codex 数据层测试，再编译 `AgentSignalBar.exe`，最后用 `windeployqt` 打包到 `%TEMP%\asb-windows-build\AgentSignalBar\`。
+
+### 检查 Codex 数据目录
+
+```bat
+%TEMP%\asb-windows-build\AgentSignalBar\AgentSignalBar.exe --probe 10
+```
+
+`--probe` 不打开任何窗口，只在终端里打印 10 秒内看到的内容：Codex 数据目录、找到的 rollout 文件数，以及信号灯和各会话的状态（会回放最近 30 分钟的活动）。数据目录的顺序是：设置里选择的目录 → `CODEX_HOME` → `%USERPROFILE%\.codex`，日志在其中的 `sessions` 文件夹。可以用 `--codex-dir <目录>` 临时指定别的目录，例如 WSL 里的 `\\wsl.localhost\Ubuntu\home\<用户>\.codex`。
+
+运行时加上 `--signal working` 会进入演示模式，不读取 Codex。
 
 ## 在 macOS 上开发
 
@@ -39,7 +54,9 @@ brew install qtbase qtdeclarative qtsvg
 Integrations/Windows/dev-macos.sh capture
 ```
 
-`--capture <目录>` 会按“中文深色、英文深色、中文浅色”三种组合，把每个设置页、两种托盘面板、悬浮灯以及托盘图标样张分别渲染成 PNG，然后退出。它使用临时 INI 文件，不会读写真实设置，也不会写注册表。
+`--capture <目录>` 会按“中文深色、英文深色、中文浅色”三种组合，把每个设置页、两种托盘面板、悬浮灯以及托盘图标样张分别渲染成 PNG，然后退出。它使用临时 INI 文件和演示数据，不会读写真实设置，也不会写注册表或读取 `~/.codex`。
+
+`dev-macos.sh capture-live` 先用 `tests/make_live_fixture.py` 在 `/private/tmp/asb-live-fixture` 生成三个合成会话（终端运行工具、VS Code 等待授权、桌面版刚完成），再用 `--codex-dir` 指向它截图，用来检查实时数据在界面上的样子。`--codex-dir` 只读取该目录，不会读取 macOS 上额外的 Xcode/JetBrains 目录。
 
 ## 与 macOS 版的对应关系
 
@@ -54,20 +71,25 @@ Integrations/Windows/dev-macos.sh capture
 | 开机自启动（SMAppService） | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | ⚠️ 已实现，需要实机验收 |
 | 提示音（AVFoundation，可调音量） | `PlaySound` 播放 WAV（新西兰录音已转成 WAV） | ⚠️ 已支持试听；暂不支持音量档位，需要改用 Qt Multimedia 或 WASAPI |
 | 多语言（10 种） | 目前只有简体中文和英文 | ❌ 其他语言暂时显示英文；需要移植 `AppLanguage.swift` 的翻译表 |
-| Codex 日志监控、Token/费用扫描 | — | ❌ 未移植；需要先在 Windows 上确认 `%USERPROFILE%\.codex`（或 `CODEX_HOME`）的目录结构。“连接”页里显示的 Windows 路径（Codex、Claude、状态文件）都是待确认的占位值 |
+| Codex 日志监控（灯语） | `CodexActivityMonitor` + `SignalStore` + `ActivityDisplay` | ✅ 解析器（57 行样例 × 2 种默认来源）和状态存储（11 组事件序列）与 Swift 实现逐条比对；监控和显示规则有单元测试。已在 macOS 上用真实 `~/.codex` 只读验证。Windows 上的目录位置需要用 `--probe` 实机确认 |
+| 状态文件 `status.json`（与 CLI、Hook 共享） | 内存中的 `SignalStore` | ⚠️ 规则相同，但不写文件：重启后要等下一条日志才恢复状态。等 CLI 和 Hook 移植时再落盘 |
+| 灯效 Agent（按 Agent 跟随、空闲时显示其他 Agent） | — | ⚠️ Windows 目前只监控 Codex，所以所有会话都参与灯效；“灯效 Agent”下拉框还没有效果 |
+| 桌面应用在线检测（Codex/Claude 桌面版已打开） | — | ❌ 未移植 |
+| Xcode、JetBrains 的 Codex 会话目录 | — | ⚠️ macOS 开发版会读取；Windows 上的 JetBrains 目录未知，暂不读取 |
+| Token/费用扫描 | — | ❌ 未移植；用量页、卡片面板的用量与悬浮灯的额度、Token 角标仍是演示数据（实时模式下角标隐藏，用量标注“演示数据”） |
 | Codex 多账号、额度、限额重置 | — | ❌ 未移植；Keychain 改用 Windows 凭据管理器或 DPAPI |
 | Claude 额度与 Hook | — | ❌ 未移植 |
 | 浏览器 Cookie 导入（SweetCookieKit） | — | ❌ 不打算直接移植；Windows 上的 Chrome Cookie 使用 App-Bound Encryption，要另行评估 |
 | Claude 桌面回复状态（辅助功能） | UI Automation | ❌ 未实现 |
 | Sparkle 自动更新 | GitHub Releases 检查，或 WinSparkle | ❌ 未实现 |
-| `agent-signal` CLI 与 Hook 脚本 | — | ❌ 未移植（shell 脚本需要 PowerShell 或 `.exe` 版本） |
+| `agent-signal` CLI 与 Hook 脚本 | — | ❌ 未移植（shell 脚本需要 PowerShell 或 `.exe` 版本）；“连接”页里 Hook 的路径和按钮只是占位 |
 | DMG 打包 | windeployqt 打包目录 | ⚠️ 安装包（Inno Setup 或 MSIX）与代码签名未做 |
 
 ## Windows 实机验收清单
 
 在 Windows 上运行打包目录中的 `AgentSignalBar.exe`，逐项检查：
 
-1. 托盘：图标出现在通知区域（可能先被收进 `^` 溢出区），绿灯按“工作中”节奏慢闪；任务栏切换深色/浅色后，极简圆点的描边颜色随之变化。
+1. 托盘：图标出现在通知区域（可能先被收进 `^` 溢出区）；没有 Codex 任务时为空闲。用 `--signal working` 启动时，绿灯按“工作中”节奏慢闪；任务栏切换深色/浅色后，极简圆点的描边颜色随之变化。
 2. 单击托盘图标：卡片面板出现在图标上方并贴着任务栏；任务栏移到顶部或侧边后，面板仍然贴着任务栏；点击其他位置时面板关闭。
 3. 右键托盘图标：弹出系统菜单；“显示/隐藏悬浮灯”“暂停监控”“关闭声音提醒”能立即生效。
 4. 悬浮灯：可以拖动，并且始终在其他窗口之上；拖动右下角箭头可以缩放；右键菜单能切换大小和方向；退出后重新打开，位置保持不变。
@@ -77,6 +99,9 @@ Integrations/Windows/dev-macos.sh capture
 8. 设置 → 调试（在“通用”里打开“显示调试设置”）：逐个点击灯光调试按钮，托盘和悬浮灯同步变化。
 9. 高 DPI（125% / 150% / 200% 缩放）：托盘图标清晰，窗口文字没有被截断。
 10. `AgentSignalBar.exe --capture C:\temp\asb`：生成 PNG 截图，可以和 macOS 截图逐页对照。
+11. `AgentSignalBar.exe --probe 10`：打印的数据目录就是 Codex 实际写日志的位置，`recent files` 大于 0。如果 Codex 在 WSL 里运行，用 `--codex-dir` 试一下 WSL 路径，并把结果告诉我。
+12. Codex 实时监控：在 Codex（CLI、VS Code 或桌面版）里发起一个任务，2 秒内托盘灯变绿（思考快闪、工作慢闪）；需要授权时变红；完成后显示“已完成”约 30 秒再回到空闲。中途关掉 Codex，灯最多 5 分钟后回到空闲。
+13. 设置 → 连接 → Codex：显示“已连接 · 最近事件…”；“选择数据目录…”能打开文件夹对话框，选择后立即生效。
 
 ## 素材
 

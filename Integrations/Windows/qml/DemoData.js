@@ -56,7 +56,8 @@ function account(t) {
 
 function sessions(t) {
     return [
-        { agent: "Codex", state: "active", pill: t("终端运行中", "Terminal running"), detail: t("收到任务", "Task received"), source: "Codex CLI" }
+        { agent: "Codex", state: "active", pill: t("终端运行中", "Terminal running"), detail: t("思考中", "Thinking"),
+          title: t("Codex · 终端运行中", "Codex · Terminal running"), time: "16:02", source: "Codex CLI" }
     ]
 }
 

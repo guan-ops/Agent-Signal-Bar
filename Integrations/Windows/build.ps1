@@ -32,6 +32,16 @@ if (-not $SkipTests) {
     & .\release\tst_signalmodel.exe
     if ($LASTEXITCODE -ne 0) { throw "lamp parity tests failed" }
     Pop-Location
+
+    $codexTestDir = Join-Path $BuildDir "tests-codex"
+    New-Item -ItemType Directory -Force $codexTestDir | Out-Null
+    Push-Location $codexTestDir
+    & $qmake (Join-Path $Source "tests\codex.pro") "CONFIG+=release"
+    & $make
+    if ($LASTEXITCODE -ne 0) { throw "codex test build failed" }
+    & .\release\tst_codex.exe
+    if ($LASTEXITCODE -ne 0) { throw "codex data layer tests failed" }
+    Pop-Location
 }
 
 $appDir = Join-Path $BuildDir "app"
@@ -52,3 +62,4 @@ if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
 Write-Host ""
 Write-Host "Staged: $stage"
 Write-Host "Screenshots: $stage\AgentSignalBar.exe --capture `"$BuildDir\capture`""
+Write-Host "Codex check: $stage\AgentSignalBar.exe --probe 10"

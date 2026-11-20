@@ -1,6 +1,10 @@
 #include "AppController.h"
 
+#include "ActivityText.h"
+#include "SignalRuntime.h"
+
 #include <QClipboard>
+#include <QDateTime>
 #include <QOperatingSystemVersion>
 #include <QCoreApplication>
 #include <QDesktopServices>
@@ -68,10 +72,26 @@ QString soundFileFor(const QString &kind, const QString &sound) {
     return sound == "ai_orbit" ? "waiting-ai-orbit.wav" : "waiting-ai-tick.wav";
 }
 
+QList<asb::codex::Root> codexRoots(const QString &selectedPath) {
+    return asb::codex::activityRoots(QDir::homePath(), qEnvironmentVariable("CODEX_HOME"), selectedPath);
+}
+
+QString shortTime(qint64 ms) {
+    return QLocale::system().toString(QDateTime::fromMSecsSinceEpoch(ms).time(), QLocale::ShortFormat);
+}
+
 } // namespace
 
-AppController::AppController(const QString &settingsFile, const QString &captureDir, QObject *parent)
+AppController::~AppController() {
+    // Stop the monitor thread while this object (its signal receiver) is still whole.
+    delete m_runtime;
+    m_runtime = nullptr;
+}
+
+AppController::AppController(const QString &settingsFile, const QString &captureDir, bool live,
+                             const QString &codexDirOverride, QObject *parent)
     : QObject(parent), m_prefs(new PrefsMap(this)), m_captureDir(captureDir) {
+    m_codexDirOverride = codexDirOverride;
     m_settings = settingsFile.isEmpty()
         ? std::make_unique<QSettings>(QSettings::IniFormat, QSettings::UserScope, "AgentSignalBar", "AgentSignalBar")
         : std::make_unique<QSettings>(settingsFile, QSettings::IniFormat);
@@ -94,12 +114,96 @@ AppController::AppController(const QString &settingsFile, const QString &capture
         emit tickChanged();
     });
     restartTimer();
+    connect(this, &AppController::languageChanged, this, &AppController::rebuildActivity);
+    if (live) {
+        m_runtime = new SignalRuntime(this);
+        connect(m_runtime, &SignalRuntime::changed, this, &AppController::rebuildActivity);
+        const bool overridden = !m_codexDirOverride.isEmpty();
+        m_runtime->start(overridden ? asb::codex::rootsForDirectory(QDir::homePath(), m_codexDirOverride)
+                                    : codexRoots(m_prefs->value("codexDataDir").toString()),
+                         m_prefs->value("lowPowerMode").toBool(), overridden);
+    }
+    rebuildActivity();
 }
 
 QString AppController::signalName() const {
     if (!m_debugSignal.isEmpty()) return m_debugSignal;
-    return m_paused ? QStringLiteral("paused") : m_demoSignal;
+    if (m_paused) return QStringLiteral("paused");
+    return m_runtime ? m_liveSignal : m_demoSignal;
 }
+
+void AppController::rebuildActivity() {
+    if (!m_runtime) return;
+    const bool zh = language() == "zh";
+    QVariantList sessions;
+    for (const asb::SessionStatus &s : m_runtime->visibleSessions()) {
+        const QString state = asb::displayStateKey(asb::displayState(s.signal));
+        sessions.append(QVariantMap{{"id", s.sessionID}, {"title", asb::text::sessionTitle(s, zh)},
+                                    {"agent", asb::text::friendlyAgentName(s.agent, zh)},
+                                    {"pill", asb::text::runtimeLabel(s, zh)},
+                                    {"detail", asb::text::sessionSubtitle(s, zh)}, {"state", state},
+                                    {"time", shortTime(s.updatedAt)}});
+    }
+    QVariantList events;
+    for (const asb::SignalEvent &e : m_runtime->recentEvents()) {
+        events.append(QVariantMap{{"title", asb::text::eventTitle(e, zh)}, {"detail", asb::text::eventSubtitle(e, zh)},
+                                  {"state", asb::displayStateKey(asb::displayState(e.signal))},
+                                  {"time", shortTime(e.updatedAt)}});
+    }
+    const asb::codex::ConnectionHealth &health = m_runtime->connection();
+    const auto lastActivity = m_runtime->lastActivityAt();
+    // MenuBarStatusModel.codexConnectionMessage
+    QString message;
+    QString tone = "neutral";
+    if (m_paused) {
+        message = text("监控已暂停", "Monitoring paused");
+    } else if (!m_runtime->hasPolled()) {
+        message = text("正在检查会话目录…", "Checking session directories…");
+    } else if (!health.unreadable.isEmpty()) {
+        message = text("无法读取目录：", "Cannot read directory: ") + health.unreadable.join(", ");
+        tone = "critical";
+    } else if (health.existingRoots == 0) {
+        message = text("未找到会话目录。请启动 Codex 任务或选择数据目录。",
+                       "No session directory found. Start a Codex task or select its data directory.");
+        tone = "caution";
+    } else if (health.recentFiles == 0) {
+        message = text("尚未找到会话日志。请在 Codex 中发起任务。", "No session logs yet. Start a task in Codex.");
+        tone = "caution";
+    } else if (lastActivity) {
+        message = text("已连接 · 最近事件：", "Connected · Last event: ")
+            + QLocale::system().toString(QDateTime::fromMSecsSinceEpoch(*lastActivity), QLocale::ShortFormat);
+        tone = "positive";
+    } else {
+        message = text("已找到日志，等待新事件。请在 Codex 中发起任务。",
+                       "Logs found; waiting for an event. Start a task in Codex.");
+        tone = "positive";
+    }
+    const QVariantMap connection{
+        {"message", message}, {"tone", tone},
+        {"home", QDir::toNativeSeparators(asb::codex::primaryCodexHome(
+                     QDir::homePath(), qEnvironmentVariable("CODEX_HOME"),
+                     m_codexDirOverride.isEmpty() ? m_prefs->value("codexDataDir").toString() : m_codexDirOverride))},
+        {"roots", health.roots}, {"existingRoots", health.existingRoots}, {"recentFiles", health.recentFiles},
+        {"unreadable", health.unreadable}, {"polled", m_runtime->hasPolled()},
+        {"lastActivity", lastActivity ? shortTime(*lastActivity) : QString()}};
+
+    const bool listsChanged = sessions != m_sessions || events != m_events || connection != m_codexConnection;
+    m_sessions = sessions;
+    m_events = events;
+    m_codexConnection = connection;
+    if (listsChanged) emit activityChanged();
+    const QString aggregate = m_runtime->display().aggregate;
+    if (aggregate != m_liveSignal) {
+        m_liveSignal = aggregate;
+        emit signalNameChanged();
+    }
+}
+
+void AppController::checkCodexConnection() {
+    if (m_runtime) m_runtime->pollNow();
+}
+
+QString AppController::localPath(const QUrl &url) const { return QDir::toNativeSeparators(url.toLocalFile()); }
 
 QString AppController::displayState() const { return asb::displayStateKey(asb::displayState(signalName())); }
 
@@ -239,6 +343,8 @@ void AppController::showSystemMenu() { emit systemMenuRequested(); }
 
 void AppController::togglePause() {
     m_paused = !m_paused;
+    if (m_runtime) m_runtime->setPaused(m_paused);
+    rebuildActivity();
     emit signalNameChanged();
 }
 
@@ -311,6 +417,10 @@ void AppController::onPrefChanged(const QString &key, const QVariant &value) {
         emit themeChanged();
     } else if (key == "lowPowerMode") {
         restartTimer();
+        if (m_runtime) m_runtime->setLowPower(value.toBool());
+    } else if (key == "codexDataDir") {
+        if (m_runtime && m_codexDirOverride.isEmpty()) m_runtime->setRoots(codexRoots(value.toString()), true);
+        rebuildActivity();
     } else if (key == "launchAtLogin") {
         applyLaunchAtLogin(value.toBool());
     } else if (key == "newZealandMode" && value.toBool()) {

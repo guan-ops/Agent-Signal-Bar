@@ -1,11 +1,20 @@
 import QtQuick
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import AgentSignal
 
 // 连接 / Connect: diagnostics, Codex data directory, optional hooks.
 SettingsPage {
-    readonly property string stateFile: "%LOCALAPPDATA%\\AgentSignalBar\\state.json"
-    readonly property string codexHome: App.prefs.codexDataDir.length > 0 ? App.prefs.codexDataDir : "%USERPROFILE%\\.codex"
+    readonly property var codex: App.codexConnection
+    readonly property string codexHome: App.liveData && codex.home ? codex.home
+        : (App.prefs.codexDataDir.length > 0 ? App.prefs.codexDataDir : "%USERPROFILE%\\.codex")
+    readonly property string codexTone: App.liveData ? (codex.tone || "neutral") : "caution"
+
+    FolderDialog {
+        id: folderDialog
+        title: Theme.t("选择包含 sessions 文件夹的 Codex 数据目录", "Select the Codex data directory containing the sessions folder")
+        onAccepted: App.prefs.codexDataDir = App.localPath(selectedFolder)
+    }
 
     AsbSection {
         title: Theme.t("诊断与版本", "Diagnostics & Version")
@@ -16,8 +25,8 @@ SettingsPage {
         }
         AsbRow {
             title: Theme.t("状态文件", "State file")
-            subtitle: stateFile
-            AsbButton { icon: "copy"; text: Theme.t("复制路径", "Copy Path"); onClicked: App.copyText(stateFile) }
+            subtitle: Theme.t("Windows 版暂不写状态文件：状态只保存在内存中，agent-signal CLI 与 Hook 尚未移植。",
+                              "Not written on Windows yet: state lives in memory until the agent-signal CLI and hooks are ported.")
         }
         AsbRow {
             title: Theme.t("版本", "Version")
@@ -36,14 +45,34 @@ SettingsPage {
         AsbRow {
             title: Theme.t("数据目录", "Data directory")
             subtitle: codexHome
-            StatusPill { text: Theme.t("演示数据", "Demo data"); tone: "caution" }
+            StatusPill {
+                text: !App.liveData ? Theme.t("演示数据", "Demo data")
+                    : codexTone === "positive" ? Theme.t("已连接", "Connected")
+                    : codexTone === "critical" ? Theme.t("无法读取", "Unreadable")
+                    : codexTone === "caution" ? Theme.t("未连接", "Not connected")
+                    : Theme.t("检查中", "Checking")
+                tone: codexTone
+            }
+        }
+        AsbText {
+            visible: App.liveData
+            text: codex.message || ""
+            caption: true
+            color: codexTone === "neutral" ? Theme.secondary : Theme.toneForeground(codexTone)
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
         }
         RowLayout {
             spacing: Theme.s
-            AsbButton { icon: "folder"; text: Theme.t("选择数据目录…", "Choose Directory…") }
+            AsbButton { icon: "folder"; text: Theme.t("选择数据目录…", "Choose Directory…"); onClicked: folderDialog.open() }
             AsbButton { text: Theme.t("使用默认目录", "Use Default"); onClicked: App.prefs.codexDataDir = "" }
-            AsbButton { icon: "check"; text: Theme.t("检查连接", "Check Connection") }
-            StatusPill { text: Theme.t("自动监控", "Auto monitoring"); tone: "positive" }
+            AsbButton { icon: "check"; text: Theme.t("检查连接", "Check Connection"); onClicked: App.checkCodexConnection() }
+            StatusPill {
+                visible: App.liveData && !App.paused
+                text: Theme.t("自动监控", "Auto monitoring")
+                tone: "positive"
+            }
         }
     }
 

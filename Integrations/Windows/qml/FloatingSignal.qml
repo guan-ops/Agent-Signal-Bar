@@ -93,22 +93,25 @@ Window {
             color: parent.inverted ? "black" : parent.textColor
         }
     }
+    // Quota and token badges wait for the usage data layer; live runs hide them rather than
+    // show demo numbers next to a live lamp.
     Badge {
-        visible: App.prefs.badgeQuota
+        visible: App.prefs.badgeQuota && !App.liveData
         x: 0
         y: 0
         text: "76%"
         textColor: Theme.toneForeground("positive")
     }
     Badge {
-        visible: App.prefs.badgeRunning
+        readonly property int running: App.liveData ? App.sessions.length : 1
+        visible: App.prefs.badgeRunning && running > 0 && !App.paused
         x: win.width - width
         y: 0
-        text: "1"
+        text: String(running)
         inverted: true
     }
     Badge {
-        visible: App.prefs.badgeToken
+        visible: App.prefs.badgeToken && !App.liveData
         x: 0
         y: win.height - height
         text: "1.3M"
@@ -190,17 +193,17 @@ Window {
                     AsbText { text: Theme.stateAction(App.displayState); caption: true; secondary: true }
                 }
                 Repeater {
-                    model: Demo.sessions(Theme.t)
+                    model: App.paused ? [] : (App.liveData ? App.sessions : Demo.sessions(Theme.t))
                     RowLayout {
                         required property var modelData
-                        Rectangle { width: 7; height: 7; radius: 3.5; color: Theme.lampGreen }
-                        AsbText { text: modelData.agent; strong: true }
-                        AsbText { text: modelData.detail; secondary: true; Layout.fillWidth: true }
+                        Rectangle { width: 7; height: 7; radius: 3.5; color: Theme.toneLamp(Theme.toneForState(modelData.state)) }
+                        AsbText { text: modelData.agent; strong: true; textFormat: Text.PlainText }
+                        AsbText { text: modelData.detail; secondary: true; textFormat: Text.PlainText; Layout.fillWidth: true }
                     }
                 }
-                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.separator }
+                Rectangle { visible: !App.liveData; Layout.fillWidth: true; height: 1; color: Theme.separator }
                 Repeater {
-                    model: Demo.account(Theme.t).quotas
+                    model: App.liveData ? [] : Demo.account(Theme.t).quotas
                     QuotaLine {
                         required property var modelData
                         compact: true

@@ -18,6 +18,11 @@ SettingsPage {
             font.weight: Font.DemiBold
             Layout.fillWidth: true
         }
+        StatusPill {
+            visible: App.liveData
+            text: Theme.t("演示数据", "Demo data")
+            tone: "caution"
+        }
         Dropdown {
             key: "usagePlatform"
             icon: page.claude ? "sparkles" : "terminal"

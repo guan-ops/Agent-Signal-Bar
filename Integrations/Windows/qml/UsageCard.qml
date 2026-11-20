@@ -19,6 +19,13 @@ ColumnLayout {
 
     PlatformSwitcher {}
 
+    // Usage, quota and account data are not ported yet; say so next to a live lamp.
+    StatusPill {
+        visible: App.liveData
+        text: Theme.t("演示数据 · 用量尚未接入", "Demo data · usage not connected yet")
+        tone: "caution"
+    }
+
     // Account and quota.
     AsbGroup {
         spacing: 10
