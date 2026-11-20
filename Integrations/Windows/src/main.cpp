@@ -20,6 +20,7 @@
 #include <QCommandLineParser>
 #include <QDateTime>
 #include <QDir>
+#include <QFileInfo>
 #include <QTextStream>
 #include <algorithm>
 #include <cstdio>
@@ -83,8 +84,10 @@ void writeTraySheet(const QString &dir) {
 // attaches to the calling console).
 int runProbe(QApplication &app, int seconds, const QString &dataDir) {
 #ifdef Q_OS_WIN
+    // A GUI-subsystem exe has no console of its own; borrow the caller's (use `start /wait`).
     if (AttachConsole(ATTACH_PARENT_PROCESS)) {
         std::freopen("CONOUT$", "w", stdout);
+        SetConsoleOutputCP(CP_UTF8);
     }
 #endif
     QTextStream out(stdout);
@@ -107,7 +110,14 @@ int runProbe(QApplication &app, int seconds, const QString &dataDir) {
         QTextStream line(&report);
         line << "existing roots " << health.existingRoots << ", recent files " << health.recentFiles;
         if (!health.unreadable.isEmpty()) line << ", unreadable: " << health.unreadable.join(", ");
-        line << "\nlamp: " << runtime.display().aggregate << "\n";
+        line << "\n";
+        // Size, modification age and bytes consumed per file: shows whether appends are seen
+        // and whether the file system's modification time keeps up while Codex writes.
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        for (const asb::codex::TrackedFile &f : runtime.trackedFiles())
+            line << "  file " << QFileInfo(f.path).fileName() << " size " << f.size << " read " << f.consumed
+                 << " modified " << (now - f.modifiedMs) / 1000 << "s ago\n";
+        line << "lamp: " << runtime.display().aggregate << "\n";
         for (const asb::SessionStatus &s : runtime.visibleSessions())
             line << "  session " << asb::text::sessionTitle(s, zh) << " | " << asb::text::sessionSubtitle(s, zh) << " | "
                  << QDateTime::fromMSecsSinceEpoch(s.updatedAt).toString("HH:mm:ss") << "\n";

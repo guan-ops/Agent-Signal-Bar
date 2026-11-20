@@ -148,10 +148,54 @@ private slots:
     }
 
     void rootsFollowSelectionThenEnvironment() {
-        QCOMPARE(codex::primaryCodexHome("/home/u", "", ""), QString("/home/u/.codex"));
-        QCOMPARE(codex::primaryCodexHome("/home/u", " /data/codex ", ""), QString("/data/codex"));
-        QCOMPARE(codex::primaryCodexHome("/home/u", "/data/codex", "~/picked"), QString("/home/u/picked"));
-        QCOMPARE(codex::activityRoots("/home/u", "", "").first().path, QString("/home/u/.codex/sessions"));
+        // Native absolute paths, so this holds on Windows too.
+        QTemporaryDir tmp;
+        const QString home = tmp.path() + "/home";
+        const QString data = tmp.path() + "/data";
+        QCOMPARE(codex::primaryCodexHome(home, "", ""), QDir::cleanPath(home + "/.codex"));
+        QCOMPARE(codex::primaryCodexHome(home, " " + data + " ", ""), QDir::cleanPath(data));
+        QCOMPARE(codex::primaryCodexHome(home, data, "~/picked"), QDir::cleanPath(home + "/picked"));
+        QCOMPARE(codex::primaryCodexHome(home, data, "  "), QDir::cleanPath(data));
+        QCOMPARE(codex::activityRoots(home, "", "").first().path, QDir::cleanPath(home + "/.codex/sessions"));
+        QCOMPARE(codex::rootsForDirectory(home, data).size(), 1);
+#ifdef Q_OS_WIN
+        QCOMPARE(codex::primaryCodexHome(home, "", "C:\\Codex Data"), QString("C:/Codex Data"));
+        QCOMPARE(codex::primaryCodexHome(home, "", "~\\.codex-alt"), QDir::cleanPath(home + "/.codex-alt"));
+        QCOMPARE(codex::primaryCodexHome(home, "", "\\\\wsl.localhost\\Ubuntu\\home\\u\\.codex"),
+                 QString("//wsl.localhost/Ubuntu/home/u/.codex"));
+#endif
+    }
+
+    // A user-picked directory (and app start) replays recent history: a pending permission is
+    // reported, while work that its session already completed is not.
+    void monitorReplaysRecentHistoryWhenAsked() {
+        QTemporaryDir dir;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        // Session a runs in the terminal; b in the desktop app. (Two desktop sessions share one
+        // display source, where b's later completion would also hide a's request, as on macOS.)
+        append(dir.path() + "/rollout-2026-03-01T10-00-00-0199a1b2-0000-7000-8000-00000000000a.jsonl",
+               QByteArray(R"({"type":"session_meta","payload":{"id":"0199a1b2-0000-7000-8000-00000000000a","source":"exec"}})") + '\n'
+                   + line(now - 50000, "event_msg", R"({"type":"task_started"})")
+                   + line(now - 20000, "response_item",
+                          R"({"type":"function_call","name":"shell","arguments":{"sandbox_permissions":"require_escalated"}})"));
+        append(dir.path() + "/rollout-2026-03-01T10-00-00-0199a1b2-0000-7000-8000-00000000000b.jsonl",
+               line(now - 40000, "event_msg", R"({"type":"task_started"})")
+                   + line(now - 30000, "response_item", R"({"type":"function_call","name":"apply_patch"})")
+                   + line(now - 5000, "event_msg", R"({"type":"task_complete"})"));
+        codex::ActivityMonitor::Options options;
+        options.replaysInitialHistory = true;
+        codex::ActivityMonitor monitor({{dir.path(), QString()}}, options);
+        const codex::PollResult result = monitor.poll(now);
+
+        QStringList seen;
+        for (const codex::Activity &a : result.activities) seen << a.sessionID.right(1) + ':' + a.signal;
+        QCOMPARE(seen, (QStringList{"a:thinking", "a:permission_request", "b:done"}));
+
+        SignalStore store;
+        for (const codex::Activity &a : result.activities)
+            store.applySessionSignal(a.signal, a.sessionID, a.agent, a.event, *a.timestampMs, now);
+        QCOMPARE(display::displaySnapshot(store.readSnapshot(now), now).aggregate, QString("permission"));
+        QCOMPARE(monitor.poll(now).activities.size(), 0); // replayed once only
     }
 
     void monitorPrimesThenTailsAppends() {

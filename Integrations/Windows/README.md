@@ -40,10 +40,10 @@ powershell -ExecutionPolicy Bypass -File Integrations\Windows\build.ps1 -QtDir C
 ### 检查 Codex 数据目录
 
 ```bat
-%TEMP%\asb-windows-build\AgentSignalBar\AgentSignalBar.exe --probe 10
+start /wait %TEMP%\asb-windows-build\AgentSignalBar\AgentSignalBar.exe --probe 10
 ```
 
-`--probe` 不打开任何窗口，只在终端里打印 10 秒内看到的内容：Codex 数据目录、找到的 rollout 文件数，以及信号灯和各会话的状态（会回放最近 30 分钟的活动）。数据目录的顺序是：设置里选择的目录 → `CODEX_HOME` → `%USERPROFILE%\.codex`，日志在其中的 `sessions` 文件夹。可以用 `--codex-dir <目录>` 临时指定别的目录，例如 WSL 里的 `\\wsl.localhost\Ubuntu\home\<用户>\.codex`。
+`AgentSignalBar.exe` 是窗口程序，不加 `start /wait` 时命令提示符会立刻返回，输出会和提示符混在一起。`--probe` 不打开任何窗口，只在终端里打印 10 秒内看到的内容：Codex 数据目录、找到的 rollout 文件，以及信号灯和各会话的状态（会回放最近 30 分钟的活动）。每个文件一行，包括大小、已读取的字节数和“几秒前修改”；Codex 正在写入时，这几个数字应该在增长。数据目录的顺序是：设置里选择的目录 → `CODEX_HOME` → `%USERPROFILE%\.codex`，日志在其中的 `sessions` 文件夹。可以用 `--codex-dir <目录>` 临时指定别的目录，例如 WSL 里的 `\\wsl.localhost\Ubuntu\home\<用户>\.codex`。
 
 运行时加上 `--signal working` 会进入演示模式，不读取 Codex。
 
@@ -69,10 +69,10 @@ Integrations/Windows/dev-macos.sh capture
 | 设置窗口 7 个页面 | QML 页面 | ⚠️ 页面结构与主要控件已完成（演示数据）。macOS 版 376 条界面文案中约 2/3 尚未出现，主要是加载中、错误、空状态等需要数据层的文案，以及 Claude 用量设置、探测日志、获取策略调试、OpenAI Cookie 等调试分区。运行 `python3 -I Integrations/Windows/tests/parity_strings.py <仓库根目录> <输出目录>` 可列出缺失项 |
 | 液态玻璃 | Mica（标准）/ Mica Alt（增强），只用于设置窗口 | ⚠️ 已写 DWM 调用；低于 Windows 11 22H2 时自动保持不透明。需要实机验收 |
 | 开机自启动（SMAppService） | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | ⚠️ 已实现，需要实机验收 |
-| 提示音（AVFoundation，可调音量） | `PlaySound` 播放 WAV（新西兰录音已转成 WAV） | ⚠️ 已支持试听；暂不支持音量档位，需要改用 Qt Multimedia 或 WASAPI |
+| 提示音（AVFoundation，可调音量） | `PlaySound` 播放 WAV（新西兰录音已转成 WAV） | ⚠️ 只能在设置里试听：任务完成或等待授权时还不会自动播放；暂不支持音量档位，需要改用 Qt Multimedia 或 WASAPI |
 | 多语言（10 种） | 目前只有简体中文和英文 | ❌ 其他语言暂时显示英文；需要移植 `AppLanguage.swift` 的翻译表 |
-| Codex 日志监控（灯语） | `CodexActivityMonitor` + `SignalStore` + `ActivityDisplay` | ✅ 解析器（57 行样例 × 2 种默认来源）和状态存储（11 组事件序列）与 Swift 实现逐条比对；监控和显示规则有单元测试。已在 macOS 上用真实 `~/.codex` 只读验证。Windows 上的目录位置需要用 `--probe` 实机确认 |
-| 状态文件 `status.json`（与 CLI、Hook 共享） | 内存中的 `SignalStore` | ⚠️ 规则相同，但不写文件：重启后要等下一条日志才恢复状态。等 CLI 和 Hook 移植时再落盘 |
+| Codex 日志监控（灯语） | `CodexActivityMonitor` + `SignalStore` + `ActivityDisplay` | ✅ 解析器（57 行样例 × 2 种默认来源）和状态存储（11 组事件序列）与 Swift 实现逐条比对；监控和显示规则有单元测试。已在 macOS 上对真实 `~/.codex` 只读运行过，但没有和 macOS 版逐项对比（当时 macOS 版关闭了 Codex 自动监控）。Windows 上的目录位置需要用 `--probe` 实机确认 |
+| 状态文件 `status.json`（与 CLI、Hook 共享） | 内存中的 `SignalStore` | ⚠️ 规则相同，但不写文件。为了弥补，启动时会回放最近 30 分钟的日志，所以正在等授权的任务一启动就显示红灯；代价是最近几分钟内被中断的任务会先显示绿灯，直到显示窗口过期。等 CLI 和 Hook 移植时再落盘 |
 | 灯效 Agent（按 Agent 跟随、空闲时显示其他 Agent） | — | ⚠️ Windows 目前只监控 Codex，所以所有会话都参与灯效；“灯效 Agent”下拉框还没有效果 |
 | 桌面应用在线检测（Codex/Claude 桌面版已打开） | — | ❌ 未移植 |
 | Xcode、JetBrains 的 Codex 会话目录 | — | ⚠️ macOS 开发版会读取；Windows 上的 JetBrains 目录未知，暂不读取 |
@@ -99,7 +99,7 @@ Integrations/Windows/dev-macos.sh capture
 8. 设置 → 调试（在“通用”里打开“显示调试设置”）：逐个点击灯光调试按钮，托盘和悬浮灯同步变化。
 9. 高 DPI（125% / 150% / 200% 缩放）：托盘图标清晰，窗口文字没有被截断。
 10. `AgentSignalBar.exe --capture C:\temp\asb`：生成 PNG 截图，可以和 macOS 截图逐页对照。
-11. `AgentSignalBar.exe --probe 10`：打印的数据目录就是 Codex 实际写日志的位置，`recent files` 大于 0。如果 Codex 在 WSL 里运行，用 `--codex-dir` 试一下 WSL 路径，并把结果告诉我。
+11. `start /wait AgentSignalBar.exe --probe 10`：打印的数据目录就是 Codex 实际写日志的位置，`recent files` 大于 0；Codex 运行任务时，对应文件的 `size` 和 `read` 一起增长。如果 Codex 在 WSL 里运行，用 `--codex-dir` 试一下 WSL 路径，并把结果告诉我。
 12. Codex 实时监控：在 Codex（CLI、VS Code 或桌面版）里发起一个任务，2 秒内托盘灯变绿（思考快闪、工作慢闪）；需要授权时变红；完成后显示“已完成”约 30 秒再回到空闲。中途关掉 Codex，灯最多 5 分钟后回到空闲。
 13. 设置 → 连接 → Codex：显示“已连接 · 最近事件…”；“选择数据目录…”能打开文件夹对话框，选择后立即生效。
 

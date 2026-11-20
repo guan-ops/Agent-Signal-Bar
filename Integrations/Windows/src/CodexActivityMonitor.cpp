@@ -95,6 +95,14 @@ void ActivityMonitor::reset() {
 }
 
 PollResult ActivityMonitor::poll(qint64 now) {
+    PollResult result = pollFiles(now);
+    for (const SessionFile &file : std::as_const(m_cachedFiles))
+        result.files.append({QDir::toNativeSeparators(file.path), file.size, file.modifiedMs,
+                             m_cursors.value(file.path).offset});
+    return result;
+}
+
+PollResult ActivityMonitor::pollFiles(qint64 now) {
     PollResult result;
     const QList<SessionFile> files = recentFiles(now);
     result.connection.recentFiles = int(files.size());

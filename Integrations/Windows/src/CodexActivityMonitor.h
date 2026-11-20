@@ -41,9 +41,18 @@ struct ConnectionHealth {
     int recentFiles = 0;
 };
 
+// A tracked rollout file, for --probe diagnostics.
+struct TrackedFile {
+    QString path;
+    qint64 size = 0;
+    qint64 modifiedMs = 0;
+    qint64 consumed = 0; // bytes read so far (cursor offset)
+};
+
 struct PollResult {
     ConnectionHealth connection;
     QList<Activity> activities; // accepted, oldest first
+    QList<TrackedFile> files;
 };
 
 class ActivityMonitor {
@@ -87,6 +96,7 @@ private:
         QByteArray bytes;
     };
 
+    PollResult pollFiles(qint64 now);
     QList<SessionFile> recentFiles(qint64 now);
     QList<SessionFile> scanFiles();
     std::optional<SessionFile> stat(const QString &path, const QString &forcedAgent) const;

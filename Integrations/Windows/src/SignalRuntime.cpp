@@ -85,6 +85,7 @@ void SignalRuntime::poll() {
 void SignalRuntime::applyPoll(const asb::codex::PollResult &result) {
     const qint64 now = nowMs();
     m_connection = result.connection;
+    m_files = result.files;
     m_hasPolled = true;
     for (const asb::codex::Activity &a : result.activities) {
         const qint64 at = a.timestampMs.value_or(now);

@@ -32,6 +32,7 @@ public:
     const QList<asb::SessionStatus> &visibleSessions() const { return m_visibleSessions; }
     const QList<asb::SignalEvent> &recentEvents() const { return m_recentEvents; }
     const asb::codex::ConnectionHealth &connection() const { return m_connection; }
+    const QList<asb::codex::TrackedFile> &trackedFiles() const { return m_files; }
     std::optional<qint64> lastActivityAt() const { return m_lastActivityAt; }
     bool hasPolled() const { return m_hasPolled; }
 
@@ -60,5 +61,6 @@ private:
     QList<asb::SessionStatus> m_visibleSessions;
     QList<asb::SignalEvent> m_recentEvents;
     asb::codex::ConnectionHealth m_connection;
+    QList<asb::codex::TrackedFile> m_files;
     std::optional<qint64> m_lastActivityAt;
 };

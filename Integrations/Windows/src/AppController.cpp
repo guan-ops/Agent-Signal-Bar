@@ -119,9 +119,12 @@ AppController::AppController(const QString &settingsFile, const QString &capture
         m_runtime = new SignalRuntime(this);
         connect(m_runtime, &SignalRuntime::changed, this, &AppController::rebuildActivity);
         const bool overridden = !m_codexDirOverride.isEmpty();
+        // The Mac app restores state from status.json on launch. Without that file yet, replay
+        // the recent history instead, so a turn already waiting for approval shows red at once
+        // (a turn killed in the last few minutes shows green until its display window lapses).
         m_runtime->start(overridden ? asb::codex::rootsForDirectory(QDir::homePath(), m_codexDirOverride)
                                     : codexRoots(m_prefs->value("codexDataDir").toString()),
-                         m_prefs->value("lowPowerMode").toBool(), overridden);
+                         m_prefs->value("lowPowerMode").toBool(), /*replayRecentHistory=*/true);
     }
     rebuildActivity();
 }
