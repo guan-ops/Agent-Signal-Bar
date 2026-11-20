@@ -114,6 +114,8 @@ int runProbe(QApplication &app, int seconds, const QString &dataDir) {
     QTemporaryDir scratch;
     const QString probeState = scratch.path() + "/status.json";
     QFile::copy(realState, probeState);
+    out << "Probe copy: " << QDir::toNativeSeparators(probeState) << "\n";
+    out.flush();
 
     SignalRuntime runtime(probeState);
     const bool zh = false;

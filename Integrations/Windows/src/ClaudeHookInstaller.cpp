@@ -86,7 +86,9 @@ bool owns(const QJsonObject &item) {
 bool isCurrent(const QJsonObject &item, const QString &exe) {
     const QString command = item.value("command").toString();
     if (item.contains("args")) {
-        return item.value("args").toArray() == QJsonArray{"claude-hook"} && samePath(command, exe);
+        // The exact string this installer writes first (it may be an 8.3 short path).
+        return item.value("args").toArray() == QJsonArray{"claude-hook"}
+            && (command == ClaudeHookInstaller::commandPath(exe) || samePath(command, exe));
     }
     const auto words = shellWords(command);
     return words && words->size() == 2 && words->at(1) == "claude-hook" && samePath(words->first(), exe);

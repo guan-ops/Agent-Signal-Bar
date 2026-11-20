@@ -30,7 +30,14 @@ SignalRuntime::SignalRuntime(QString stateFilePath, QObject *parent)
     connect(&m_refreshTimer, &QTimer::timeout, this, [this] { schedule({false, false}); });
     m_watchDebounce.setSingleShot(true);
     m_watchDebounce.setInterval(150);
-    connect(&m_watchDebounce, &QTimer::timeout, this, [this] { schedule({false, false}); });
+    connect(&m_watchDebounce, &QTimer::timeout, this, [this] {
+        // The folder also sees status.json.lock come and go on every read; react only when the
+        // state file itself changed, or the watcher would keep re-triggering itself.
+        if (const QString stamp = stateFileStamp(); stamp != m_stateStamp) {
+            m_stateStamp = stamp;
+            schedule({false, false});
+        }
+    });
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, &m_watchDebounce, qOverload<>(&QTimer::start));
 }
 
@@ -126,6 +133,9 @@ void SignalRuntime::schedule(Job job) {
 void SignalRuntime::finish(quint64 generation, bool polled, const asb::codex::PollResult &result,
                            const std::optional<asb::SignalSnapshot> &snapshot) {
     m_inFlight = false;
+    m_stateStamp = stateFileStamp(); // our own writes need no extra read
+    static const bool trace = qEnvironmentVariableIsSet("ASB_TRACE_RUNTIME");
+    if (trace) qInfo("runtime job: %s", polled ? "poll" : "read");
     if (polled && generation == m_generation) {
         m_connection = result.connection;
         m_files = result.files;
@@ -155,6 +165,12 @@ void SignalRuntime::refreshDisplay() {
     m_visibleSessions = asb::display::visibleSessions(m_display.sessions, now, kCurrentSessionLimit);
     m_recentEvents = asb::display::recentEvents(m_display, m_visibleSessions, kRecentEventLimit);
     emit changed();
+}
+
+QString SignalRuntime::stateFileStamp() const {
+    const QFileInfo info(m_stateFilePath);
+    if (!info.exists()) return QString();
+    return QString::number(info.size()) + ':' + QString::number(info.lastModified().toMSecsSinceEpoch());
 }
 
 std::optional<qint64> SignalRuntime::lastEventAt(const QString &agentPrefix) const {

@@ -26,36 +26,44 @@ $make = if (Get-Command jom -ErrorAction SilentlyContinue) { "jom" } else { "nma
 $env:ASB_WINDOWS_VERSION = $Version
 $env:PATH = "$(Join-Path $QtDir 'bin');$env:PATH"
 
+# Native tool output goes to the host: a PowerShell function returns everything written to
+# its output stream, which would otherwise end up in the returned folder path.
 function Build-Project([string]$Name, [string]$ProFile) {
     $dir = Join-Path $BuildDir $Name
     New-Item -ItemType Directory -Force $dir | Out-Null
     Push-Location $dir
-    & $qmake (Join-Path $Source $ProFile) "CONFIG+=release"
+    & $qmake (Join-Path $Source $ProFile) "CONFIG+=release" | Out-Host
     if ($LASTEXITCODE -ne 0) { Pop-Location; throw "qmake failed: $ProFile" }
-    & $make
+    & $make | Out-Host
     if ($LASTEXITCODE -ne 0) { Pop-Location; throw "build failed: $ProFile" }
     Pop-Location
     return $dir
 }
 
+# Refuse before deleting anything: a running copy, or a folder that is not an install.
+if (Get-Process -Name "AgentSignalBar" -ErrorAction SilentlyContinue) { throw "Quit Agent Signal Bar first" }
+if ((Test-Path $InstallDir) -and (Get-ChildItem $InstallDir -Force | Select-Object -First 1) `
+        -and -not (Test-Path (Join-Path $InstallDir "AgentSignalBar.exe"))) {
+    throw "$InstallDir is not empty and holds no AgentSignalBar.exe; choose another -InstallDir"
+}
+
 if (-not $SkipTests) {
     $lampTests = Build-Project "tests" "tests\signalmodel.pro"
-    & (Join-Path $lampTests "release\tst_signalmodel.exe")
+    & (Join-Path $lampTests "release\tst_signalmodel.exe") | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "lamp parity tests failed" }
     $codexTests = Build-Project "tests-codex" "tests\codex.pro"
-    & (Join-Path $codexTests "release\tst_codex.exe")
+    & (Join-Path $codexTests "release\tst_codex.exe") | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "data layer tests failed" }
 }
 
 $appDir = Build-Project "app" "agent-signal-bar-windows.pro"
 $cliDir = Build-Project "cli" "cli\agent-signal.pro"
 
-Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue
-if (Test-Path (Join-Path $InstallDir "AgentSignalBar.exe")) { throw "Quit Agent Signal Bar first: $InstallDir is in use" }
+if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 Copy-Item (Join-Path $appDir "release\AgentSignalBar.exe") $InstallDir
 Copy-Item (Join-Path $cliDir "release\agent-signal.exe") $InstallDir
-& $deploy --release --qmldir (Join-Path $Source "qml") --no-translations (Join-Path $InstallDir "AgentSignalBar.exe")
+& $deploy --release --qmldir (Join-Path $Source "qml") --no-translations (Join-Path $InstallDir "AgentSignalBar.exe") | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
 
 Write-Host ""

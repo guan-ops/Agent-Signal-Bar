@@ -56,6 +56,7 @@ private:
     void refreshDisplay();
     void restartTimers();
     void watchStateFolder();
+    QString stateFileStamp() const;
 
     QString m_stateFilePath;
     QThread m_thread;
@@ -75,6 +76,7 @@ private:
     QTimer m_refreshTimer;
     QTimer m_watchDebounce;
     QFileSystemWatcher m_watcher;
+    QString m_stateStamp; // size:mtime of status.json when last seen
     std::optional<asb::SignalSnapshot> m_snapshot;
     asb::display::DisplaySnapshot m_display;
     QList<asb::SessionStatus> m_visibleSessions;

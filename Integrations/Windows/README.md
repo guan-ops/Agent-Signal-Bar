@@ -60,7 +60,7 @@ start /wait %LOCALAPPDATA%\Programs\AgentSignalBar\AgentSignalBar.exe --probe 10
 %LOCALAPPDATA%\Programs\AgentSignalBar\agent-signal.exe status
 ```
 
-可以随时查看 Hook 写入的状态。状态文件在 `%LOCALAPPDATA%\Agent Signal Bar\SignalState\status.json`（可用 `AGENT_SIGNAL_LIGHT_STATE_FILE` 或 `AGENT_SIGNAL_LIGHT_STATE_DIR` 改位置）。
+可以随时查看 Hook 写入的状态。如果安装后 Claude Code 报告设置错误（例如旧版本不认识 `args` 字段），先在“连接”页点“卸载”；不行的话，把 `settings.json` 旁边最新的 `settings.json.bak-*` 改名回 `settings.json` 即可恢复。状态文件在 `%LOCALAPPDATA%\Agent Signal Bar\SignalState\status.json`（可用 `AGENT_SIGNAL_LIGHT_STATE_FILE` 或 `AGENT_SIGNAL_LIGHT_STATE_DIR` 改位置）。
 
 ## 在 macOS 上开发
 
@@ -120,7 +120,7 @@ Integrations/Windows/dev-macos.sh capture
 12. Codex 实时监控：在 Codex（CLI、VS Code 或桌面版）里发起一个任务，2 秒内托盘灯变绿（思考快闪、工作慢闪）；需要授权时变红；完成后显示“已完成”约 30 秒再回到空闲。中途关掉 Codex，灯最多 5 分钟后回到空闲。
 13. 设置 → 连接 → Codex：显示“已连接 · 最近事件…”；“选择数据目录…”能打开文件夹对话框，选择后立即生效。
 14. 设置 → 连接 → Claude Code Hook：点“安装”后显示“已配置”，`settings.json` 旁边多一份 `.bak-*` 备份，原有设置还在；再点“检查”仍是“已配置”。
-15. 新开一个 Claude Code 会话发任务：灯变绿，“运行”页出现“Claude · 终端运行中”（VS Code 里是“claude-vscode · VS Code 运行中”，与 macOS 版一致）；需要授权时变红；完成后显示“已完成”。同时运行 `agent-signal.exe status` 能看到这个会话。如果灯没反应，请把 Claude Code 版本号（`claude --version`）、是否装了 Git for Windows，以及 `settings.json` 里任意一条 agent-signal 条目告诉我。
+15. 新开一个 Claude Code 会话发任务：灯变绿，“运行”页出现“Claude · 终端运行中”（VS Code 里会显示“claude-vscode · VS Code 运行中”：macOS 版源码的 `friendlyAgentName` 也没有把 `claude-vscode` 映射成 Claude，这里照搬，未在 macOS 版上实际核对）；需要授权时变红；完成后显示“已完成”。同时运行 `agent-signal.exe status` 能看到这个会话。如果灯没反应，请把 Claude Code 版本号（`claude --version`）、是否装了 Git for Windows，以及 `settings.json` 里任意一条 agent-signal 条目告诉我。
 16. 点“卸载”：只删掉 agent-signal 的条目，其他 Hook 和设置保持不变。
 
 ## 素材
