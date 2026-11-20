@@ -1,0 +1,87 @@
+import QtQuick
+import AgentSignal
+
+// Owns every window and routes tray / menu requests to them. With --capture it renders
+// each surface to PNG (dark and light, Chinese and English) and quits.
+QtObject {
+    id: root
+
+    property SettingsWindow settings: SettingsWindow {}
+    property TrayPanel panel: TrayPanel {}
+    property SystemMenu systemMenu: SystemMenu {}
+    property FloatingSignal floating: FloatingSignal {
+        visible: App.captureDir.length === 0 && App.prefs.floatingEnabled
+    }
+
+    property Connections router: Connections {
+        target: App
+        function onSettingsRequested(page) { root.settings.open(page) }
+        function onPanelRequested() {
+            root.systemMenu.hide()
+            if (root.panel.visible) root.panel.hide()
+            else root.panel.present()
+        }
+        function onSystemMenuRequested() {
+            root.panel.hide()
+            if (root.systemMenu.visible) root.systemMenu.hide()
+            else root.systemMenu.present()
+        }
+    }
+
+    Component.onCompleted: {
+        if (App.captureDir.length > 0) captureTimer.start()
+        else if (!App.prefs.statusBarEnabled) settings.open("")
+    }
+
+    // ---- Capture mode -------------------------------------------------------------
+    // Grabs complete asynchronously on the next rendered frame, so every save gets a
+    // settle step before the window is hidden or the language/theme changes.
+    function grabStep(win, name) { return [() => save(win, name), () => {}] }
+    function save(win, name) {
+        const ok = win.contentItem.grabToImage(result => {
+            if (!result.saveToFile(App.captureDir + "/" + name + ".png")) console.warn("capture: could not save", name)
+        })
+        if (!ok) console.warn("capture: grab failed for", name, "visible", win.visible, win.width, win.height)
+    }
+    function settingsStep(page, name) {
+        return [() => { settings.open(page) }].concat(grabStep(settings, name))
+    }
+    function captureSteps() {
+        let steps = []
+        for (const variant of [{ lang: "zh-Hans", theme: "dark", tag: "zh-CN-dark" },
+                               { lang: "en", theme: "dark", tag: "en-dark" },
+                               { lang: "zh-Hans", theme: "light", tag: "zh-CN-light" }]) {
+            steps.push(() => { App.prefs.language = variant.lang; App.prefs.theme = variant.theme; App.prefs.showDebugSettings = true })
+            for (const page of ["activity", "usage", "light", "connections", "general", "debug", "about"])
+                steps = steps.concat(settingsStep(page, "settings-" + page + "-" + variant.tag))
+            steps.push(() => { settings.hide(); panel.present() })
+            steps = steps.concat(grabStep(panel, "panel-card-" + variant.tag))
+            steps.push(() => { panel.hide(); systemMenu.present() })
+            steps = steps.concat(grabStep(systemMenu, "panel-system-menu-" + variant.tag))
+            steps.push(() => { systemMenu.hide(); floating.show(); floating.raise(); floating.requestActivate() })
+            steps = steps.concat(grabStep(floating, "floating-" + variant.tag))
+            steps.push(() => { App.prefs.floatingLayout = "horizontal" })
+            steps = steps.concat(grabStep(floating, "floating-horizontal-" + variant.tag))
+            steps.push(() => { App.prefs.floatingLayout = "vertical"; floating.hide() })
+        }
+        // Interaction states: lit red lamp, popover, all three lamps on a done-all-steady frame.
+        steps.push(() => { App.prefs.language = "zh-Hans"; App.prefs.theme = "dark"; App.setDemoSignal("permission"); floating.show(); floating.raise() })
+        for (let i = 0; i < 4; ++i) steps.push(() => save(floating, "floating-permission-" + App.tick))
+        steps.push(() => {})
+        steps.push(() => floating.popoverWindow.toggle())
+        steps = steps.concat(grabStep(floating.popoverWindow, "floating-popover-zh-CN-dark"))
+        steps.push(() => { floating.popoverWindow.hide(); App.setDemoSignal("working") })
+        steps.push(() => Qt.quit())
+        return steps
+    }
+    property var pending: []
+    property Timer captureTimer: Timer {
+        interval: 700
+        repeat: true
+        onTriggered: {
+            if (root.pending.length === 0) root.pending = root.captureSteps()
+            const step = root.pending.shift()
+            step()
+        }
+    }
+}
