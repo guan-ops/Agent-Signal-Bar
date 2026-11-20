@@ -2,22 +2,24 @@
 
 #include "ActivityDisplay.h"
 #include "CodexActivityMonitor.h"
-#include "SignalStore.h"
+#include "SignalStateFile.h"
 
+#include <QFileSystemWatcher>
 #include <QObject>
 #include <QThread>
 #include <QTimer>
 #include <memory>
 #include <optional>
 
-// Live signal pipeline (MenuBarStatusModel.pollCodexDesktopActivity + reloadFromWatcher):
-// the rollout monitor polls on a worker thread every 2 s (6 s in low-power mode), accepted
-// activities go into the store on the GUI thread, and the display snapshot is rebuilt after
-// each poll and every 5 s (15 s), so finished and abandoned sessions age out on time.
+// Live signal pipeline (MenuBarStatusModel.pollCodexDesktopActivity + reloadFromWatcher). On a
+// worker thread: the rollout monitor polls every 2 s (6 s in low-power mode) and accepted
+// activities go into status.json; the file is re-read every 5 s (15 s) and whenever its folder
+// changes (agent-signal.exe writes Claude Code hook events there). The GUI thread turns each
+// snapshot into the display snapshot, so finished and abandoned sessions age out on time.
 class SignalRuntime : public QObject {
     Q_OBJECT
 public:
-    explicit SignalRuntime(QObject *parent = nullptr);
+    explicit SignalRuntime(QString stateFilePath, QObject *parent = nullptr);
     ~SignalRuntime() override;
 
     void start(const QList<asb::codex::Root> &roots, bool lowPower, bool replayRecentHistory = false);
@@ -28,35 +30,52 @@ public:
     // Rescan and poll now ("检查连接").
     void pollNow();
 
+    const QString &stateFilePath() const { return m_stateFilePath; }
     const asb::display::DisplaySnapshot &display() const { return m_display; }
     const QList<asb::SessionStatus> &visibleSessions() const { return m_visibleSessions; }
     const QList<asb::SignalEvent> &recentEvents() const { return m_recentEvents; }
     const asb::codex::ConnectionHealth &connection() const { return m_connection; }
     const QList<asb::codex::TrackedFile> &trackedFiles() const { return m_files; }
     std::optional<qint64> lastActivityAt() const { return m_lastActivityAt; }
+    // Newest event from an agent whose name starts with `prefix` ("claude"), from status.json.
+    std::optional<qint64> lastEventAt(const QString &agentPrefix) const;
     bool hasPolled() const { return m_hasPolled; }
+    bool stateReadable() const { return m_stateReadable; }
 
 signals:
     void changed();
 
 private:
-    void poll();
-    void applyPoll(const asb::codex::PollResult &result);
-    void refresh();
+    struct Job {
+        bool poll = false;
+        bool rescan = false;
+    };
+    void schedule(Job job);
+    void finish(quint64 generation, bool polled, const asb::codex::PollResult &result,
+                const std::optional<asb::SignalSnapshot> &snapshot);
+    void refreshDisplay();
     void restartTimers();
+    void watchStateFolder();
 
+    QString m_stateFilePath;
     QThread m_thread;
     QObject *m_worker = nullptr; // lives in m_thread
-    std::shared_ptr<asb::codex::ActivityMonitor> m_monitor; // used only on m_thread
+    struct WorkerState;
+    std::shared_ptr<WorkerState> m_state; // touched only on m_thread after start
     quint64 m_generation = 0;
     bool m_inFlight = false;
-    bool m_forceRescan = false;
+    bool m_pollQueued = false;
+    bool m_readQueued = false;
+    bool m_rescanQueued = false;
     bool m_paused = false;
     bool m_lowPower = false;
     bool m_hasPolled = false;
+    bool m_stateReadable = true;
     QTimer m_pollTimer;
     QTimer m_refreshTimer;
-    asb::SignalStore m_store;
+    QTimer m_watchDebounce;
+    QFileSystemWatcher m_watcher;
+    std::optional<asb::SignalSnapshot> m_snapshot;
     asb::display::DisplaySnapshot m_display;
     QList<asb::SessionStatus> m_visibleSessions;
     QList<asb::SignalEvent> m_recentEvents;

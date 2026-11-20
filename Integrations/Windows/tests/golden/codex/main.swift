@@ -36,6 +36,21 @@ for (index, line) in lines.enumerated() {
           "forkedFrom": orNull(CodexDesktopSessionParser.forkedFromSessionID(fromSessionMetaLine: line))])
 }
 
+// Claude Code hook payloads (ClaudeHookAdapter), as agent-signal claude-hook resolves them.
+let claudeURL = URL(fileURLWithPath: CommandLine.arguments[3])
+let claudeLines = try! String(contentsOf: claudeURL, encoding: .utf8).split(separator: "\n").map(String.init)
+for (index, line) in claudeLines.enumerated() {
+    let fixture = try! JSONSerialization.jsonObject(with: Data(line.utf8)) as! [String: Any]
+    let env = fixture["env"] as! [String: String]
+    let payload = fixture["payload"] as! [String: Any]
+    let eventName = (fixture["event"] as? String) ?? ClaudeHookAdapter.eventName(payload: payload)
+    emit(["kind": "claude", "line": index,
+          "signal": ClaudeHookAdapter.chooseSignal(eventName: eventName, payload: payload).rawValue,
+          "sessionID": ClaudeHookAdapter.sessionKey(payload: payload, environment: env),
+          "agent": ClaudeHookAdapter.agentName(environment: env),
+          "event": orNull(ClaudeHookAdapter.displayEventName(eventName: eventName, payload: payload))])
+}
+
 // Store sequences. Event dates are whole seconds before `base`; the store prunes against the
 // real clock, which stays well under a second from `base` while this runs. The state file
 // encodes dates with second precision, so whole seconds keep the replay exact.

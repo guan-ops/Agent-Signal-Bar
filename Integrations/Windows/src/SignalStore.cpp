@@ -2,6 +2,10 @@
 
 #include "SignalModel.h"
 
+#include <QDateTime>
+#include <QJsonArray>
+#include <QTimeZone>
+#include <QUuid>
 #include <algorithm>
 #include <cstdlib>
 
@@ -55,6 +59,22 @@ QString deduplicationKey(const SignalEvent &e) {
     const QString event = e.event.isEmpty() ? e.signal : normalizedKeyPart(e.event);
     return e.sessionID + '|' + normalizedKeyPart(e.agent) + '|' + e.signal + '|' + event;
 }
+
+// SignalStateStore.decodeDate: ISO 8601 (with or without fractional seconds) or Unix seconds.
+std::optional<qint64> decodeDate(const QJsonValue &value) {
+    if (value.isDouble()) return qint64(value.toDouble() * 1000);
+    if (!value.isString()) return std::nullopt;
+    const QDateTime parsed = QDateTime::fromString(value.toString(), Qt::ISODateWithMs);
+    if (!parsed.isValid()) return std::nullopt;
+    return parsed.toMSecsSinceEpoch();
+}
+
+QString encodeDate(qint64 ms) {
+    return QDateTime::fromMSecsSinceEpoch(ms, QTimeZone::UTC).toString(Qt::ISODateWithMs);
+}
+
+// AgentSignal(rawValue:) is strict: aliases are not accepted when decoding a document.
+bool isRawSignal(const QString &value) { return normalizedSignal(value) == value; }
 
 void removeDuplicate(const SignalEvent &event, QList<SignalEvent> &events) {
     const QString key = deduplicationKey(event);
@@ -130,7 +150,9 @@ void SignalStore::compactEvents() {
 
 void SignalStore::appendEvent(const QString &sessionID, const QString &agent, const QString &signal,
                               const QString &event, qint64 updatedAt) {
-    SignalEvent record{QString::number(m_nextEventID++), sessionID, agent, signal, event, updatedAt};
+    // UUIDs, like the Swift store: the app and agent-signal.exe both append events.
+    SignalEvent record{QUuid::createUuid().toString(QUuid::WithoutBraces).toUpper(), sessionID, agent, signal, event,
+                       updatedAt};
     removeDuplicate(record, m_events);
     m_events.append(record);
     compactEvents();
@@ -199,6 +221,77 @@ SignalSnapshot SignalStore::readSnapshot(qint64 now) {
     compactEvents();
     updateAggregateAfterPruning(result);
     return snapshot();
+}
+
+SignalStore SignalStore::staleDocument(qint64 now) {
+    SignalStore store;
+    store.m_aggregate = QStringLiteral("stale");
+    store.m_updatedAt = now;
+    return store;
+}
+
+QJsonObject SignalStore::toJson() const {
+    QJsonObject document{{"schema_version", 1}};
+    if (m_aggregate) document.insert("aggregate", *m_aggregate);
+    if (m_updatedAt) document.insert("updated_at", encodeDate(*m_updatedAt));
+    QJsonObject sessions;
+    for (auto it = m_sessions.cbegin(); it != m_sessions.cend(); ++it) {
+        QJsonObject record{{"signal", it->signal}, {"updated_at", encodeDate(it->updatedAt)}};
+        if (!it->agent.isEmpty()) record.insert("agent", it->agent);
+        if (!it->lastEvent.isEmpty()) record.insert("last_event", it->lastEvent);
+        sessions.insert(it.key(), record);
+    }
+    document.insert("sessions", sessions);
+    QJsonArray events;
+    for (const SignalEvent &e : m_events) {
+        QJsonObject record{{"id", e.id}, {"session_id", e.sessionID}, {"signal", e.signal},
+                           {"updated_at", encodeDate(e.updatedAt)}};
+        if (!e.agent.isEmpty()) record.insert("agent", e.agent);
+        if (!e.event.isEmpty()) record.insert("event", e.event);
+        events.append(record);
+    }
+    document.insert("events", events);
+    return document;
+}
+
+void SignalStore::loadJson(const QJsonObject &document, qint64 now) {
+    clear();
+    const auto fail = [&] { *this = staleDocument(now); };
+    if (document.contains("aggregate")) {
+        const QJsonValue aggregate = document.value("aggregate");
+        if (!aggregate.isString() || !isRawSignal(aggregate.toString())) return fail();
+        m_aggregate = aggregate.toString();
+    }
+    if (document.contains("updated_at")) {
+        const auto updated = decodeDate(document.value("updated_at"));
+        if (!updated) return fail();
+        m_updatedAt = *updated;
+    }
+    if (document.contains("sessions")) {
+        if (!document.value("sessions").isObject()) return fail();
+        const QJsonObject sessions = document.value("sessions").toObject();
+        for (auto it = sessions.constBegin(); it != sessions.constEnd(); ++it) {
+            const QJsonObject r = it.value().toObject();
+            const QString signal = r.value("signal").toString();
+            const auto updated = decodeDate(r.value("updated_at"));
+            if (!it.value().isObject() || !isRawSignal(signal) || !updated) return fail();
+            m_sessions.insert(it.key(), SessionRecord{r.value("agent").toString(), signal,
+                                                      r.value("last_event").toString(), *updated});
+        }
+    }
+    if (document.contains("events")) {
+        if (!document.value("events").isArray()) return fail();
+        for (const QJsonValue &value : document.value("events").toArray()) {
+            const QJsonObject r = value.toObject();
+            const QString signal = r.value("signal").toString();
+            const auto updated = decodeDate(r.value("updated_at"));
+            if (!value.isObject() || !r.value("id").isString() || !r.value("session_id").isString()
+                || !isRawSignal(signal) || !updated)
+                return fail();
+            m_events.append(SignalEvent{r.value("id").toString(), r.value("session_id").toString(),
+                                        r.value("agent").toString(), signal, r.value("event").toString(), *updated});
+        }
+    }
 }
 
 SignalSnapshot SignalStore::snapshot() const {

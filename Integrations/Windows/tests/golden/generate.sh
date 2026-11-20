@@ -15,5 +15,7 @@ mkdir -p "$out/codex"
 cp "$here/codex/main.swift" "$out/codex/main.swift"
 swiftc -O -module-cache-path "$out/cache" -o "$out/gen-codex" "$out/codex/main.swift" "$root"/Sources/AgentSignalLightCore/*.swift
 rm -rf "$out/codex-state"
-"$out/gen-codex" "$here/codex/lines.jsonl" "$out/codex-state" > "$here/codex_golden.jsonl"
+"$out/gen-codex" "$here/codex/lines.jsonl" "$out/codex-state" "$here/codex/claude_payloads.jsonl" > "$here/codex_golden.jsonl"
 wc -l "$here/codex_golden.jsonl"
+# A status.json written by the Swift store, which the C++ loader must read.
+cp "$out/codex-state/multiSession.json" "$here/codex/swift_status.json"

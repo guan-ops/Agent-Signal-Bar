@@ -1,7 +1,10 @@
 #include "AppController.h"
 
 #include "ActivityText.h"
+#include "ClaudeHookInstaller.h"
+#include "HookAdapters.h"
 #include "SignalRuntime.h"
+#include "SignalStateFile.h"
 
 #include <QClipboard>
 #include <QDateTime>
@@ -89,9 +92,10 @@ AppController::~AppController() {
 }
 
 AppController::AppController(const QString &settingsFile, const QString &captureDir, bool live,
-                             const QString &codexDirOverride, QObject *parent)
+                             const QString &codexDirOverride, const QString &claudeDirOverride, QObject *parent)
     : QObject(parent), m_prefs(new PrefsMap(this)), m_captureDir(captureDir) {
     m_codexDirOverride = codexDirOverride;
+    m_claudeDirOverride = claudeDirOverride;
     m_settings = settingsFile.isEmpty()
         ? std::make_unique<QSettings>(QSettings::IniFormat, QSettings::UserScope, "AgentSignalBar", "AgentSignalBar")
         : std::make_unique<QSettings>(settingsFile, QSettings::IniFormat);
@@ -116,17 +120,120 @@ AppController::AppController(const QString &settingsFile, const QString &capture
     restartTimer();
     connect(this, &AppController::languageChanged, this, &AppController::rebuildActivity);
     if (live) {
-        m_runtime = new SignalRuntime(this);
+        // Capture runs keep their own state file next to the screenshots, unless the
+        // environment names one explicitly (fixture runs seed it with hook events).
+        QString statePath = asb::SignalStateFile::defaultPath();
+        if (!m_captureDir.isEmpty() && !asb::SignalStateFile::hasExplicitLocation()) {
+            statePath = m_captureDir + "/status.json";
+            QFile::remove(statePath);
+        }
+        m_runtime = new SignalRuntime(statePath, this);
         connect(m_runtime, &SignalRuntime::changed, this, &AppController::rebuildActivity);
         const bool overridden = !m_codexDirOverride.isEmpty();
-        // The Mac app restores state from status.json on launch. Without that file yet, replay
-        // the recent history instead, so a turn already waiting for approval shows red at once
-        // (a turn killed in the last few minutes shows green until its display window lapses).
+        // Like the Mac app: status.json carries the state across restarts, so the first poll
+        // only primes the rollout cursors. A fixture directory replays its recent history.
         m_runtime->start(overridden ? asb::codex::rootsForDirectory(QDir::homePath(), m_codexDirOverride)
                                     : codexRoots(m_prefs->value("codexDataDir").toString()),
-                         m_prefs->value("lowPowerMode").toBool(), /*replayRecentHistory=*/true);
+                         m_prefs->value("lowPowerMode").toBool(), overridden);
     }
     rebuildActivity();
+    // Capture runs never look at the real Claude settings.
+    if (m_captureDir.isEmpty()) checkClaudeHook();
+    else rebuildClaudeHook();
+}
+
+QString AppController::hookExePath() const {
+#ifdef Q_OS_WIN
+    return QCoreApplication::applicationDirPath() + "/agent-signal.exe";
+#else
+    return QCoreApplication::applicationDirPath() + "/agent-signal";
+#endif
+}
+
+QString AppController::claudeRoot() const {
+    if (!m_claudeDirOverride.isEmpty()) return QDir::cleanPath(m_claudeDirOverride);
+    return asb::hooks::ClaudeHookInstaller::defaultClaudeRoot(QDir::homePath(), qEnvironmentVariable("CLAUDE_CONFIG_DIR"));
+}
+
+void AppController::checkClaudeHook() { runClaudeHook("check"); }
+void AppController::installClaudeHook() { runClaudeHook("install"); }
+void AppController::uninstallClaudeHook() { runClaudeHook("uninstall"); }
+
+void AppController::runClaudeHook(const QString &action) {
+    if (!m_captureDir.isEmpty()) return;
+    const asb::hooks::ClaudeHookInstaller installer(claudeRoot(), hookExePath());
+#ifndef Q_OS_WIN
+    // Development builds must not rewrite this machine's real Claude Code settings.
+    if (action != "check" && m_claudeDirOverride.isEmpty()) {
+        m_claudeResult = text("开发版只有在指定 --claude-dir 时才会修改 Claude 设置。",
+                              "Development builds change Claude settings only with --claude-dir.");
+        rebuildClaudeHook();
+        return;
+    }
+#endif
+    const asb::hooks::HookReport report =
+        action == "install" ? installer.install() : action == "uninstall" ? installer.uninstall() : installer.check();
+    m_claudeError = report.ok ? QString() : report.error;
+    if (!report.ok) {
+        m_claudeState = "error";
+    } else if (action == "uninstall") {
+        m_claudeState = "missing";
+    } else if (report.configured) {
+        m_claudeState = "configured";
+    } else {
+        const int total = int(asb::hooks::claude::installedEvents().size());
+        m_claudeState = report.missing.size() == total && report.stale.isEmpty() ? "missing" : "repair";
+    }
+    if (action == "check") {
+        m_claudeResult.clear();
+    } else if (report.ok) {
+        m_claudeResult = action == "install"
+            ? (report.changed ? text("已安装 Hook。", "Hooks installed.") : text("Hook 已是最新，无需修改。", "Hooks already up to date."))
+            : (report.changed ? text("已卸载 Hook。", "Hooks removed.") : text("没有需要卸载的 Hook。", "No hooks to remove."));
+        if (!report.backup.isEmpty()) m_claudeResult += text(" 备份：", " Backup: ") + report.backup;
+    } else {
+        m_claudeResult.clear();
+    }
+    rebuildClaudeHook();
+}
+
+void AppController::rebuildClaudeHook() {
+    // MenuBarStatusModel.claudeConnectionMessage
+    QString message;
+    QString tone = "neutral";
+    if (m_paused) {
+        message = text("监控已暂停", "Monitoring paused");
+    } else if (m_claudeState == "error") {
+        message = text("无法检查 Hook：", "Cannot check hooks: ") + m_claudeError;
+        tone = "critical";
+    } else if (m_claudeState == "unchecked") {
+        message = text("尚未检查 Hook", "Hooks have not been checked");
+    } else if (m_claudeState != "configured") {
+        message = text("Hook 未配置或需要修复，请点击安装。", "Hooks are missing or need repair. Click Install.");
+        tone = m_claudeState == "repair" ? "caution" : "neutral";
+    } else if (const auto latest = m_runtime ? m_runtime->lastEventAt("claude") : std::nullopt) {
+        message = text("Hook 已配置 · 最近事件：", "Hooks configured · Last event: ")
+            + QLocale::system().toString(QDateTime::fromMSecsSinceEpoch(*latest), QLocale::ShortFormat);
+        tone = "positive";
+    } else {
+        message = text("Hook 已配置，尚未收到事件。请新建 Claude Code 会话并发送任务。",
+                       "Hooks configured; no event received yet. Start a new Claude Code session and send a task.");
+        tone = "positive";
+    }
+#ifdef Q_OS_WIN
+    const bool canModify = m_captureDir.isEmpty();
+#else
+    const bool canModify = m_captureDir.isEmpty() && !m_claudeDirOverride.isEmpty();
+#endif
+    const QVariantMap hook{
+        {"state", m_claudeState}, {"message", message}, {"tone", tone},
+        {"settingsPath", QDir::toNativeSeparators(claudeRoot() + "/settings.json")}, {"canModify", canModify},
+        {"result", m_claudeResult},
+        {"stateFile", m_runtime ? QDir::toNativeSeparators(m_runtime->stateFilePath()) : QString()}};
+    if (hook != m_claudeHook) {
+        m_claudeHook = hook;
+        emit claudeHookChanged();
+    }
 }
 
 QString AppController::signalName() const {
@@ -136,6 +243,7 @@ QString AppController::signalName() const {
 }
 
 void AppController::rebuildActivity() {
+    rebuildClaudeHook(); // its message names the latest Claude event
     if (!m_runtime) return;
     const bool zh = language() == "zh";
     QVariantList sessions;

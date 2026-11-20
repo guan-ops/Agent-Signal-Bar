@@ -7,10 +7,11 @@ TARGET = AgentSignalBar
 
 SOURCES += src/main.cpp src/AppController.cpp src/SignalModel.cpp src/TrayIconRenderer.cpp \
     src/CodexSessionParser.cpp src/CodexActivityMonitor.cpp src/SignalStore.cpp src/ActivityDisplay.cpp \
-    src/ActivityText.cpp src/SignalRuntime.cpp
+    src/ActivityText.cpp src/SignalRuntime.cpp src/SignalStateFile.cpp src/HookAdapters.cpp \
+    src/ClaudeHookInstaller.cpp
 HEADERS += src/AppController.h src/SignalModel.h src/TrayIconRenderer.h \
     src/CodexSessionParser.h src/CodexActivityMonitor.h src/SignalStore.h src/ActivityDisplay.h \
-    src/ActivityText.h src/SignalRuntime.h
+    src/ActivityText.h src/SignalRuntime.h src/SignalStateFile.h src/HookAdapters.h src/ClaudeHookInstaller.h
 RESOURCES += resources.qrc
 
 ASB_VERSION = $$(ASB_WINDOWS_VERSION)

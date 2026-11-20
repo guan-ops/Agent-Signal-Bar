@@ -13,6 +13,7 @@ Rectangle {
     implicitWidth: row.implicitWidth + (large ? 28 : 18)
     implicitHeight: large ? 36 : 26
     radius: large ? 8 : Theme.radiusControl
+    opacity: enabled ? 1 : 0.45 // `enabled: false` also disables the MouseArea below
     color: prominent ? Theme.accent : (mouse.pressed ? Theme.hoverFill : (mouse.containsMouse ? Qt.lighter(Theme.controlBg, 1.2) : Theme.controlBg))
     border.color: prominent ? "transparent" : Theme.controlStroke
 

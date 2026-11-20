@@ -1,9 +1,11 @@
-// Port of AgentSignalLightCore SignalStateStore + SignalStateDocument, in memory for now:
-// the agent-signal CLI and hook scripts that share status.json on macOS are not ported
-// yet. Times are Unix milliseconds and `now` is passed in so tests can drive the clock.
-// tests/tst_codex.cpp replays sequences generated from the Swift store.
+// Port of AgentSignalLightCore SignalStateStore + SignalStateDocument: the rules engine.
+// SignalStateFile loads it from and saves it to status.json (same keys as macOS), which the
+// app and agent-signal.exe (Claude Code hooks) share. Times are Unix milliseconds and `now`
+// is passed in so tests can drive the clock. tests/tst_codex.cpp replays sequences
+// generated from the Swift store.
 #pragma once
 
+#include <QJsonObject>
 #include <QList>
 #include <QMap>
 #include <QString>
@@ -58,6 +60,15 @@ public:
     SignalSnapshot readSnapshot(qint64 now);
     void clear();
 
+    // SignalStateDocument coding: schema_version, aggregate, updated_at, sessions
+    // {agent, signal, last_event, updated_at}, events [{id, session_id, agent, signal, event,
+    // updated_at}]. Dates are ISO 8601 (written with milliseconds; read with or without them,
+    // or as Unix seconds). A document that does not decode becomes {aggregate: stale}, as on
+    // macOS.
+    QJsonObject toJson() const;
+    void loadJson(const QJsonObject &document, qint64 now);
+    static SignalStore staleDocument(qint64 now);
+
 private:
     struct PruneResult {
         bool hadSessionsBeforePrune = false;
@@ -80,7 +91,6 @@ private:
     std::optional<qint64> m_updatedAt;
     QMap<QString, SessionRecord> m_sessions;
     QList<SignalEvent> m_events; // oldest first, like the Swift document
-    quint64 m_nextEventID = 1;
 };
 
 } // namespace asb

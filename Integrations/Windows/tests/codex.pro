@@ -4,7 +4,10 @@ CONFIG += c++20 console testcase
 CONFIG -= app_bundle
 TARGET = tst_codex
 SOURCES += tst_codex.cpp ../src/SignalModel.cpp ../src/CodexSessionParser.cpp ../src/CodexActivityMonitor.cpp \
-    ../src/SignalStore.cpp ../src/ActivityDisplay.cpp
+    ../src/SignalStore.cpp ../src/ActivityDisplay.cpp ../src/SignalStateFile.cpp ../src/HookAdapters.cpp \
+    ../src/ClaudeHookInstaller.cpp
 HEADERS += ../src/SignalModel.h ../src/CodexSessionParser.h ../src/CodexActivityMonitor.h ../src/SignalStore.h \
-    ../src/ActivityDisplay.h
-DEFINES += CODEX_GOLDEN_PATH=\\\"$$PWD/golden/codex_golden.jsonl\\\" CODEX_LINES_PATH=\\\"$$PWD/golden/codex/lines.jsonl\\\"
+    ../src/ActivityDisplay.h ../src/SignalStateFile.h ../src/HookAdapters.h ../src/ClaudeHookInstaller.h
+win32: DEFINES += NOMINMAX WIN32_LEAN_AND_MEAN
+DEFINES += CODEX_GOLDEN_PATH=\\\"$$PWD/golden/codex_golden.jsonl\\\" CODEX_LINES_PATH=\\\"$$PWD/golden/codex/lines.jsonl\\\" \
+    CLAUDE_PAYLOADS_PATH=\\\"$$PWD/golden/codex/claude_payloads.jsonl\\\" SWIFT_STATUS_PATH=\\\"$$PWD/golden/codex/swift_status.json\\\"

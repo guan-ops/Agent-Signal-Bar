@@ -2,9 +2,14 @@
 // (generated from the Swift sources); the monitor and display rules are checked against
 // hand-written scenarios in temporary directories. Nothing here reads the real ~/.codex.
 #include "../src/ActivityDisplay.h"
+#include "../src/ClaudeHookInstaller.h"
 #include "../src/CodexActivityMonitor.h"
 #include "../src/CodexSessionParser.h"
+#include "../src/HookAdapters.h"
+#include "../src/SignalStateFile.h"
 #include "../src/SignalStore.h"
+
+#include <QLockFile>
 
 #include <QDateTime>
 #include <QFile>
@@ -66,6 +71,31 @@ codex::ActivityMonitor monitorFor(const QString &sessionsDir) {
 SessionStatus session(const QString &id, const QString &signal, qint64 updatedAt, const QString &agent,
                       const QString &event) {
     return SessionStatus{id, signal, updatedAt, agent, event};
+}
+
+QJsonObject readJson(const QString &path) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return {};
+    return QJsonDocument::fromJson(f.readAll()).object();
+}
+
+void writeText(const QString &path, const QByteArray &data) {
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    f.write(data);
+}
+
+int ownedCommands(const QJsonObject &settings) {
+    int count = 0;
+    const QJsonObject hooks = settings.value("hooks").toObject();
+    for (const QString &event : hooks.keys()) {
+        for (const QJsonValue &block : hooks.value(event).toArray()) {
+            for (const QJsonValue &item : block.toObject().value("hooks").toArray()) {
+                if (item.toObject().value("command").toString().contains("agent-signal")) ++count;
+            }
+        }
+    }
+    return count;
 }
 
 } // namespace
@@ -310,6 +340,171 @@ private slots:
         // Later work from the same source resolves the request.
         alert.applySessionSignal("working", "codex-cli:other", "codex-cli", "DesktopToolCall:shell", hour, hour);
         QCOMPARE(display::displaySnapshot(alert.readSnapshot(hour), hour).aggregate, QString("working"));
+    }
+
+    void claudeAdapterMatchesSwiftGolden() {
+        QFile file(QStringLiteral(CLAUDE_PAYLOADS_PATH));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QList<QJsonObject> fixtures;
+        for (const QByteArray &line : file.readAll().split('\n')) {
+            if (!line.isEmpty()) fixtures.append(QJsonDocument::fromJson(line).object());
+        }
+        int checked = 0;
+        for (const QJsonObject &row : goldenRows("claude")) {
+            const QJsonObject fixture = fixtures.at(row.value("line").toInt());
+            hooks::Environment env;
+            const QJsonObject envObject = fixture.value("env").toObject();
+            for (auto it = envObject.constBegin(); it != envObject.constEnd(); ++it) env.insert(it.key(), it.value().toString());
+            const QJsonObject payload = fixture.value("payload").toObject();
+            const std::optional<QString> event = fixture.value("event").isString()
+                ? std::optional<QString>(fixture.value("event").toString())
+                : hooks::claude::eventName(payload);
+            const QByteArray where = QJsonDocument(fixture).toJson(QJsonDocument::Compact);
+            QVERIFY2(hooks::claude::chooseSignal(event, payload) == row.value("signal").toString(), where.constData());
+            QVERIFY2(hooks::claude::sessionKey(payload, env) == row.value("sessionID").toString(), where.constData());
+            QVERIFY2(hooks::claude::agentName(env) == row.value("agent").toString(), where.constData());
+            QCOMPARE(orNull(hooks::claude::displayEventName(event, payload)), row.value("event"));
+            ++checked;
+        }
+        QVERIFY(checked >= 40);
+    }
+
+    void stateFileReadsSwiftDocumentAndRoundTrips() {
+        const QJsonObject swift = readJson(QStringLiteral(SWIFT_STATUS_PATH));
+        QVERIFY(!swift.isEmpty());
+        const qint64 written = QDateTime::fromString(swift.value("updated_at").toString(), Qt::ISODate).toMSecsSinceEpoch();
+        SignalStore store;
+        store.loadJson(swift, written);
+        const SignalSnapshot snapshot = store.readSnapshot(written);
+        QCOMPARE(snapshot.aggregate, QString("thinking"));
+        QCOMPARE(snapshot.sessions.size(), 1);
+        QCOMPARE(snapshot.sessions[0].sessionID, QString("codex-desktop:s1"));
+        QCOMPARE(snapshot.recentEvents.size(), swift.value("events").toArray().size());
+
+        SignalStore copy;
+        copy.loadJson(store.toJson(), written);
+        QCOMPARE(copy.toJson(), store.toJson());
+
+        // A document that does not decode is treated as stale, like SignalStateStore.readDocument.
+        SignalStore broken;
+        broken.loadJson(QJsonObject{{"sessions", QJsonObject{{"x", QJsonObject{{"signal", "Working"}}}}}}, written);
+        QCOMPARE(broken.readSnapshot(written).aggregate, QString("stale"));
+    }
+
+    void stateFileSharesUpdatesUnderTheLock() {
+        QTemporaryDir dir;
+        const QString path = dir.path() + "/state/status.json";
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        SignalStateFile app(path), hook(path);
+        QVERIFY(hook.update([&](SignalStore &s) { s.applySessionSignal("working", "c1", "claude-code", "PreToolUse:Bash", now, now); },
+                            now, 500));
+        const auto seen = app.readSnapshot(now, 500);
+        QVERIFY(seen.has_value());
+        QCOMPARE(seen->aggregate, QString("working"));
+        QCOMPARE(readJson(path).value("sessions").toObject().value("c1").toObject().value("last_event").toString(),
+                 QString("PreToolUse:Bash"));
+
+        // Busy lock: the event is dropped and the file is left alone.
+        const QByteArray before = [&] {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        }();
+        QVERIFY(!before.isEmpty());
+        QLockFile held(path + ".lock");
+        QVERIFY(held.tryLock(0));
+        QVERIFY(!hook.update([&](SignalStore &s) { s.applySessionSignal("done", "c1", "claude-code", "Stop", now, now); },
+                             now, 50));
+        held.unlock();
+        QFile after(path);
+        QVERIFY(after.open(QIODevice::ReadOnly));
+        QCOMPARE(after.readAll(), before);
+
+        // Corrupt content becomes stale (and is then replaced), as on macOS.
+        writeText(path, "{not json");
+        const auto stale = app.readSnapshot(now, 500);
+        QVERIFY(stale.has_value());
+        QCOMPARE(stale->aggregate, QString("stale"));
+    }
+
+    void installerAddsKeepsAndRemovesOnlyItsHooks() {
+        QTemporaryDir dir;
+        const QString root = dir.path() + "/claude";
+        const QString exe = dir.path() + "/Agent Signal Bar/agent-signal.exe";
+        QVERIFY(QDir().mkpath(root));
+        QVERIFY(QDir().mkpath(QFileInfo(exe).absolutePath()));
+        writeText(exe, "fake");
+        writeText(root + "/settings.json", R"({"model":"opus","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"my-linter"}]}]}})");
+
+        hooks::ClaudeHookInstaller installer(root, exe);
+        QVERIFY(!installer.install().ok); // fake exe lives in a temporary folder
+        installer.allowTemporaryLocationForTests();
+
+        hooks::HookReport check = installer.check();
+        QVERIFY(check.ok);
+        QVERIFY(!check.configured);
+        QCOMPARE(check.missing.size(), hooks::claude::installedEvents().size());
+
+        hooks::HookReport report = installer.install();
+        QVERIFY2(report.ok, qPrintable(report.error));
+        QVERIFY(report.changed);
+        QVERIFY(!report.backup.isEmpty());
+        QJsonObject settings = readJson(root + "/settings.json");
+        QCOMPARE(settings.value("model").toString(), QString("opus"));
+        QCOMPARE(ownedCommands(settings), hooks::claude::installedEvents().size());
+        const QJsonArray preToolUse = settings.value("hooks").toObject().value("PreToolUse").toArray();
+        QCOMPARE(preToolUse.size(), 2); // the user's own Bash hook stays first
+        QCOMPARE(preToolUse[0].toObject().value("hooks").toArray()[0].toObject().value("command").toString(), QString("my-linter"));
+        const QJsonObject entry = preToolUse[1].toObject().value("hooks").toArray()[0].toObject();
+        QCOMPARE(entry.value("args").toArray(), (QJsonArray{"claude-hook"}));
+        QCOMPARE(entry.value("command").toString(), hooks::ClaudeHookInstaller::commandPath(exe));
+        QCOMPARE(settings.value("hooks").toObject().value("PermissionRequest").toArray()[0].toObject()
+                     .value("hooks").toArray()[0].toObject().value("timeout").toInt(), 10);
+
+        QVERIFY(installer.check().configured);
+        const hooks::HookReport again = installer.install();
+        QVERIFY(again.ok && !again.changed); // idempotent
+
+        // An entry for an old install location needs repair and is replaced.
+        hooks::ClaudeHookInstaller moved(root, dir.path() + "/elsewhere/agent-signal.exe");
+        moved.allowTemporaryLocationForTests();
+        const hooks::HookReport stale = moved.check();
+        QVERIFY(!stale.configured);
+        QCOMPARE(stale.stale.size(), hooks::claude::installedEvents().size());
+
+        const hooks::HookReport removed = installer.uninstall();
+        QVERIFY(removed.ok && removed.changed);
+        settings = readJson(root + "/settings.json");
+        QCOMPARE(ownedCommands(settings), 0);
+        QCOMPARE(settings.value("hooks").toObject().keys(), QStringList{"PreToolUse"});
+
+        // Repeated changes keep at most five backups.
+        for (int i = 0; i < 4; ++i) {
+            installer.install();
+            installer.uninstall();
+        }
+        QStringList backups = QDir(root).entryList({"settings.json.bak-*"}, QDir::Files | QDir::Hidden);
+        QVERIFY(backups.size() <= hooks::ClaudeHookInstaller::kRetainedBackups);
+    }
+
+    void installerLeavesUnreadableSettingsAlone() {
+        QTemporaryDir dir;
+        const QString exe = dir.path() + "/agent-signal.exe";
+        writeText(exe, "fake");
+        writeText(dir.path() + "/settings.json", "{ \"hooks\": [ broken");
+        hooks::ClaudeHookInstaller installer(dir.path(), exe);
+        installer.allowTemporaryLocationForTests();
+        QVERIFY(!installer.install().ok);
+        QFile f(dir.path() + "/settings.json");
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("{ \"hooks\": [ broken"));
+        QVERIFY(QDir(dir.path()).entryList({"settings.json.bak-*"}).isEmpty());
+#ifndef Q_OS_WIN
+        QTemporaryDir linked;
+        QVERIFY(QFile::link(dir.path() + "/settings.json", linked.path() + "/settings.json"));
+        hooks::ClaudeHookInstaller viaLink(linked.path(), exe);
+        viaLink.allowTemporaryLocationForTests();
+        QVERIFY(!viaLink.install().ok);
+#endif
     }
 
     void displayDeduplicatesBySourceAndLabelsRuntime() {

@@ -8,12 +8,18 @@
 //   --probe <seconds>  print what the Codex monitor sees (roots, lamp, sessions), no windows
 //   --codex-dir <dir>  use this Codex data directory (replaying its recent history) for the
 //                      app, --probe or --capture; with --capture the screenshots show live data
+//   --claude-dir <dir> Claude Code config folder for the hook installer (development builds
+//                      outside Windows change Claude settings only with this)
+//
+// The state lives in status.json (SignalStateFile::defaultPath), shared with agent-signal.exe,
+// which Claude Code hooks run.
 //
 // Without --capture or --signal the lamp follows the Codex rollout files under
 // <prefs codexDataDir | CODEX_HOME | %USERPROFILE%\.codex>\sessions.
 #include "AppController.h"
 #include "ActivityText.h"
 #include "SignalRuntime.h"
+#include "SignalStateFile.h"
 #include "TrayIconRenderer.h"
 
 #include <QApplication>
@@ -21,6 +27,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
+#include <QTemporaryDir>
 #include <QTextStream>
 #include <algorithm>
 #include <cstdio>
@@ -98,9 +105,17 @@ int runProbe(QApplication &app, int seconds, const QString &dataDir) {
         << QDir::toNativeSeparators(asb::codex::primaryCodexHome(QDir::homePath(), qEnvironmentVariable("CODEX_HOME"), dataDir))
         << "\n";
     for (const auto &root : roots) out << "  root: " << QDir::toNativeSeparators(root.path) << "\n";
+    // Work on a copy of status.json, so the probe never writes the app's state; Claude Code
+    // hook sessions already in it still show.
+    const QString realState = asb::SignalStateFile::defaultPath();
+    out << "State file: " << QDir::toNativeSeparators(realState) << (QFileInfo::exists(realState) ? "" : " (not created yet)")
+        << "\n";
     out.flush();
+    QTemporaryDir scratch;
+    const QString probeState = scratch.path() + "/status.json";
+    QFile::copy(realState, probeState);
 
-    SignalRuntime runtime;
+    SignalRuntime runtime(probeState);
     const bool zh = false;
     QString last;
     QObject::connect(&runtime, &SignalRuntime::changed, &app, [&] {
@@ -148,7 +163,8 @@ int main(int argc, char *argv[]) {
     QCommandLineOption signalOption("signal", "Initial demo signal.", "name", "working");
     QCommandLineOption probeOption("probe", "Print what the Codex monitor sees for <seconds>, then quit.", "seconds");
     QCommandLineOption codexDirOption("codex-dir", "Codex data directory (default: settings, CODEX_HOME or ~/.codex).", "dir");
-    parser.addOptions({captureOption, settingsOption, signalOption, probeOption, codexDirOption});
+    QCommandLineOption claudeDirOption("claude-dir", "Claude Code config folder for the hook installer (default: CLAUDE_CONFIG_DIR or ~/.claude).", "dir");
+    parser.addOptions({captureOption, settingsOption, signalOption, probeOption, codexDirOption, claudeDirOption});
     parser.process(app);
     if (parser.isSet(probeOption)) return runProbe(app, std::max(1, parser.value(probeOption).toInt()), parser.value(codexDirOption));
 
@@ -167,7 +183,7 @@ int main(int argc, char *argv[]) {
     // --codex-dir makes even a capture run live, against that (fixture) directory only.
     const QString codexDir = parser.value(codexDirOption);
     const bool live = !codexDir.isEmpty() || (captureDir.isEmpty() && !parser.isSet(signalOption));
-    AppController controller(settingsFile, captureDir, live, codexDir);
+    AppController controller(settingsFile, captureDir, live, codexDir, parser.value(claudeDirOption));
     controller.setDemoSignal(parser.value(signalOption));
     qmlRegisterSingletonInstance("AgentSignal", 1, 0, "App", &controller);
 

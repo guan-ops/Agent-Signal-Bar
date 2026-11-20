@@ -1,0 +1,63 @@
+{
+  "aggregate" : "thinking",
+  "events" : [
+    {
+      "agent" : "codex-desktop",
+      "event" : "DesktopMessage",
+      "id" : "20053B81-31F7-4A8A-98A6-06EE2F3FFDCB",
+      "session_id" : "codex-desktop:s1",
+      "signal" : "working",
+      "updated_at" : "2026-11-20T10:16:32Z"
+    },
+    {
+      "agent" : "codex-desktop",
+      "event" : "Notification",
+      "id" : "2BA67472-22ED-481A-9520-66B8FB9954D8",
+      "session_id" : "codex-cli:s2",
+      "signal" : "attention",
+      "updated_at" : "2026-11-20T10:16:34Z"
+    },
+    {
+      "agent" : "codex-desktop",
+      "event" : "SessionEnd",
+      "id" : "7BA01322-7CD7-4983-8CE4-62535D3F8847",
+      "session_id" : "codex-cli:s2",
+      "signal" : "session_end",
+      "updated_at" : "2026-11-20T10:16:35Z"
+    },
+    {
+      "agent" : "codex-desktop",
+      "event" : "SessionEnd",
+      "id" : "702DEDC5-2701-4AD1-81E7-908378479417",
+      "session_id" : "codex-desktop:s1",
+      "signal" : "session_end",
+      "updated_at" : "2026-11-20T10:16:36Z"
+    },
+    {
+      "agent" : "codex-desktop",
+      "event" : "Off",
+      "id" : "85A68F6F-765E-4812-951E-3FDC0A205BED",
+      "session_id" : "manual",
+      "signal" : "off",
+      "updated_at" : "2026-11-20T10:16:37Z"
+    },
+    {
+      "agent" : "codex-desktop",
+      "event" : "DesktopTaskStarted",
+      "id" : "5ED825EE-CB83-4F40-9724-3C5299C5E401",
+      "session_id" : "codex-desktop:s1",
+      "signal" : "thinking",
+      "updated_at" : "2026-11-20T10:16:38Z"
+    }
+  ],
+  "schema_version" : 1,
+  "sessions" : {
+    "codex-desktop:s1" : {
+      "agent" : "codex-desktop",
+      "last_event" : "DesktopTaskStarted",
+      "signal" : "thinking",
+      "updated_at" : "2026-11-20T10:16:38Z"
+    }
+  },
+  "updated_at" : "2026-11-20T10:16:38Z"
+}

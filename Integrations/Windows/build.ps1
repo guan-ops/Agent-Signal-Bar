@@ -1,15 +1,19 @@
-# Builds Agent Signal Bar for Windows, runs the lamp parity tests and stages a
-# self-contained folder with windeployqt.
+# Builds Agent Signal Bar for Windows, runs the tests and installs a self-contained folder
+# (AgentSignalBar.exe, agent-signal.exe for Claude Code hooks, Qt runtime) with windeployqt.
 #
 #   powershell -ExecutionPolicy Bypass -File Integrations\Windows\build.ps1 -QtDir C:\Qt\6.8.3\msvc2022_64
 #
 # Run from a "x64 Native Tools Command Prompt for VS 2022" (or after vcvars64.bat) so
 # cl.exe and nmake are on PATH. Qt 6.8 or newer is required (Popup.Window popups).
 # Clone the repository to an ASCII-only path: rcc cannot open .qrc files under
-# non-ASCII folders, and the test embeds its golden-file path at compile time.
+# non-ASCII folders, and the tests embed their golden-file paths at compile time.
+#
+# The install folder must be permanent: Claude Code hooks point at agent-signal.exe there.
+# Quit Agent Signal Bar before rebuilding, or the old files cannot be replaced.
 param(
     [Parameter(Mandatory = $true)][string]$QtDir,
     [string]$BuildDir = "$env:TEMP\asb-windows-build",
+    [string]$InstallDir = "$env:LOCALAPPDATA\Programs\AgentSignalBar",
     [string]$Version = "0.1.0",
     [switch]$SkipTests
 )
@@ -22,44 +26,41 @@ $make = if (Get-Command jom -ErrorAction SilentlyContinue) { "jom" } else { "nma
 $env:ASB_WINDOWS_VERSION = $Version
 $env:PATH = "$(Join-Path $QtDir 'bin');$env:PATH"
 
-if (-not $SkipTests) {
-    $testDir = Join-Path $BuildDir "tests"
-    New-Item -ItemType Directory -Force $testDir | Out-Null
-    Push-Location $testDir
-    & $qmake (Join-Path $Source "tests\signalmodel.pro") "CONFIG+=release"
+function Build-Project([string]$Name, [string]$ProFile) {
+    $dir = Join-Path $BuildDir $Name
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    Push-Location $dir
+    & $qmake (Join-Path $Source $ProFile) "CONFIG+=release"
+    if ($LASTEXITCODE -ne 0) { Pop-Location; throw "qmake failed: $ProFile" }
     & $make
-    if ($LASTEXITCODE -ne 0) { throw "test build failed" }
-    & .\release\tst_signalmodel.exe
-    if ($LASTEXITCODE -ne 0) { throw "lamp parity tests failed" }
+    if ($LASTEXITCODE -ne 0) { Pop-Location; throw "build failed: $ProFile" }
     Pop-Location
-
-    $codexTestDir = Join-Path $BuildDir "tests-codex"
-    New-Item -ItemType Directory -Force $codexTestDir | Out-Null
-    Push-Location $codexTestDir
-    & $qmake (Join-Path $Source "tests\codex.pro") "CONFIG+=release"
-    & $make
-    if ($LASTEXITCODE -ne 0) { throw "codex test build failed" }
-    & .\release\tst_codex.exe
-    if ($LASTEXITCODE -ne 0) { throw "codex data layer tests failed" }
-    Pop-Location
+    return $dir
 }
 
-$appDir = Join-Path $BuildDir "app"
-New-Item -ItemType Directory -Force $appDir | Out-Null
-Push-Location $appDir
-& $qmake (Join-Path $Source "agent-signal-bar-windows.pro") "CONFIG+=release"
-& $make
-if ($LASTEXITCODE -ne 0) { throw "app build failed" }
-Pop-Location
+if (-not $SkipTests) {
+    $lampTests = Build-Project "tests" "tests\signalmodel.pro"
+    & (Join-Path $lampTests "release\tst_signalmodel.exe")
+    if ($LASTEXITCODE -ne 0) { throw "lamp parity tests failed" }
+    $codexTests = Build-Project "tests-codex" "tests\codex.pro"
+    & (Join-Path $codexTests "release\tst_codex.exe")
+    if ($LASTEXITCODE -ne 0) { throw "data layer tests failed" }
+}
 
-$stage = Join-Path $BuildDir "AgentSignalBar"
-Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $stage | Out-Null
-Copy-Item (Join-Path $appDir "release\AgentSignalBar.exe") $stage
-& $deploy --release --qmldir (Join-Path $Source "qml") --no-translations (Join-Path $stage "AgentSignalBar.exe")
+$appDir = Build-Project "app" "agent-signal-bar-windows.pro"
+$cliDir = Build-Project "cli" "cli\agent-signal.pro"
+
+Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue
+if (Test-Path (Join-Path $InstallDir "AgentSignalBar.exe")) { throw "Quit Agent Signal Bar first: $InstallDir is in use" }
+New-Item -ItemType Directory -Force $InstallDir | Out-Null
+Copy-Item (Join-Path $appDir "release\AgentSignalBar.exe") $InstallDir
+Copy-Item (Join-Path $cliDir "release\agent-signal.exe") $InstallDir
+& $deploy --release --qmldir (Join-Path $Source "qml") --no-translations (Join-Path $InstallDir "AgentSignalBar.exe")
 if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
 
 Write-Host ""
-Write-Host "Staged: $stage"
-Write-Host "Screenshots: $stage\AgentSignalBar.exe --capture `"$BuildDir\capture`""
-Write-Host "Codex check: $stage\AgentSignalBar.exe --probe 10"
+Write-Host "Installed: $InstallDir"
+Write-Host "Run:         $InstallDir\AgentSignalBar.exe"
+Write-Host "Codex check: start /wait $InstallDir\AgentSignalBar.exe --probe 10"
+Write-Host "Hook state:  $InstallDir\agent-signal.exe status"
+Write-Host "Screenshots: $InstallDir\AgentSignalBar.exe --capture `"$BuildDir\capture`""

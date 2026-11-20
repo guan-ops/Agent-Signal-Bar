@@ -12,6 +12,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <memory>
+#include <optional>
 
 class QWindow;
 class SignalRuntime;
@@ -43,13 +44,19 @@ class AppController : public QObject {
     Q_PROPERTY(QVariantList events READ events NOTIFY activityChanged)
     // home, roots, existingRoots, recentFiles, unreadable, polled, lastActivity.
     Q_PROPERTY(QVariantMap codexConnection READ codexConnection NOTIFY activityChanged)
+    // state (configured | missing | repair | error | unchecked), message, tone, settingsPath,
+    // canModify, result (last action), stateFile.
+    Q_PROPERTY(QVariantMap claudeHook READ claudeHook NOTIFY claudeHookChanged)
 
 public:
     // `live` starts the Codex monitor; capture and demo runs keep the synthetic signal.
     // `codexDirOverride` replaces the data directory (and replays its recent history), for
     // fixture-driven captures; it is not saved to the preferences.
+    // `claudeDirOverride` points the hook installer at another Claude config folder; on
+    // systems other than Windows, Install/Uninstall are enabled only with it.
     AppController(const QString &settingsFile, const QString &captureDir, bool live,
-                  const QString &codexDirOverride = QString(), QObject *parent = nullptr);
+                  const QString &codexDirOverride = QString(), const QString &claudeDirOverride = QString(),
+                  QObject *parent = nullptr);
     ~AppController() override;
 
     int tick() const { return m_tick; }
@@ -71,6 +78,7 @@ public:
     QVariantList sessions() const { return m_sessions; }
     QVariantList events() const { return m_events; }
     QVariantMap codexConnection() const { return m_codexConnection; }
+    QVariantMap claudeHook() const { return m_claudeHook; }
 
     asb::EffectCustomization effectCustomization() const;
     void setTrayGeometry(const QRect &rect) { m_trayGeometry = rect; }
@@ -97,6 +105,9 @@ public:
     Q_INVOKABLE void applyBackdrop(QWindow *window, const QString &kind) const;
     Q_INVOKABLE QString settingsFilePath() const;
     Q_INVOKABLE void checkCodexConnection();
+    Q_INVOKABLE void checkClaudeHook();
+    Q_INVOKABLE void installClaudeHook();
+    Q_INVOKABLE void uninstallClaudeHook();
     // Local path from a FolderDialog URL, so QML can store it in prefs.codexDataDir.
     Q_INVOKABLE QString localPath(const QUrl &url) const;
     Q_INVOKABLE void quit();
@@ -105,6 +116,7 @@ signals:
     void tickChanged();
     void signalNameChanged();
     void activityChanged();
+    void claudeHookChanged();
     void languageChanged();
     void themeChanged();
     void settingsRequested(const QString &page);
@@ -116,7 +128,10 @@ private:
     void restartTimer();
     void applyLaunchAtLogin(bool enabled) const;
     void rebuildActivity();
-    QString liveSignal() const;
+    void runClaudeHook(const QString &action);
+    void rebuildClaudeHook();
+    QString hookExePath() const;
+    QString claudeRoot() const;
 
     QQmlPropertyMap *m_prefs;
     SignalRuntime *m_runtime = nullptr;
@@ -125,6 +140,13 @@ private:
     QVariantMap m_codexConnection;
     QString m_liveSignal = QStringLiteral("idle");
     QString m_codexDirOverride;
+    QString m_claudeDirOverride;
+    QVariantMap m_claudeHook;
+    // Last hook check: nullopt until checked.
+    std::optional<bool> m_claudeConfigured;
+    QString m_claudeState = QStringLiteral("unchecked");
+    QString m_claudeError;
+    QString m_claudeResult;
     std::unique_ptr<QSettings> m_settings;
     QString m_captureDir;
     QTimer m_timer;
