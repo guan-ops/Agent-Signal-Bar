@@ -457,6 +457,8 @@ private slots:
         const QJsonObject entry = preToolUse[1].toObject().value("hooks").toArray()[0].toObject();
         QCOMPARE(entry.value("args").toArray(), (QJsonArray{"claude-hook"}));
         QCOMPARE(entry.value("command").toString(), hooks::ClaudeHookInstaller::commandPath(exe));
+        // A short (8.3) folder keeps the long file name, which marks the entry as ours.
+        QVERIFY(entry.value("command").toString().endsWith("/agent-signal.exe"));
         QCOMPARE(settings.value("hooks").toObject().value("PermissionRequest").toArray()[0].toObject()
                      .value("hooks").toArray()[0].toObject().value("timeout").toInt(), 10);
 

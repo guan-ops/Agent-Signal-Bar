@@ -125,13 +125,18 @@ QString ClaudeHookInstaller::defaultClaudeRoot(const QString &home, const QStrin
 }
 
 QString ClaudeHookInstaller::commandPath(const QString &hookExe) {
-    QString path = QFileInfo(hookExe).absoluteFilePath();
+    const QFileInfo info(hookExe);
+    QString path = info.absoluteFilePath();
 #ifdef Q_OS_WIN
-    if (path.contains(' ')) {
-        const std::wstring longPath = QDir::toNativeSeparators(path).toStdWString();
-        wchar_t shortPath[MAX_PATH * 2];
-        const DWORD length = GetShortPathNameW(longPath.c_str(), shortPath, DWORD(std::size(shortPath)));
-        if (length > 0 && length < std::size(shortPath)) path = QString::fromWCharArray(shortPath, int(length));
+    // Only the folder is shortened: GetShortPathNameW would also turn agent-signal.exe into
+    // AGENT-~1.EXE, and owns() recognises an entry as ours by that file name.
+    const QString dir = info.absolutePath();
+    if (dir.contains(' ')) {
+        const std::wstring longDir = QDir::toNativeSeparators(dir).toStdWString();
+        wchar_t shortDir[MAX_PATH * 2];
+        const DWORD length = GetShortPathNameW(longDir.c_str(), shortDir, DWORD(std::size(shortDir)));
+        if (length > 0 && length < std::size(shortDir))
+            path = QString::fromWCharArray(shortDir, int(length)) + '/' + info.fileName();
     }
 #endif
     return QDir::fromNativeSeparators(path);
@@ -265,9 +270,13 @@ HookReport ClaudeHookInstaller::run(bool write, bool remove) const {
             if (!QFile::copy(path, report.backup)) return fail("无法创建备份 / Cannot create a backup of " + report.settingsPath);
             report.backup = QDir::toNativeSeparators(report.backup);
         }
-        // The file must not have changed since it was read.
-        QFile again(path);
-        const QByteArray current = again.open(QIODevice::ReadOnly) ? again.readAll() : QByteArray();
+        // The file must not have changed since it was read. Close it before QSaveFile replaces
+        // it: Windows cannot rename over a file that is still open.
+        QByteArray current;
+        {
+            QFile again(path);
+            if (again.open(QIODevice::ReadOnly)) current = again.readAll();
+        }
         if ((exists && current != original) || (!exists && QFileInfo::exists(path)))
             return fail("settings.json 刚被其他程序修改，请重试 / settings.json changed concurrently; retry");
         QSaveFile save(path);
