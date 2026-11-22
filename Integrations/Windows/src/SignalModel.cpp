@@ -98,6 +98,70 @@ std::optional<QString> normalizedSignal(const QString &raw) {
     return std::nullopt;
 }
 
+const QStringList &allSignals() {
+    static const QStringList names = {
+        "idle", "thinking", "working", "tool_done", "subagent_start", "subagent_stop", "attention",
+        "notification", "done", "permission", "permission_request", "blocked", "failure", "error",
+        "exception", "max_tokens", "stale", "session_start", "session_end", "turn_end", "off", "pause",
+        "paused"};
+    return names;
+}
+
+QString signalDisplayName(const QString &signal) {
+    static const QHash<QString, QString> names = {
+        {"idle", QStringLiteral("空闲")}, {"thinking", QStringLiteral("思考中")},
+        {"working", QStringLiteral("工作中")}, {"tool_done", QStringLiteral("步骤完成")},
+        {"subagent_start", QStringLiteral("子 Agent 开始")}, {"subagent_stop", QStringLiteral("子 Agent 完成")},
+        {"attention", QStringLiteral("需要查看")}, {"notification", QStringLiteral("通知")},
+        {"done", QStringLiteral("已完成")}, {"permission", QStringLiteral("请求授权")},
+        {"permission_request", QStringLiteral("等待授权")}, {"blocked", QStringLiteral("阻塞/失败")},
+        {"failure", QStringLiteral("失败")}, {"error", QStringLiteral("错误")},
+        {"exception", QStringLiteral("异常")}, {"max_tokens", QStringLiteral("上下文阻塞")},
+        {"stale", QStringLiteral("状态不可信")}, {"session_start", QStringLiteral("会话开始")},
+        {"session_end", QStringLiteral("会话结束")}, {"turn_end", QStringLiteral("回合结束")},
+        {"off", QStringLiteral("已关闭")}, {"pause", QStringLiteral("已暂停")}, {"paused", QStringLiteral("已暂停")}};
+    return names.value(normalizedSignal(signal).value_or(QStringLiteral("idle")));
+}
+
+QString signalSummary(const QString &signal) {
+    static const QHash<QString, QString> summaries = {
+        {"idle", QStringLiteral("Agent 空闲。")}, {"session_start", QStringLiteral("Agent 空闲。")},
+        {"session_end", QStringLiteral("Agent 空闲。")}, {"turn_end", QStringLiteral("Agent 空闲。")},
+        {"thinking", QStringLiteral("Agent 已收到任务，正在思考。")},
+        {"working", QStringLiteral("Agent 正在读写文件、跑工具或测试。")},
+        {"tool_done", QStringLiteral("一个步骤已完成，Agent 仍在工作流中。")},
+        {"subagent_start", QStringLiteral("子 Agent 正在运行。")},
+        {"subagent_stop", QStringLiteral("子 Agent 已完成，主工作流仍可能继续。")},
+        {"attention", QStringLiteral("Agent 明确需要你看一眼或继续。")},
+        {"notification", QStringLiteral("Agent 发出了需要查看的通知。")},
+        {"done", QStringLiteral("任务完成。")},
+        {"permission", QStringLiteral("Agent 正在请求权限或明确批准。")},
+        {"permission_request", QStringLiteral("Agent 正在等待用户授权。")},
+        {"blocked", QStringLiteral("Agent 遇到失败、阻塞或无法继续。")},
+        {"failure", QStringLiteral("Agent 或工具报告失败。")},
+        {"error", QStringLiteral("Agent 或工具报告错误。")},
+        {"exception", QStringLiteral("Agent 或工具报告异常。")},
+        {"max_tokens", QStringLiteral("Agent 因上下文或 token 限制无法继续。")},
+        {"stale", QStringLiteral("状态文件过期、损坏，或当前状态不可信。")},
+        {"off", QStringLiteral("监控已暂停。")}, {"pause", QStringLiteral("监控已暂停。")},
+        {"paused", QStringLiteral("监控已暂停。")}};
+    return summaries.value(normalizedSignal(signal).value_or(QStringLiteral("idle")));
+}
+
+QString humanAction(DisplayState state) {
+    switch (state) {
+    case DisplayState::Ready:
+    case DisplayState::Active:
+    case DisplayState::Completed: return QStringLiteral("不用处理");
+    case DisplayState::NeedsReview: return QStringLiteral("有空看一眼");
+    case DisplayState::Permission:
+    case DisplayState::Blocked: return QStringLiteral("马上处理");
+    case DisplayState::Stale: return QStringLiteral("确认状态");
+    case DisplayState::Paused: return QStringLiteral("监控已暂停");
+    }
+    return QStringLiteral("不用处理");
+}
+
 DisplayState displayState(const QString &signal) {
     static const QHash<QString, DisplayState> map = {
         {"idle", DisplayState::Ready}, {"session_start", DisplayState::Ready},

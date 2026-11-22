@@ -8,6 +8,11 @@
 #include "../src/HookAdapters.h"
 #include "../src/SignalStateFile.h"
 #include "../src/SignalStore.h"
+#include "../src/SoundFile.h"
+#include "../src/LightScope.h"
+#include "../src/PresenceMonitor.h"
+#include "../src/SignalModel.h"
+#include "../src/CliPath.h"
 
 #include <QLockFile>
 
@@ -426,6 +431,161 @@ private slots:
         QCOMPARE(stale->aggregate, QString("stale"));
     }
 
+    void presenceFindsAgentAppsByExecutablePath() {
+        using asb::presence::ProcessInfo;
+        const auto agents = [](const QList<ProcessInfo> &processes) {
+            QStringList out;
+            for (const asb::SessionStatus &s : asb::presence::detect(processes, 1000)) out.append(s.agent);
+            return out;
+        };
+        const QString codexApp = R"(C:\Program Files\WindowsApps\OpenAI.Codex_26.1117.4957.0_x64__2p2nqsd0c76g0\app\)";
+        const QString claudeApp = R"(C:\Program Files\WindowsApps\Claude_6.28899.6.0_x64__pzs8sxrjxfjjc\app\claude.exe)";
+        // Desktop apps count only with a visible window.
+        QCOMPARE(agents({{codexApp + "ChatGPT.exe", true}}), QStringList{"codex-desktop"});
+        QCOMPARE(agents({{codexApp + "ChatGPT.exe", false}}), QStringList());
+        QCOMPARE(agents({{claudeApp, true}}), QStringList{"claude-desktop"});
+        QCOMPARE(agents({{claudeApp, false}}), QStringList());
+        QCOMPARE(agents({{R"(C:\Users\u\AppData\Local\AnthropicClaude\app-1.2.3\claude.exe)", true}}), QStringList{"claude-desktop"});
+        // The desktop apps' own helpers are not a CLI; the bundled Claude Code is not the desktop app.
+        QCOMPARE(agents({{codexApp + R"(resources\codex.exe)", false}}), QStringList());
+        QCOMPARE(agents({{R"(C:\Users\u\AppData\Local\Claude-Data\claude_x\claude-code\2.1.330\abc\claude.exe)", true}}), QStringList());
+        // The ChatGPT desktop app is not Codex.
+        QCOMPARE(agents({{R"(C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.0_x64__x\app\ChatGPT.exe)", true}}), QStringList());
+        // CLI, VS Code and JetBrains binaries.
+        QCOMPARE(agents({{R"(C:\Users\u\AppData\Roaming\npm\node_modules\@openai\codex\vendor\x86_64-pc-windows-msvc\codex\codex.exe)", false}}),
+                 QStringList{"codex-cli"});
+        QCOMPARE(agents({{R"(C:\Users\u\.vscode\extensions\openai.chatgpt-26.5-win32-x64\bin\windows-x86_64\codex.exe)", false}}),
+                 QStringList{"codex-vscode"});
+        QCOMPARE(agents({{R"(C:\Users\u\AppData\Local\JetBrains\IntelliJIdea2026.1\aia\codex\codex.exe)", false}}),
+                 QStringList{"codex-idea"});
+
+        // Merged into the display: an open app shows until a live session of that source does.
+        asb::SignalSnapshot snapshot;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const QList<asb::SessionStatus> presence =
+            asb::presence::detect({{codexApp + "ChatGPT.exe", true}, {claudeApp, true}}, now);
+        auto display = asb::display::displaySnapshot(snapshot, now, presence);
+        QCOMPARE(asb::display::visibleDesktopPresenceSessions(display.sessions).size(), 2);
+        QCOMPARE(asb::displayState(display.aggregate), asb::DisplayState::Ready); // open apps are idle
+        asb::SessionStatus working;
+        working.sessionID = "claude-session";
+        working.agent = "claude-desktop";
+        working.signal = "working";
+        working.updatedAt = now;
+        working.lastEvent = "PreToolUse:Bash";
+        snapshot.sessions = {working};
+        display = asb::display::displaySnapshot(snapshot, now, presence);
+        const auto open = asb::display::visibleDesktopPresenceSessions(display.sessions);
+        QCOMPARE(open.size(), 1); // Claude's presence gives way to its live session
+        QCOMPARE(open.first().agent, QStringLiteral("codex-desktop"));
+    }
+
+    void lightFollowsAndBorrowsAgentsLikeMacOS() {
+        using asb::SessionStatus;
+        const auto session = [](const QString &agent, const QString &id, const QString &signal, qint64 at) {
+            SessionStatus s;
+            s.agent = agent;
+            s.sessionID = id;
+            s.signal = signal;
+            s.updatedAt = at;
+            s.lastEvent = "PreToolUse";
+            return s;
+        };
+        const auto snapshot = [](const QList<SessionStatus> &sessions, const QString &stored = "idle") {
+            asb::display::DisplaySnapshot d;
+            d.sessions = sessions;
+            d.storedAggregate = stored;
+            return d;
+        };
+        const auto state = [](const asb::light::Selection &s) { return asb::displayState(s.aggregate); };
+        const SessionStatus codexWorking = session("codex-cli", "codex-cli:1", "working", 100);
+        const SessionStatus claudeWorking = session("claude-code", "claude-code:2", "working", 200);
+        const SessionStatus claudePermission = session("claude-code", "claude-code:2", "permission", 50);
+
+        QVERIFY(asb::light::matches("codex-cli", codexWorking));
+        QVERIFY(asb::light::matches("claude-code", session("claude-desktop", "x", "working", 1)));
+        QVERIFY(!asb::light::matches("codex-cli", claudeWorking));
+
+        // Automatic: the most urgent agent wins, whatever its age.
+        asb::light::Selector follow;
+        auto picked = follow.select(snapshot({codexWorking, claudePermission}), true, {}, true);
+        QCOMPARE(picked.scopes, QStringList{"claude-code"});
+        QCOMPARE(state(picked), asb::DisplayState::Permission);
+        // displayName(for: scopes) names the whole Claude group "Claude" (a borrowed single scope,
+        // below, uses the scope's own name).
+        QCOMPARE(asb::light::followingText(picked, true, true), QStringLiteral("自动跟随 · Claude"));
+
+        // Sticky: a newer agent that is also just working does not take the light over...
+        asb::light::Selector sticky;
+        QCOMPARE(sticky.select(snapshot({codexWorking}), true, {}, true).scopes, QStringList{"codex-cli"});
+        QCOMPARE(sticky.select(snapshot({codexWorking, claudeWorking}), true, {}, true).scopes, QStringList{"codex-cli"});
+        // ...but one waiting for permission does at once.
+        QCOMPARE(sticky.select(snapshot({codexWorking, claudePermission}), true, {}, true).scopes, QStringList{"claude-code"});
+
+        // Manual: an idle selection borrows the busy other agent, unless that is switched off.
+        asb::light::Selector manual;
+        auto borrowed = manual.select(snapshot({claudeWorking}), false, {"codex-cli"}, true);
+        QCOMPARE(borrowed.borrowed, std::optional<QString>("claude-code"));
+        QCOMPARE(state(borrowed), asb::DisplayState::Active);
+        QCOMPARE(asb::light::followingText(borrowed, false, false), QStringLiteral("Showing Claude Desktop"));
+        auto strict = asb::light::Selector().select(snapshot({claudeWorking}), false, {"codex-cli"}, false);
+        QVERIFY(!strict.borrowed);
+        QCOMPARE(state(strict), asb::DisplayState::Ready);
+        QVERIFY(!asb::light::unavailableHint(strict, {"codex-cli"}, false, {claudeWorking}, true).isEmpty());
+        // A busy selection keeps the light.
+        auto own = asb::light::Selector().select(snapshot({codexWorking, claudePermission}), false, {"codex-cli"}, true);
+        QVERIFY(!own.borrowed);
+        QCOMPARE(state(own), asb::DisplayState::Active);
+
+        // No sessions: automatic keeps a stored blocked state; a manual selection shows idle.
+        QCOMPARE(state(asb::light::Selector().select(snapshot({}, "blocked"), true, {}, true)), asb::DisplayState::Blocked);
+        QCOMPARE(state(asb::light::Selector().select(snapshot({}, "blocked"), false, {"codex-cli"}, false)), asb::DisplayState::Ready);
+
+        // The dropdown values map to macOS scope sets.
+        QCOMPARE(asb::light::scopesForPreference("following"), QStringList());
+        QCOMPARE(asb::light::scopesForPreference("claude"), QStringList{"claude-code"});
+        QCOMPARE(asb::light::scopesForPreference("codex").size(), 5);
+        QCOMPARE(asb::light::displayName(asb::light::scopesForPreference("codex"), true), QStringLiteral("Codex"));
+    }
+
+    void soundVolumeScalesPcmSamplesOnly() {
+        // A minimal 16-bit mono PCM WAV: RIFF header, fmt chunk, data chunk of four samples.
+        const auto wav = [](quint16 format, quint16 bits, const QList<qint16> &samples) {
+            QByteArray data;
+            for (qint16 s : samples) data.append(reinterpret_cast<const char *>(&s), 2);
+            QByteArray fmt(16, '\0');
+            qToLittleEndian<quint16>(format, fmt.data());
+            qToLittleEndian<quint16>(1, fmt.data() + 2);
+            qToLittleEndian<quint32>(22050, fmt.data() + 4);
+            qToLittleEndian<quint16>(bits, fmt.data() + 14);
+            QByteArray out = "RIFF" + QByteArray(4, '\0') + "WAVE";
+            out += "fmt " + QByteArray(4, '\0') + fmt;
+            qToLittleEndian<quint32>(16, out.data() + 16);
+            const qsizetype dataHeader = out.size();
+            out += "data" + QByteArray(4, '\0') + data;
+            qToLittleEndian<quint32>(quint32(data.size()), out.data() + dataHeader + 4);
+            return out;
+        };
+        const auto samples = [](const QByteArray &file) {
+            QList<qint16> out;
+            for (qsizetype i = file.size() - 8; i < file.size(); i += 2) out.append(qFromLittleEndian<qint16>(file.constData() + i));
+            return out;
+        };
+        const QByteArray original = wav(1, 16, {1000, -1000, 32767, -32768});
+        const QByteArray half = asb::sound::scaledWav(original, 0.5);
+        QCOMPARE(half.size(), original.size());
+        QCOMPARE(half.left(original.size() - 8), original.left(original.size() - 8)); // headers untouched
+        QCOMPARE(samples(half), (QList<qint16>{500, -500, 16384, -16384}));
+        QCOMPARE(samples(asb::sound::scaledWav(original, 2.0)), (QList<qint16>{2000, -2000, 32767, -32768})); // clamped
+        const QByteArray eightBit = wav(1, 8, {1000, -1000, 32767, -32768});
+        QCOMPARE(asb::sound::scaledWav(eightBit, 0.5), eightBit);
+        QCOMPARE(asb::sound::scaledWav(QByteArray("not a wav"), 0.5), QByteArray("not a wav"));
+        QCOMPARE(asb::sound::volume("soft"), 0.28);
+        QCOMPARE(asb::sound::volume("standard"), 0.55);
+        QCOMPARE(asb::sound::volume("loud"), 0.88);
+        QCOMPARE(asb::sound::volume("unknown"), 0.55);
+    }
+
     void installerAddsKeepsAndRemovesOnlyItsHooks() {
         QTemporaryDir dir;
         const QString root = dir.path() + "/claude";
@@ -463,6 +623,7 @@ private slots:
                      .value("hooks").toArray()[0].toObject().value("timeout").toInt(), 10);
 
         QVERIFY(installer.check().configured);
+        QVERIFY(installer.check().missing.isEmpty());
         const hooks::HookReport again = installer.install();
         QVERIFY(again.ok && !again.changed); // idempotent
 
@@ -486,6 +647,144 @@ private slots:
         }
         QStringList backups = QDir(root).entryList({"settings.json.bak-*"}, QDir::Files | QDir::Hidden);
         QVERIFY(backups.size() <= hooks::ClaudeHookInstaller::kRetainedBackups);
+    }
+
+    // Cases from AgentSignalLightCoreTests (testCodexHookMapping..., testHookAdapters...).
+    void codexAndGenericAdaptersMatchSwiftTests() {
+        const auto obj = [](const char *json) { return QJsonDocument::fromJson(json).object(); };
+        QCOMPARE(hooks::codex::chooseSignal(QString("PreToolUse"), {}), QString("working"));
+        QCOMPARE(hooks::codex::chooseSignal(QString("Stop"), {}), QString("done"));
+        QCOMPARE(hooks::codex::chooseSignal(QString(" pre_tool_use "), {}), QString("working"));
+        QCOMPARE(hooks::codex::chooseSignal(QString("permission-request"), {}), QString("permission_request"));
+        QCOMPARE(hooks::codex::chooseSignal(std::nullopt, obj(R"({"hookEventName":"post tool use"})")), QString("tool_done"));
+        QCOMPARE(hooks::codex::chooseSignal(QString("PreToolUse"), obj(R"({"signal":"attention"})")), QString("attention"));
+        QCOMPARE(hooks::codex::chooseSignal(QString("PostToolUse"), obj(R"({"exitStatus":1})")), QString("tool_done"));
+        QCOMPARE(displayState(hooks::codex::chooseSignal(std::nullopt, obj(R"({"Status":"failed"})"))), DisplayState::Blocked);
+        QCOMPARE(hooks::codex::chooseSignal(QString("PostToolUse"), obj(R"({"tool_response":{"error":"exit 2"},"status":"failed"})")),
+                 QString("tool_done"));
+
+        const hooks::Environment env{{"CODEX_SESSION_ID", "env-session"}};
+        QCOMPARE(hooks::codex::sessionKey(obj(R"({"tool":{"context":{"threadId":"nested-thread"}}})"), env), QString("nested-thread"));
+        QCOMPARE(hooks::codex::sessionKey(obj(R"({"sessionId":"camel-session"})"), env), QString("camel-session"));
+        QCOMPARE(hooks::codex::sessionKey(obj(R"({"session_id":12345})"), {}), QString("12345"));
+
+        // Tool arguments never count as metadata; trusted nested metadata does.
+        const QJsonObject lookalike = obj(R"({"toolInput":{"sessionId":"user-supplied-session","source":"xcode","error":"example"}})");
+        QCOMPARE(hooks::codex::sessionKey(lookalike, {{"CODEX_SESSION_ID", "real-session"}}), QString("real-session"));
+        QCOMPARE(hooks::codex::agentName(lookalike, {{"TERM_PROGRAM", "Apple_Terminal"}}), QString("codex-cli"));
+        QCOMPARE(hooks::codex::chooseSignal(QString("PreToolUse"), lookalike), QString("working"));
+        const QJsonObject trusted = obj(R"({"payload":{"metadata":{"sessionId":"trusted-session","source":"VS Code"},"result":{"error":true}}})");
+        QCOMPARE(hooks::codex::sessionKey(trusted, {}), QString("trusted-session"));
+        QCOMPARE(hooks::codex::agentName(trusted, {}), QString("codex-vscode"));
+        QCOMPARE(hooks::codex::chooseSignal(QString("Stop"), trusted), QString("blocked"));
+        QCOMPARE(hooks::codex::agentName({}, {{"TERMINAL_EMULATOR", "JetBrains-JediTerm"}}), QString("codex-jetbrains"));
+
+        QCOMPARE(hooks::codex::sourceScopedSessionKey("abc", "codex-vscode"), QString("codex-vscode:abc"));
+        QCOMPARE(hooks::codex::sourceScopedSessionKey("codex-vscode:abc", "codex-vscode"), QString("codex-vscode:abc"));
+        QCOMPARE(hooks::codex::sourceScopedSessionKey("abc", "codex-desktop"), QString("abc"));
+        QCOMPARE(hooks::codex::installedEvents(), (QStringList{"SessionStart", "UserPromptSubmit", "PreToolUse",
+                                                               "PostToolUse", "PermissionRequest", "Stop"}));
+
+        QCOMPARE(hooks::generic::chooseSignal(QString("ToolFailed"), obj(R"({"error":"boom"})")), QString("tool_done"));
+        QCOMPARE(hooks::generic::chooseSignal(QString("PreToolUse"), obj(R"({"signal":"permission"})")), QString("permission"));
+        QCOMPARE(displayState(hooks::generic::chooseSignal(QString("RunFailed"), {})), DisplayState::Blocked);
+        QCOMPARE(hooks::generic::sessionKey(obj(R"({"run_id":42})"), {}, QString("local")), QString("42"));
+        const QJsonObject script = obj(R"({"event":"AgentStarted","agent":"local-script","session_id":"local-script-main"})");
+        QCOMPARE(hooks::generic::eventName(script).value_or(QString()), QString("AgentStarted"));
+        QCOMPARE(hooks::generic::agentName(script, {}), QString("local-script"));
+        QCOMPARE(hooks::generic::sessionKey(script, {}), QString("local-script-main"));
+    }
+
+    // testManualSignalsParticipateInSessionAggregation, testManualIdleStillClearsSessions.
+    void manualSignalJoinsSessionsAndIdleClears() {
+        const qint64 t0 = 1'800'000'000'000;
+        SignalStore store;
+        store.applySessionSignal("permission", "codex-main", "codex", "PermissionRequest", t0, t0);
+        SignalSnapshot snapshot = store.setManualSignal("working", t0 + 1000);
+        QCOMPARE(snapshot.aggregate, QString("permission"));
+        QCOMPARE(snapshot.sessions.size(), 2);
+        QCOMPARE(snapshot.sessions[0].sessionID, QString("codex-main"));
+        QCOMPARE(snapshot.sessions[1].sessionID, QString("manual"));
+        QCOMPARE(snapshot.sessions[1].signal, QString("working"));
+        QCOMPARE(snapshot.sessions[1].agent, QString("manual"));
+        QCOMPARE(snapshot.sessions[1].lastEvent, QString("ManualSet"));
+
+        snapshot = store.setManualSignal("idle", t0 + 2000);
+        QCOMPARE(snapshot.aggregate, QString("idle"));
+        QVERIFY(snapshot.sessions.isEmpty());
+        QCOMPARE(snapshot.recentEvents.first().event, QString("ManualSet"));
+
+        snapshot = store.setManualSignal("pause", t0 + 3000);
+        QCOMPARE(displayState(snapshot.aggregate), DisplayState::Paused);
+        QVERIFY(snapshot.sessions.isEmpty());
+    }
+
+    void installerWritesCodexHooksJson() {
+        QTemporaryDir dir;
+        const QString home = dir.path() + "/codex";
+        const QString exe = dir.path() + "/Agent Signal Bar/agent-signal.exe";
+        QVERIFY(QDir().mkpath(home));
+        QVERIFY(QDir().mkpath(QFileInfo(exe).absolutePath()));
+        writeText(exe, "fake");
+        writeText(home + "/hooks.json", R"({"hooks":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"notify-me"}]}]}})");
+        hooks::ClaudeHookInstaller installer(home, exe, hooks::ClaudeHookInstaller::Target::Codex);
+        installer.allowTemporaryLocationForTests();
+
+        const hooks::HookReport preview = installer.preview(false);
+        QVERIFY(preview.ok && preview.wouldChange && !preview.changed);
+        QCOMPARE(preview.added, hooks::codex::installedEvents());
+        QCOMPARE(ownedCommands(readJson(home + "/hooks.json")), 0); // a preview writes nothing
+
+        const hooks::HookReport report = installer.install();
+        QVERIFY2(report.ok, qPrintable(report.error));
+        QVERIFY(report.changed);
+        QVERIFY(report.settingsPath.endsWith("hooks.json"));
+        const QJsonObject json = readJson(home + "/hooks.json");
+        QCOMPARE(ownedCommands(json), hooks::codex::installedEvents().size());
+        const QJsonArray stop = json.value("hooks").toObject().value("Stop").toArray();
+        QCOMPARE(stop.size(), 2); // the user's own hook stays
+        const QJsonObject block = stop[1].toObject();
+        QCOMPARE(block.value("matcher").toString(), QString("*"));
+        const QJsonObject entry = block.value("hooks").toArray()[0].toObject();
+        QVERIFY(!entry.contains("args"));
+        QCOMPARE(entry.value("command").toString(), hooks::ClaudeHookInstaller::commandPath(exe) + " codex-hook Stop");
+        QCOMPARE(json.value("hooks").toObject().value("PermissionRequest").toArray()[0].toObject()
+                     .value("hooks").toArray()[0].toObject().value("timeout").toInt(), 10);
+        QVERIFY(installer.check().configured);
+        QVERIFY(!installer.preview(false).wouldChange);
+        // Each entry is recognised as current, not merely replaced by an identical one.
+        QVERIFY(installer.check().missing.isEmpty());
+        // The entry for another event is not current for this one.
+        writeText(home + "/hooks.json", QString(QJsonDocument(json).toJson()).replace("codex-hook Stop", "codex-hook Other").toUtf8());
+        QCOMPARE(installer.check().stale, QStringList{"Stop"});
+        QVERIFY(installer.install().ok);
+
+        const hooks::HookReport removal = installer.preview(true);
+        QCOMPARE(removal.removed.size(), hooks::codex::installedEvents().size());
+        QVERIFY(installer.uninstall().changed);
+        QCOMPARE(ownedCommands(readJson(home + "/hooks.json")), 0);
+        QCOMPARE(readJson(home + "/hooks.json").value("hooks").toObject().keys(), QStringList{"Stop"});
+    }
+
+    // Install CLI edits the user PATH as a string; the registry calls are not exercised here.
+    void cliPathAddsAndRemovesOnlyItsFolder() {
+        const QString dir = "C:\\Users\\me\\AppData\\Local\\Programs\\AgentSignalBar";
+        const clipath::Expand expand = [](const QString &value) {
+            return QString(value).replace("%LOCALAPPDATA%", "C:\\Users\\me\\AppData\\Local", Qt::CaseInsensitive);
+        };
+        const QString original = "%USERPROFILE%\\bin;;C:\\Tools\\";
+        QVERIFY(!clipath::contains(original, dir, expand));
+        const QString added = clipath::withDirectory(original, dir, true, expand);
+        QCOMPARE(added, "%USERPROFILE%\\bin;C:\\Tools\\;" + dir);
+        QVERIFY(clipath::contains(added, dir, expand));
+        QCOMPARE(clipath::withDirectory(added, dir, true, expand), added); // no duplicate
+
+        // Another spelling of the same folder counts as present and is removed with it.
+        const QString spelled = original + ";%LocalAppData%\\Programs\\agentsignalbar\\;\"c:/users/me/appdata/local/programs/AgentSignalBar\"";
+        QVERIFY(clipath::contains(spelled, dir, expand));
+        QCOMPARE(clipath::withDirectory(spelled, dir, false, expand), QString("%USERPROFILE%\\bin;C:\\Tools\\"));
+        QCOMPARE(clipath::withDirectory("", dir, true, expand), dir);
+        QVERIFY(!clipath::contains("C:\\Users\\me\\AppData\\Local\\Programs", dir, expand));
     }
 
     void installerLeavesUnreadableSettingsAlone() {

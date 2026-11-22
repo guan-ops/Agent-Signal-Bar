@@ -155,13 +155,25 @@ void SignalRuntime::finish(quint64 generation, bool polled, const asb::codex::Po
     }
 }
 
+void SignalRuntime::setPresence(const QList<asb::SessionStatus> &presence) {
+    // Apps open or closed change the display; a repeat of the same apps does not.
+    const auto key = [](const QList<asb::SessionStatus> &list) {
+        QStringList ids;
+        for (const asb::SessionStatus &s : list) ids.append(s.sessionID);
+        return ids;
+    };
+    const bool changedApps = key(presence) != key(m_presence);
+    m_presence = presence;
+    if (changedApps) refreshDisplay();
+}
+
 void SignalRuntime::refreshDisplay() {
     if (!m_snapshot) {
         emit changed();
         return;
     }
     const qint64 now = nowMs();
-    m_display = asb::display::displaySnapshot(*m_snapshot, now);
+    m_display = asb::display::displaySnapshot(*m_snapshot, now, m_presence);
     m_visibleSessions = asb::display::visibleSessions(m_display.sessions, now, kCurrentSessionLimit);
     m_recentEvents = asb::display::recentEvents(m_display, m_visibleSessions, kRecentEventLimit);
     emit changed();

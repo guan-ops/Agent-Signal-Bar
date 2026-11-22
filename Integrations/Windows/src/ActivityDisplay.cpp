@@ -18,6 +18,7 @@ constexpr qint64 kCompletedDisplayWindow = 30 * 1000;
 constexpr qint64 kRecentActivityFallbackWindow = 5 * 60 * 1000;
 constexpr qint64 kPassiveActiveDisplayWindow = 45 * 1000;
 constexpr qint64 kActiveDisplayWindow = 5 * 60 * 1000;
+constexpr qint64 kTransientAlertDisplayWindow = 5 * 60 * 1000;
 // ActivityPresentation
 constexpr qint64 kLiveSessionWindow = 5 * 60 * 1000;
 constexpr qint64 kPassiveActiveSessionWindow = 45 * 1000;
@@ -399,7 +400,22 @@ QString activitySourceKey(const QString &agent, const QString &sessionID, const 
     return agentKey;
 }
 
-DisplaySnapshot displaySnapshot(const SignalSnapshot &snapshot, qint64 now) {
+QList<SessionStatus> visibleDesktopPresenceSessions(const QList<SessionStatus> &sessions, int limit) {
+    QList<SessionStatus> result;
+    QSet<QString> sources;
+    for (const SessionStatus &s : sessions) {
+        const DisplayState state = displayState(s.signal);
+        if (!isPresenceSession(s) || (state != DisplayState::Ready && state != DisplayState::Paused)) continue;
+        if (runtimeKind(s.agent, s.sessionID, s.lastEvent) != RuntimeKind::Desktop) continue;
+        if (sources.contains(sourceKey(s))) continue;
+        sources.insert(sourceKey(s));
+        result.append(s);
+        if (limit >= 0 && result.size() >= limit) break;
+    }
+    return result;
+}
+
+DisplaySnapshot displaySnapshot(const SignalSnapshot &snapshot, qint64 now, const QList<SessionStatus> &presence) {
     QList<SignalEvent> visibleEvents;
     for (const SignalEvent &e : snapshot.recentEvents) {
         if (!isSignalTestEvent(e.event)) visibleEvents.append(e);
@@ -413,6 +429,27 @@ DisplaySnapshot displaySnapshot(const SignalSnapshot &snapshot, qint64 now) {
             sessions.append(s);
     }
     sessions += fallbackSessions(visibleEvents, sessions, completed, resolving, now);
+
+    // Running apps (combinedDisplaySessions): an app shows as open unless a live session of the
+    // same source is already on show (shouldSuppressDesktopPresence).
+    QSet<QString> liveSources;
+    for (const SessionStatus &s : std::as_const(sessions)) {
+        if (isSignalTestEvent(s.lastEvent)) continue;
+        bool live = false;
+        switch (displayState(s.signal)) {
+        case DisplayState::Active: live = now - s.updatedAt <= activeDisplayWindow(s); break;
+        case DisplayState::NeedsReview:
+        case DisplayState::Permission: live = now - s.updatedAt <= kTransientAlertDisplayWindow; break;
+        case DisplayState::Blocked:
+        case DisplayState::Stale: live = true; break;
+        default: break;
+        }
+        if (live) liveSources.insert(sourceKey(s));
+    }
+    for (const SessionStatus &p : presence) {
+        if (!liveSources.contains(sourceKey(p))) sessions.append(p);
+    }
+
     sessions = removingSupersededRuntimeAliases(sessions);
     std::stable_sort(sessions.begin(), sessions.end(), displaySortPrecedes);
 
@@ -423,6 +460,7 @@ DisplaySnapshot displaySnapshot(const SignalSnapshot &snapshot, qint64 now) {
         if (!bySource.contains(key) || preferDisplaySession(s, bySource[key])) bySource[key] = s;
     }
     DisplaySnapshot result;
+    result.storedAggregate = snapshot.aggregate;
     result.sessions = bySource.values();
     std::stable_sort(result.sessions.begin(), result.sessions.end(), displaySortPrecedes);
 

@@ -5,6 +5,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 #include <optional>
 
 namespace asb {
@@ -39,6 +40,12 @@ QString displayStateKey(DisplayState state);
 // > active 50 > completed 40 > ready 0.
 int priority(DisplayState state);
 inline int priority(const QString &signal) { return priority(displayState(signal)); }
+// AgentSignal.allCases in declaration order (`agent-signal list`).
+const QStringList &allSignals();
+// AgentSignal.displayName / summary and DisplayState.humanAction (Chinese, as on macOS).
+QString signalDisplayName(const QString &signal);
+QString signalSummary(const QString &signal);
+QString humanAction(DisplayState state);
 // AgentSignal.normalizedAggregateSignal: the one signal that stands for a display state.
 QString normalizedAggregateSignal(const QString &signal);
 

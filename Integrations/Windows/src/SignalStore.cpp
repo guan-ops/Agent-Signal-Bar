@@ -223,6 +223,29 @@ SignalSnapshot SignalStore::readSnapshot(qint64 now) {
     return snapshot();
 }
 
+SignalSnapshot SignalStore::setManualSignal(const QString &signal, qint64 now) {
+    QString resolved = signal;
+    if (signal == "session_start" || signal == "session_end" || signal == "turn_end") resolved = QStringLiteral("idle");
+    prune(now);
+    switch (displayState(resolved)) {
+    case DisplayState::Ready:
+        m_sessions.clear();
+        m_aggregate = QStringLiteral("idle");
+        break;
+    case DisplayState::Paused:
+        m_sessions.clear();
+        m_aggregate = normalizedAggregateSignal(resolved);
+        break;
+    default:
+        m_sessions.insert(QStringLiteral("manual"), SessionRecord{QStringLiteral("manual"), resolved, QStringLiteral("ManualSet"), now});
+        m_aggregate = aggregateSignal();
+        break;
+    }
+    appendEvent(QStringLiteral("manual"), QStringLiteral("manual"), resolved, QStringLiteral("ManualSet"), now);
+    m_updatedAt = now;
+    return snapshot();
+}
+
 SignalStore SignalStore::staleDocument(qint64 now) {
     SignalStore store;
     store.m_aggregate = QStringLiteral("stale");

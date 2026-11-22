@@ -18,6 +18,7 @@
 // <prefs codexDataDir | CODEX_HOME | %USERPROFILE%\.codex>\sessions.
 #include "AppController.h"
 #include "ActivityText.h"
+#include "PresenceMonitor.h"
 #include "SignalRuntime.h"
 #include "SignalStateFile.h"
 #include "TrayIconRenderer.h"
@@ -117,6 +118,9 @@ int runProbe(QApplication &app, int seconds, const QString &dataDir) {
     const QString realState = asb::SignalStateFile::defaultPath();
     out << "State file: " << QDir::toNativeSeparators(realState) << (QFileInfo::exists(realState) ? "" : " (not created yet)")
         << "\n";
+    QStringList apps;
+    for (const asb::SessionStatus &s : asb::presence::detect(asb::presence::runningProcesses(), 0)) apps.append(s.agent);
+    out << "Apps running: " << (apps.isEmpty() ? QStringLiteral("none detected") : apps.join(", ")) << "\n";
     out.flush();
     QTemporaryDir scratch;
     const QString probeState = scratch.path() + "/status.json";

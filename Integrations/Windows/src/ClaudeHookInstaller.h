@@ -11,6 +11,10 @@
 // spaces (8.3 short path), so a Claude Code version that ignores `args` and runs the string
 // through Git Bash or PowerShell still starts the exe; agent-signal treats "no arguments,
 // piped stdin" as claude-hook.
+//
+// Target::Codex writes <codex home>/hooks.json the same way for Codex's six events, as on macOS
+// with matcher "*". Its entries run `<exe> codex-hook <event>` as one command string (the macOS
+// wrapper script takes the event as its argument), again with an 8.3 path free of spaces.
 #pragma once
 
 #include <QString>
@@ -26,12 +30,17 @@ struct HookReport {
     QStringList missing;      // events without a current registration
     QStringList stale;        // events with an owned registration that is not current
     bool changed = false;     // install/uninstall wrote the file
+    bool wouldChange = false; // the file differs from what this action wants (also for previews)
+    QStringList added;        // events given a new registration
+    QStringList removed;      // events that lost an owned registration (sorted)
     QString backup;
 };
 
 class ClaudeHookInstaller {
 public:
-    ClaudeHookInstaller(QString claudeRoot, QString hookExe);
+    enum class Target { Claude, Codex };
+    // `root`: the Claude config folder, or the Codex home for Target::Codex.
+    ClaudeHookInstaller(QString root, QString hookExe, Target target = Target::Claude);
 
     // CLAUDE_CONFIG_DIR, else <home>/.claude.
     static QString defaultClaudeRoot(const QString &home, const QString &configDirEnv);
@@ -43,6 +52,8 @@ public:
     HookReport check() const;
     HookReport install() const;
     HookReport uninstall() const;
+    // What install (or, with `remove`, uninstall) would do, without writing (`--dry-run`).
+    HookReport preview(bool remove) const { return run(false, remove); }
 
     static constexpr int kRetainedBackups = 5;
     // Tests keep their fake exe in a temporary directory.
@@ -53,7 +64,10 @@ private:
 
     QString m_root;
     QString m_exe;
+    Target m_target;
     bool m_allowTemporary = false;
 };
+
+using HookInstaller = ClaudeHookInstaller;
 
 } // namespace asb::hooks

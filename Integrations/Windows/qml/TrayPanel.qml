@@ -24,7 +24,8 @@ PopupWindow {
             Layout.fillWidth: true
             AsbText { text: Theme.stateTitle(App.displayState); strong: true; Layout.fillWidth: true }
             AsbText {
-                text: App.paused ? Theme.t("监控已暂停", "Monitoring paused") : Theme.t("自动跟随", "Auto Follow")
+                text: App.paused ? Theme.t("监控已暂停", "Monitoring paused")
+                    : App.lightFollowingText.length > 0 ? App.lightFollowingText : Theme.t("自动跟随", "Auto Follow")
                 caption: true
                 secondary: true
             }
@@ -49,7 +50,9 @@ PopupWindow {
         spacing: 2
         // SessionRowView: dot, "Codex · 终端运行中 · 思考中", time; tinted when it needs you.
         Repeater {
-            model: (App.liveData ? App.sessions : Demo.sessions(Theme.t)).slice(0, 3)
+            // The running sessions, or the open desktop apps while nothing runs.
+            model: (App.liveData ? (App.sessions.length > 0 || App.paused ? App.sessions : App.presenceSessions)
+                                 : Demo.sessions(Theme.t)).slice(0, 3)
             Rectangle {
                 id: row
                 required property var modelData

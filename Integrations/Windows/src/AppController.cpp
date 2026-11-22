@@ -2,9 +2,14 @@
 
 #include "ActivityText.h"
 #include "ClaudeHookInstaller.h"
+#include "CliPath.h"
+#include "DebugLog.h"
+#include "Diagnostics.h"
 #include "HookAdapters.h"
 #include "SignalRuntime.h"
+#include "PresenceMonitor.h"
 #include "SignalStateFile.h"
+#include "SoundFile.h"
 
 #include <QClipboard>
 #include <QDateTime>
@@ -21,7 +26,11 @@
 #include <QScreen>
 #include <QStandardPaths>
 #include <QStyleHints>
+#include <QSysInfo>
 #include <QUrl>
+#include <QLoggingCategory>
+#include <QPointer>
+#include <QThreadPool>
 #include <QWindow>
 
 #include <algorithm>
@@ -35,6 +44,9 @@
 #ifndef ASB_WINDOWS_VERSION
 #define ASB_WINDOWS_VERSION "0.1.0"
 #endif
+
+// QT_LOGGING_RULES="asb.sound.debug=true" logs every sound played.
+Q_LOGGING_CATEGORY(lcSound, "asb.sound", QtWarningMsg)
 
 namespace {
 
@@ -66,7 +78,7 @@ const QVariantMap &defaultPrefs() {
         {"newZealandMode", false}, {"soundEnabled", true}, {"completionSound", "new_zealand"},
         {"waitingSound", "new_zealand"}, {"soundLevel", "standard"},
         {"autoUpdateCheck", true}, {"lightAgentMode", "following"}, {"showOtherAgentsWhenIdle", true},
-        {"usagePlatform", "codex"}, {"fileLogging", false}, {"logLevel", "info"},
+        {"usagePlatform", "codex"}, {"fileLogging", false}, {"logLevel", "verbose"},
         {"codexDataDir", ""}};
     return defaults;
 }
@@ -77,6 +89,7 @@ QString soundFileFor(const QString &kind, const QString &sound) {
     if (kind == "completion") return sound == "ai_glow" ? "completion-ai-glow.wav" : "completion-ai-aurora.wav";
     return sound == "ai_orbit" ? "waiting-ai-orbit.wav" : "waiting-ai-tick.wav";
 }
+
 
 QList<asb::codex::Root> codexRoots(const QString &selectedPath) {
     return asb::codex::activityRoots(QDir::homePath(), qEnvironmentVariable("CODEX_HOME"), selectedPath);
@@ -92,6 +105,9 @@ AppController::~AppController() {
     // Stop the monitor thread while this object (its signal receiver) is still whole.
     delete m_runtime;
     m_runtime = nullptr;
+#ifdef Q_OS_WIN
+    PlaySoundW(nullptr, nullptr, 0); // before m_soundBuffer goes away
+#endif
 }
 
 AppController::AppController(const QString &settingsFile, const QString &captureDir, bool live,
@@ -109,6 +125,8 @@ AppController::AppController(const QString &settingsFile, const QString &capture
         m_prefs->insert(it.key(), value);
     }
     connect(m_prefs, &QQmlPropertyMap::valueChanged, this, &AppController::onPrefChanged);
+    configureLogging();
+    if (asb::debuglog::enabled()) asb::debuglog::append("app started " + version());
     connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, &AppController::themeChanged);
     connect(&m_timer, &QTimer::timeout, this, [this] {
         // Same clock as MenuBarStatusModel: skip frames, then advance by the cadence step.
@@ -119,6 +137,7 @@ AppController::AppController(const QString &settingsFile, const QString &capture
         m_frameSkip = 0;
         m_tick += cadence.tickAdvance;
         emit tickChanged();
+        evaluateSounds(); // the flash tick follows the green lamp
     });
     restartTimer();
     connect(this, &AppController::languageChanged, this, &AppController::rebuildActivity);
@@ -138,11 +157,23 @@ AppController::AppController(const QString &settingsFile, const QString &capture
         m_runtime->start(overridden ? asb::codex::rootsForDirectory(QDir::homePath(), m_codexDirOverride)
                                     : codexRoots(m_prefs->value("codexDataDir").toString()),
                          m_prefs->value("lowPowerMode").toBool(), overridden);
+        // Capture runs stay deterministic: no scan of the apps running on this machine.
+        if (m_captureDir.isEmpty()) {
+            connect(&m_presenceTimer, &QTimer::timeout, this, &AppController::pollPresence);
+            m_presenceTimer.start(m_prefs->value("lowPowerMode").toBool() ? 60000 : 20000);
+            QTimer::singleShot(0, this, &AppController::pollPresence);
+        }
     }
     rebuildActivity();
-    // Capture runs never look at the real Claude settings.
-    if (m_captureDir.isEmpty()) checkClaudeHook();
-    else rebuildClaudeHook();
+    refreshCli();
+    // Capture runs never look at the real agent settings.
+    if (m_captureDir.isEmpty()) {
+        checkClaudeHook();
+        checkCodexHook();
+    } else {
+        rebuildHook(m_claudeHook);
+        rebuildHook(m_codexHook);
+    }
 }
 
 QString AppController::hookExePath() const {
@@ -158,62 +189,87 @@ QString AppController::claudeRoot() const {
     return asb::hooks::ClaudeHookInstaller::defaultClaudeRoot(QDir::homePath(), qEnvironmentVariable("CLAUDE_CONFIG_DIR"));
 }
 
-void AppController::checkClaudeHook() { runClaudeHook("check"); }
-void AppController::installClaudeHook() { runClaudeHook("install"); }
-void AppController::uninstallClaudeHook() { runClaudeHook("uninstall"); }
+// The Codex hooks go to the Codex home the monitor reads: --codex-dir, the chosen data
+// directory, CODEX_HOME or %USERPROFILE%\.codex (as NativeHookInstaller's selectedCodexPath).
+QString AppController::codexHome() const {
+    return asb::codex::primaryCodexHome(QDir::homePath(), qEnvironmentVariable("CODEX_HOME"),
+                                        m_codexDirOverride.isEmpty() ? m_prefs->value("codexDataDir").toString()
+                                                                     : m_codexDirOverride);
+}
 
-void AppController::runClaudeHook(const QString &action) {
+void AppController::checkClaudeHook() { runHook(m_claudeHook, "check"); }
+void AppController::installClaudeHook() { runHook(m_claudeHook, "install"); }
+void AppController::uninstallClaudeHook() { runHook(m_claudeHook, "uninstall"); }
+void AppController::checkCodexHook() { runHook(m_codexHook, "check"); }
+void AppController::installCodexHook() { runHook(m_codexHook, "install"); }
+void AppController::uninstallCodexHook() { runHook(m_codexHook, "uninstall"); }
+
+void AppController::runHook(HookUi &ui, const QString &action) {
     if (!m_captureDir.isEmpty()) return;
-    const asb::hooks::ClaudeHookInstaller installer(claudeRoot(), hookExePath());
+    using asb::hooks::ClaudeHookInstaller;
+    const ClaudeHookInstaller installer = ui.codex
+        ? ClaudeHookInstaller(codexHome(), hookExePath(), ClaudeHookInstaller::Target::Codex)
+        : ClaudeHookInstaller(claudeRoot(), hookExePath());
 #ifndef Q_OS_WIN
-    // Development builds must not rewrite this machine's real Claude Code settings.
-    if (action != "check" && m_claudeDirOverride.isEmpty()) {
-        m_claudeResult = text("开发版只有在指定 --claude-dir 时才会修改 Claude 设置。",
-                              "Development builds change Claude settings only with --claude-dir.");
-        rebuildClaudeHook();
+    // Development builds must not rewrite this machine's real agent settings.
+    if (action != "check" && (ui.codex ? m_codexDirOverride : m_claudeDirOverride).isEmpty()) {
+        ui.result = ui.codex ? text("开发版只有在指定 --codex-dir 时才会修改 Codex 设置。",
+                                    "Development builds change Codex settings only with --codex-dir.")
+                             : text("开发版只有在指定 --claude-dir 时才会修改 Claude 设置。",
+                                    "Development builds change Claude settings only with --claude-dir.");
+        rebuildHook(ui);
         return;
     }
 #endif
     const asb::hooks::HookReport report =
         action == "install" ? installer.install() : action == "uninstall" ? installer.uninstall() : installer.check();
-    m_claudeError = report.ok ? QString() : report.error;
+    ui.error = report.ok ? QString() : report.error;
     if (!report.ok) {
-        m_claudeState = "error";
+        ui.state = "error";
     } else if (action == "uninstall") {
-        m_claudeState = "missing";
+        ui.state = "missing";
     } else if (report.configured) {
-        m_claudeState = "configured";
+        ui.state = "configured";
     } else {
-        const int total = int(asb::hooks::claude::installedEvents().size());
-        m_claudeState = report.missing.size() == total && report.stale.isEmpty() ? "missing" : "repair";
+        const int total = int((ui.codex ? asb::hooks::codex::installedEvents() : asb::hooks::claude::installedEvents()).size());
+        ui.state = report.missing.size() == total && report.stale.isEmpty() ? "missing" : "repair";
     }
     if (action == "check") {
-        m_claudeResult.clear();
+        ui.result.clear();
     } else if (report.ok) {
-        m_claudeResult = action == "install"
+        ui.result = action == "install"
             ? (report.changed ? text("已安装 Hook。", "Hooks installed.") : text("Hook 已是最新，无需修改。", "Hooks already up to date."))
             : (report.changed ? text("已卸载 Hook。", "Hooks removed.") : text("没有需要卸载的 Hook。", "No hooks to remove."));
-        if (!report.backup.isEmpty()) m_claudeResult += text(" 备份：", " Backup: ") + report.backup;
+        if (!report.backup.isEmpty()) ui.result += text(" 备份：", " Backup: ") + report.backup;
     } else {
-        m_claudeResult.clear();
+        ui.result.clear();
     }
-    rebuildClaudeHook();
+    asb::debuglog::append(QString(ui.codex ? "codex" : "claude") + " hooks " + action + ": "
+                          + (report.ok ? ui.state + (report.changed ? " (file changed)" : "") : "error " + report.error));
+    rebuildHook(ui);
 }
 
-void AppController::rebuildClaudeHook() {
-    // MenuBarStatusModel.claudeConnectionMessage
+void AppController::rebuildHook(HookUi &ui) {
+    // MenuBarStatusModel.claudeConnectionMessage. Codex events also come from its session
+    // logs, so the Codex message names no "last hook event".
     QString message;
     QString tone = "neutral";
     if (m_paused) {
         message = text("监控已暂停", "Monitoring paused");
-    } else if (m_claudeState == "error") {
-        message = text("无法检查 Hook：", "Cannot check hooks: ") + m_claudeError;
+    } else if (ui.state == "error") {
+        message = text("无法检查 Hook：", "Cannot check hooks: ") + ui.error;
         tone = "critical";
-    } else if (m_claudeState == "unchecked") {
+    } else if (ui.state == "unchecked") {
         message = text("尚未检查 Hook", "Hooks have not been checked");
-    } else if (m_claudeState != "configured") {
-        message = text("Hook 未配置或需要修复，请点击安装。", "Hooks are missing or need repair. Click Install.");
-        tone = m_claudeState == "repair" ? "caution" : "neutral";
+    } else if (ui.state != "configured") {
+        message = ui.codex ? text("Hook 未安装或需要修复。不装也可以：Codex 状态仍会从会话日志读取。",
+                                  "Hooks are missing or need repair. They are optional: Codex state still comes from its session logs.")
+                           : text("Hook 未配置或需要修复，请点击安装。", "Hooks are missing or need repair. Click Install.");
+        tone = ui.state == "repair" ? "caution" : "neutral";
+    } else if (ui.codex) {
+        message = text("Hook 已配置。新开的 Codex 会话会立即上报权限请求和工具步骤。",
+                       "Hooks configured. New Codex sessions report permission requests and tool steps right away.");
+        tone = "positive";
     } else if (const auto latest = m_runtime ? m_runtime->lastEventAt("claude") : std::nullopt) {
         message = text("Hook 已配置 · 最近事件：", "Hooks configured · Last event: ")
             + QLocale::system().toString(QDateTime::fromMSecsSinceEpoch(*latest), QLocale::ShortFormat);
@@ -226,16 +282,18 @@ void AppController::rebuildClaudeHook() {
 #ifdef Q_OS_WIN
     const bool canModify = m_captureDir.isEmpty();
 #else
-    const bool canModify = m_captureDir.isEmpty() && !m_claudeDirOverride.isEmpty();
+    const bool canModify = m_captureDir.isEmpty() && !(ui.codex ? m_codexDirOverride : m_claudeDirOverride).isEmpty();
 #endif
+    const QString file = ui.codex ? codexHome() + "/hooks.json" : claudeRoot() + "/settings.json";
     const QVariantMap hook{
-        {"state", m_claudeState}, {"message", message}, {"tone", tone},
-        {"settingsPath", QDir::toNativeSeparators(claudeRoot() + "/settings.json")}, {"canModify", canModify},
-        {"result", m_claudeResult},
+        {"state", ui.state}, {"message", message}, {"tone", tone},
+        {"settingsPath", QDir::toNativeSeparators(file)}, {"canModify", canModify},
+        {"result", ui.result},
         {"stateFile", m_runtime ? QDir::toNativeSeparators(m_runtime->stateFilePath()) : QString()}};
-    if (hook != m_claudeHook) {
-        m_claudeHook = hook;
-        emit claudeHookChanged();
+    if (hook != ui.map) {
+        ui.map = hook;
+        if (ui.codex) emit codexHookChanged();
+        else emit claudeHookChanged();
     }
 }
 
@@ -246,18 +304,23 @@ QString AppController::signalName() const {
 }
 
 void AppController::rebuildActivity() {
-    rebuildClaudeHook(); // its message names the latest Claude event
+    rebuildHook(m_claudeHook); // its message names the latest Claude event
+    rebuildHook(m_codexHook);  // and both say when monitoring is paused
     if (!m_runtime) return;
     const bool zh = language() == "zh";
+    const auto sessionRow = [zh](const asb::SessionStatus &s) {
+        return QVariantMap{{"id", s.sessionID}, {"title", asb::text::sessionTitle(s, zh)},
+                           {"agent", asb::text::friendlyAgentName(s.agent, zh)},
+                           {"pill", asb::text::runtimeLabel(s, zh)},
+                           {"detail", asb::text::sessionSubtitle(s, zh)},
+                           {"state", asb::displayStateKey(asb::displayState(s.signal))},
+                           {"time", shortTime(s.updatedAt)}};
+    };
     QVariantList sessions;
-    for (const asb::SessionStatus &s : m_runtime->visibleSessions()) {
-        const QString state = asb::displayStateKey(asb::displayState(s.signal));
-        sessions.append(QVariantMap{{"id", s.sessionID}, {"title", asb::text::sessionTitle(s, zh)},
-                                    {"agent", asb::text::friendlyAgentName(s.agent, zh)},
-                                    {"pill", asb::text::runtimeLabel(s, zh)},
-                                    {"detail", asb::text::sessionSubtitle(s, zh)}, {"state", state},
-                                    {"time", shortTime(s.updatedAt)}});
-    }
+    for (const asb::SessionStatus &s : m_runtime->visibleSessions()) sessions.append(sessionRow(s));
+    QVariantList presence;
+    for (const asb::SessionStatus &s : asb::display::visibleDesktopPresenceSessions(m_runtime->display().sessions, 6))
+        presence.append(sessionRow(s));
     QVariantList events;
     for (const asb::SignalEvent &e : m_runtime->recentEvents()) {
         events.append(QVariantMap{{"title", asb::text::eventTitle(e, zh)}, {"detail", asb::text::eventSubtitle(e, zh)},
@@ -301,16 +364,52 @@ void AppController::rebuildActivity() {
         {"unreadable", health.unreadable}, {"polled", m_runtime->hasPolled()},
         {"lastActivity", lastActivity ? shortTime(*lastActivity) : QString()}};
 
-    const bool listsChanged = sessions != m_sessions || events != m_events || connection != m_codexConnection;
+    // The lamp shows the followed or chosen agents only (signalLightAgentScopes).
+    const QString mode = m_prefs->value("lightAgentMode").toString();
+    const bool following = mode == "following" || asb::light::scopesForPreference(mode).isEmpty();
+    const QStringList selected = asb::light::scopesForPreference(mode);
+    m_light = m_lightSelector.select(m_runtime->display(), following, selected,
+                                     m_prefs->value("showOtherAgentsWhenIdle").toBool());
+    const QString followingText = asb::light::followingText(m_light, following, zh);
+    const QString hint = asb::light::unavailableHint(m_light, selected, following, m_runtime->visibleSessions(), zh);
+
+    const bool listsChanged = sessions != m_sessions || events != m_events || connection != m_codexConnection
+        || followingText != m_lightFollowingText || hint != m_lightAgentHint || presence != m_presenceSessions;
     m_sessions = sessions;
+    m_presenceSessions = presence;
     m_events = events;
     m_codexConnection = connection;
+    m_lightFollowingText = followingText;
+    m_lightAgentHint = hint;
     if (listsChanged) emit activityChanged();
-    const QString aggregate = m_runtime->display().aggregate;
+    const QString aggregate = m_light.aggregate;
     if (aggregate != m_liveSignal) {
+        asb::debuglog::append("signal " + m_liveSignal + " -> " + aggregate + " (" + m_lightFollowingText + ')');
         m_liveSignal = aggregate;
         emit signalNameChanged();
     }
+    evaluateSounds(); // the completion chime follows the snapshot
+}
+
+void AppController::pollPresence() {
+    if (!m_runtime || !m_presenceTimer.isActive()) return;
+    if (m_paused) {
+        m_runtime->setPresence({}); // shouldPollPlatformPresence: nothing while paused
+        return;
+    }
+    if (m_presenceInFlight) return;
+    m_presenceInFlight = true;
+    // Enumerating processes and windows takes a few milliseconds; keep it off the GUI thread.
+    QPointer<AppController> self(this);
+    QThreadPool::globalInstance()->start([self] {
+        const QList<asb::SessionStatus> sessions =
+            asb::presence::detect(asb::presence::runningProcesses(), QDateTime::currentMSecsSinceEpoch());
+        QMetaObject::invokeMethod(QCoreApplication::instance(), [self, sessions] {
+            if (!self) return;
+            self->m_presenceInFlight = false;
+            if (self->m_runtime && !self->m_paused) self->m_runtime->setPresence(sessions);
+        }, Qt::QueuedConnection);
+    });
 }
 
 void AppController::checkCodexConnection() {
@@ -531,13 +630,152 @@ void AppController::showSystemMenu() { emit systemMenuRequested(); }
 void AppController::togglePause() {
     m_paused = !m_paused;
     if (m_runtime) m_runtime->setPaused(m_paused);
+    pollPresence(); // clears the open apps while paused, looks again on resume
     rebuildActivity();
     emit signalNameChanged();
 }
 
 void AppController::setDebugSignal(const QString &signal) {
     m_debugSignal = signal.isEmpty() ? QString() : asb::normalizedSignal(signal).value_or(QString());
+    asb::debuglog::append(m_debugSignal.isEmpty() ? QStringLiteral("debug light cleared") : "debug light signal " + m_debugSignal);
     emit signalNameChanged();
+}
+
+// --- Logs, diagnostics, CLI --------------------------------------------------------------
+
+QString AppController::debugLogPath() const { return QDir::toNativeSeparators(asb::debuglog::path()); }
+
+void AppController::configureLogging() {
+    // Capture runs stay out of the user's log.
+    asb::debuglog::configure(m_captureDir.isEmpty() && m_prefs->value("fileLogging").toBool(),
+                             m_prefs->value("logLevel").toString());
+}
+
+void AppController::openDebugLog() const {
+    asb::debuglog::ensureExists();
+    QDesktopServices::openUrl(QUrl::fromLocalFile(asb::debuglog::path()));
+}
+
+void AppController::copyDebugLog() const { QGuiApplication::clipboard()->setText(asb::debuglog::readAll()); }
+
+void AppController::revealPath(const QString &path) const {
+    if (path.isEmpty() || !QFileInfo::exists(path)) return;
+#ifdef Q_OS_WIN
+    QProcess explorer;
+    explorer.setProgram("explorer.exe");
+    explorer.setNativeArguments("/select,\"" + QDir::toNativeSeparators(path) + '"');
+    explorer.startDetached();
+#else
+    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
+#endif
+}
+
+void AppController::setDiagnostics(const QVariantMap &state) {
+    if (state == m_diagnostics) return;
+    m_diagnostics = state;
+    emit diagnosticsChanged();
+}
+
+void AppController::exportDiagnostics() {
+    if (m_diagnostics.value("running").toBool() || !m_captureDir.isEmpty()) return;
+    setDiagnostics({{"running", true}, {"message", text("正在导出诊断…", "Exporting diagnostics…")}, {"tone", "neutral"}});
+    asb::diagnostics::Request request;
+    request.outputRoot = QFileInfo(asb::debuglog::path()).absolutePath() + "/Diagnostics";
+    request.cliExe = hookExePath();
+    request.stateFile = m_runtime ? m_runtime->stateFilePath() : asb::SignalStateFile::defaultPath();
+    request.settingsFile = m_settings->fileName();
+    request.logFile = asb::debuglog::path();
+    request.systemLines = {
+        "Agent Signal Bar for Windows " + version(),
+        "app: " + QDir::toNativeSeparators(QCoreApplication::applicationFilePath()),
+        "os: " + QSysInfo::prettyProductName() + " (kernel " + QSysInfo::kernelVersion() + ", "
+            + QSysInfo::currentCpuArchitecture() + ')',
+        "qt: " + QString::fromLatin1(qVersion()),
+        "language: " + language() + ", locale: " + QLocale::system().name(),
+        "live data: " + QString(m_runtime ? "yes" : "no") + ", paused: " + (m_paused ? "yes" : "no"),
+        "codex home: " + QDir::toNativeSeparators(codexHome()),
+        "claude root: " + QDir::toNativeSeparators(claudeRoot()),
+        "light: " + m_liveSignal + " (" + m_lightFollowingText + ')',
+        "file logging: " + QString(asb::debuglog::enabled() ? "on" : "off") + " (" + m_prefs->value("logLevel").toString() + ')'};
+    asb::debuglog::append("diagnostics export started");
+    QPointer<AppController> self(this);
+    QThreadPool::globalInstance()->start([self, request] {
+        const asb::diagnostics::Result result = asb::diagnostics::exportBundle(request);
+        QMetaObject::invokeMethod(qApp, [self, result] {
+            if (!self) return;
+            if (!result.ok) {
+                self->setDiagnostics({{"running", false}, {"tone", "critical"},
+                                      {"message", self->text("导出失败：", "Export failed: ") + result.error}});
+                asb::debuglog::append("diagnostics export failed: " + result.error);
+                return;
+            }
+            const QString shown = result.archive.isEmpty() ? result.folder : result.archive;
+            QString message = self->text("诊断已导出：", "Diagnostics exported: ") + shown;
+            if (result.archive.isEmpty())
+                message += self->text("（无法压缩，已保留文件夹）", " (could not zip; the folder is kept)");
+            self->setDiagnostics({{"running", false}, {"tone", "positive"}, {"message", message},
+                                  {"folder", result.folder}, {"archive", result.archive}});
+            asb::debuglog::append("diagnostics exported: " + shown);
+            self->revealPath(shown); // like macOS: select the archive in the file manager
+        });
+    });
+}
+
+void AppController::refreshCli(const QString &message, const QString &tone) {
+    const QString directory = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
+    const auto user = asb::clipath::userPath();
+    const bool installed = asb::clipath::contains(user.value_or(QString()), directory, asb::clipath::expandEnvironment)
+        || asb::clipath::contains(asb::clipath::systemPath(), directory, asb::clipath::expandEnvironment);
+#ifdef Q_OS_WIN
+    // A temporary folder would leave a dead PATH entry behind; capture runs change nothing.
+    const bool canModify = m_captureDir.isEmpty() && user.has_value() && QFileInfo(hookExePath()).isFile()
+        && !asb::hooks::ClaudeHookInstaller::isTemporaryLocation(hookExePath());
+#else
+    const bool canModify = false;
+#endif
+    QString note = message;
+    QString noteTone = tone;
+    if (note.isEmpty() && !canModify && m_captureDir.isEmpty()) {
+        note = !QFileInfo(hookExePath()).isFile() ? text("找不到 agent-signal.exe。", "agent-signal.exe not found.")
+             : text("程序在临时文件夹中运行，请先安装到固定位置。", "Running from a temporary folder; install the app first.");
+        noteTone = "caution";
+    }
+    const QVariantMap state{{"installed", installed}, {"directory", directory}, {"canModify", canModify},
+                            {"message", note}, {"tone", noteTone}};
+    if (state != m_cli) {
+        m_cli = state;
+        emit cliChanged();
+    }
+}
+
+void AppController::installCli() {
+    if (!m_cli.value("canModify").toBool()) return;
+    const QString directory = m_cli.value("directory").toString();
+    const auto user = asb::clipath::userPath();
+    if (!user) return refreshCli(text("无法读取用户 PATH。", "Cannot read the user PATH."), "critical");
+    if (asb::clipath::contains(*user, directory, asb::clipath::expandEnvironment))
+        return refreshCli(text("已在 PATH 中：", "Already on PATH: ") + directory, "positive");
+    QString error;
+    if (!asb::clipath::setUserPath(asb::clipath::withDirectory(*user, directory, true, asb::clipath::expandEnvironment), &error))
+        return refreshCli(text("安装失败：", "Install failed: ") + error, "critical");
+    asb::debuglog::append("cli added to PATH: " + directory);
+    refreshCli(text("已加入 PATH：", "Added to PATH: ") + directory
+                   + text("。新开的终端可以直接运行 agent-signal。", ". New terminals can run agent-signal."),
+               "positive");
+}
+
+void AppController::uninstallCli() {
+    if (!m_cli.value("canModify").toBool()) return;
+    const QString directory = m_cli.value("directory").toString();
+    const auto user = asb::clipath::userPath();
+    if (!user) return refreshCli(text("无法读取用户 PATH。", "Cannot read the user PATH."), "critical");
+    if (!asb::clipath::contains(*user, directory, asb::clipath::expandEnvironment))
+        return refreshCli(text("用户 PATH 中没有这个文件夹。", "This folder is not on the user PATH."), "neutral");
+    QString error;
+    if (!asb::clipath::setUserPath(asb::clipath::withDirectory(*user, directory, false, asb::clipath::expandEnvironment), &error))
+        return refreshCli(text("移除失败：", "Remove failed: ") + error, "critical");
+    asb::debuglog::append("cli removed from PATH: " + directory);
+    refreshCli(text("已从 PATH 移除。", "Removed from PATH."), "neutral");
 }
 
 void AppController::setDemoSignal(const QString &signal) {
@@ -552,19 +790,92 @@ void AppController::copyText(const QString &text) const { QGuiApplication::clipb
 void AppController::openUrl(const QString &url) const { QDesktopServices::openUrl(QUrl(url)); }
 
 void AppController::previewSound(const QString &kind, const QString &sound) const {
+    // Previews play whatever the sound switches say, at the chosen volume (macOS preview()).
+    playSound(kind, sound, QString());
+}
+
+void AppController::playSound(const QString &kind, const QString &sound, const QString &cue) const {
     const QString name = soundFileFor(kind, sound);
     if (name.isEmpty()) return;
-    // PlaySound and afplay need a real file, so copy the bundled resource out once.
+    QFile file(":/sounds/" + name);
+    if (!file.open(QIODevice::ReadOnly)) return;
+    const double volume = asb::sound::volume(m_prefs->value("soundLevel").toString());
+    qCDebug(lcSound) << "play" << (cue.isEmpty() ? QStringLiteral("preview") : cue) << name << "volume" << volume
+                     << "signal" << signalName() << "tick" << m_tick;
+#ifdef Q_OS_WIN
+    PlaySoundW(nullptr, nullptr, 0); // stop first: the playing sound may still read the old buffer
+    m_soundBuffer = asb::sound::scaledWav(file.readAll(), volume);
+    PlaySoundW(reinterpret_cast<LPCWSTR>(m_soundBuffer.constData()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+#elif defined(Q_OS_MACOS)
+    // afplay needs a real file; the bundled resource is copied out once.
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/sounds";
     QDir().mkpath(dir);
     const QString path = dir + "/" + name;
-    if (!QFile::exists(path)) QFile::copy(":/sounds/" + name, path);
-#ifdef Q_OS_WIN
-    PlaySoundW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(path).utf16()), nullptr,
-               SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
-#elif defined(Q_OS_MACOS)
-    QProcess::startDetached("/usr/bin/afplay", {path});
+    if (!QFile::exists(path)) QFile::copy(file.fileName(), path);
+    QProcess::startDetached("/usr/bin/afplay", {"-v", QString::number(volume), path});
+#else
+    Q_UNUSED(volume);
 #endif
+    m_activeCue = cue;
+}
+
+void AppController::stopCue(const QString &cue) const {
+    if (cue.isEmpty() || m_activeCue != cue) return; // a preview or the other cue keeps playing
+#ifdef Q_OS_WIN
+    PlaySoundW(nullptr, nullptr, 0);
+#endif
+    m_activeCue.clear();
+}
+
+void AppController::evaluateSounds() {
+    // isSignalSoundSurfaceEnabled: the tray icon or the floating lamp is shown. Capture runs
+    // stay silent.
+    const bool surface = m_prefs->value("statusBarEnabled").toBool() || m_prefs->value("floatingEnabled").toBool();
+    const bool enabled = m_captureDir.isEmpty() && surface && m_prefs->value("soundEnabled").toBool();
+    const QString signal = signalName();
+    const asb::DisplayState state = asb::displayState(signal);
+    if (!enabled) {
+        m_soundPrimed = true;
+        m_lastSoundSignature.clear();
+        m_greenWasLit = false;
+        stopCue("completion");
+        stopCue("waiting");
+        return;
+    }
+
+    // Completion: once for each new "done" state, told apart by aggregate, updated_at and
+    // session count as on macOS; the state found at start does not chime.
+    const QString completion = m_prefs->value("completionSound").toString();
+    if (completion == "off") {
+        stopCue("completion");
+    } else if (state != asb::DisplayState::Completed) {
+        m_soundPrimed = true;
+        m_lastSoundSignature.clear();
+        stopCue("completion");
+    } else {
+        // floatingSignalLightSnapshot: the shown agents' newest session and session count.
+        const qint64 updatedAt = m_runtime ? m_light.updatedAt.value_or(0) : 0;
+        const qsizetype sessions = m_runtime ? m_light.sessionCount : 0;
+        const QString signature = signal + '|' + QString::number(updatedAt / 1000) + '|' + QString::number(sessions);
+        if (!m_soundPrimed) {
+            m_soundPrimed = true;
+            m_lastSoundSignature = signature;
+        } else if (signature != m_lastSoundSignature) {
+            m_lastSoundSignature = signature;
+            playSound("completion", completion, "completion");
+        }
+    }
+
+    // Flash: a tick each time the green lamp lights up while an agent works.
+    const QString flash = m_prefs->value("waitingSound").toString();
+    if (flash == "off" || state != asb::DisplayState::Active) {
+        m_greenWasLit = false;
+        stopCue("waiting");
+        return;
+    }
+    const bool lit = asb::intensity(asb::LampColor::Green, signal, m_tick, false, effectCustomization()) > 0;
+    if (lit && !m_greenWasLit) playSound("waiting", flash, "waiting");
+    m_greenWasLit = lit;
 }
 
 void AppController::applyBackdrop(QWindow *window, const QString &kind) const {
@@ -605,11 +916,20 @@ void AppController::onPrefChanged(const QString &key, const QVariant &value) {
     } else if (key == "lowPowerMode") {
         restartTimer();
         if (m_runtime) m_runtime->setLowPower(value.toBool());
+        if (m_presenceTimer.isActive()) m_presenceTimer.start(value.toBool() ? 60000 : 20000);
     } else if (key == "codexDataDir") {
         if (m_runtime && m_codexDirOverride.isEmpty()) m_runtime->setRoots(codexRoots(value.toString()), true);
         rebuildActivity();
+        if (m_captureDir.isEmpty() && m_codexDirOverride.isEmpty()) checkCodexHook(); // another hooks.json
+    } else if (key == "fileLogging" || key == "logLevel") {
+        configureLogging();
+        if (key == "fileLogging" && value.toBool()) asb::debuglog::append("file logging enabled");
+        if (key == "logLevel") asb::debuglog::append("log level set to " + value.toString());
     } else if (key == "launchAtLogin") {
         applyLaunchAtLogin(value.toBool());
+    } else if (key == "lightAgentMode" || key == "showOtherAgentsWhenIdle") {
+        if (key == "lightAgentMode") m_lightSelector.reset(); // a new choice drops the sticky agents
+        rebuildActivity();
     } else if (key == "newZealandMode" && value.toBool()) {
         // Like setNewZealandTrafficLightModeEnabled: NZ mode also switches both sounds.
         m_prefs->insert("completionSound", "new_zealand");

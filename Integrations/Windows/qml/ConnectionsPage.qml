@@ -10,9 +10,75 @@ SettingsPage {
         : (App.prefs.codexDataDir.length > 0 ? App.prefs.codexDataDir : "%USERPROFILE%\\.codex")
     readonly property string codexTone: App.liveData ? (codex.tone || "neutral") : "caution"
     readonly property string stateFile: App.claudeHook.stateFile || ""
-    readonly property var hook: App.claudeHook
-    readonly property string hookState: hook.state || "unchecked"
-    readonly property string hookTone: hook.tone || "neutral"
+
+    // One hook target (App.codexHook or App.claudeHook): its file, state, message and actions.
+    component HookSection: AsbSection {
+        id: section
+        property bool codex: false
+        property string fallbackPath
+        readonly property var hook: codex ? App.codexHook : App.claudeHook
+        readonly property string hookState: hook.state || "unchecked"
+        readonly property string hookTone: hook.tone || "neutral"
+
+        AsbRow {
+            title: section.hook.settingsPath || section.fallbackPath
+            StatusPill {
+                text: section.hookState === "configured" ? Theme.t("已配置", "Configured")
+                    : section.hookState === "repair" ? Theme.t("需要修复", "Needs repair")
+                    : section.hookState === "error" ? Theme.t("无法检查", "Cannot check")
+                    : section.hookState === "missing" ? Theme.t("未安装", "Not installed")
+                    : Theme.t("未检查", "Not checked")
+                tone: section.hookState === "configured" ? "positive"
+                    : section.hookState === "repair" ? "caution"
+                    : section.hookState === "error" ? "critical" : "neutral"
+            }
+        }
+        AsbText {
+            visible: text.length > 0
+            text: section.hook.message || ""
+            caption: true
+            color: section.hookTone === "neutral" ? Theme.secondary : Theme.toneForeground(section.hookTone)
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+        AsbText {
+            visible: text.length > 0
+            text: section.hook.result || ""
+            caption: true
+            secondary: true
+            textFormat: Text.PlainText
+            wrapMode: Text.WrapAnywhere
+            Layout.fillWidth: true
+        }
+        RowLayout {
+            spacing: Theme.s
+            AsbButton {
+                id: hookCheck
+                property bool done: false // a check that finds nothing new would otherwise show nothing
+                text: done ? Theme.t("已检查", "Checked") : Theme.t("检查", "Check")
+                onClicked: {
+                    if (section.codex) App.checkCodexHook()
+                    else App.checkClaudeHook()
+                    done = true
+                    hookCheckReset.restart()
+                }
+                Timer { id: hookCheckReset; interval: 1500; onTriggered: hookCheck.done = false }
+            }
+            AsbButton {
+                text: Theme.t("安装", "Install")
+                // The action still needed; Codex hooks are optional, so only a repair stands out.
+                prominent: section.hookState === "repair" || (!section.codex && section.hookState === "missing")
+                enabled: section.hook.canModify === true
+                onClicked: section.codex ? App.installCodexHook() : App.installClaudeHook()
+            }
+            AsbButton {
+                text: Theme.t("卸载", "Uninstall")
+                enabled: section.hook.canModify === true
+                onClicked: section.codex ? App.uninstallCodexHook() : App.uninstallClaudeHook()
+            }
+        }
+    }
 
     FolderDialog {
         id: folderDialog
@@ -25,7 +91,27 @@ SettingsPage {
         footer: Theme.t("导出诊断包、查看状态文件和版本", "Export a diagnostics bundle, see the state file and the version")
         AsbRow {
             title: Theme.t("导出诊断", "Export diagnostics")
-            StatusPill { text: Theme.t("尚未移植", "Not ported"); tone: "neutral" }
+            subtitle: Theme.t("状态、Hook 检查、日志和设置打包为 zip，不含聊天内容", "State, hook check, log and settings in a zip, no chat content")
+            AsbButton {
+                visible: (App.diagnostics.archive || App.diagnostics.folder || "").length > 0
+                icon: "folder"
+                text: Theme.t("显示", "Show")
+                onClicked: App.revealPath(App.diagnostics.archive || App.diagnostics.folder)
+            }
+            AsbButton {
+                text: App.diagnostics.running === true ? Theme.t("导出中…", "Exporting…") : Theme.t("导出…", "Export…")
+                enabled: App.liveData && App.diagnostics.running !== true
+                onClicked: App.exportDiagnostics()
+            }
+        }
+        AsbText {
+            visible: text.length > 0
+            text: App.diagnostics.message || ""
+            caption: true
+            color: (App.diagnostics.tone || "neutral") === "neutral" ? Theme.secondary : Theme.toneForeground(App.diagnostics.tone)
+            textFormat: Text.PlainText
+            wrapMode: Text.WrapAnywhere
+            Layout.fillWidth: true
         }
         AsbRow {
             title: Theme.t("状态文件", "State file")
@@ -98,76 +184,17 @@ SettingsPage {
         }
     }
 
-    AsbSection {
+    HookSection {
+        codex: true
         title: Theme.t("Codex Hook（可选）", "Codex Hook (optional)")
         footer: Theme.t("可选增强：用于权限请求、低延迟和兼容旧版本", "Optional: permission requests, lower latency and older versions")
-        AsbRow {
-            title: "%USERPROFILE%\\.codex\\hooks.json"
-            subtitle: Theme.t("Windows 版尚未移植 Codex Hook；Codex 状态已通过会话日志自动监控。",
-                              "Codex hooks are not ported to Windows yet; Codex state already comes from its session logs.")
-            StatusPill { text: Theme.t("尚未移植", "Not ported"); tone: "neutral" }
-        }
+        fallbackPath: "%USERPROFILE%\\.codex\\hooks.json"
     }
 
-    AsbSection {
+    HookSection {
         title: "Claude Code Hook"
         footer: Theme.t("接入思考、工作、授权等待与完成状态", "Brings in thinking, working, permission and done states")
-        AsbRow {
-            title: hook.settingsPath || "%USERPROFILE%\\.claude\\settings.json"
-            StatusPill {
-                text: hookState === "configured" ? Theme.t("已配置", "Configured")
-                    : hookState === "repair" ? Theme.t("需要修复", "Needs repair")
-                    : hookState === "error" ? Theme.t("无法检查", "Cannot check")
-                    : hookState === "missing" ? Theme.t("未安装", "Not installed")
-                    : Theme.t("未检查", "Not checked")
-                tone: hookState === "configured" ? "positive"
-                    : hookState === "repair" ? "caution"
-                    : hookState === "error" ? "critical" : "neutral"
-            }
-        }
-        AsbText {
-            visible: text.length > 0
-            text: hook.message || ""
-            caption: true
-            color: hookTone === "neutral" ? Theme.secondary : Theme.toneForeground(hookTone)
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
-            Layout.fillWidth: true
-        }
-        AsbText {
-            visible: text.length > 0
-            text: hook.result || ""
-            caption: true
-            secondary: true
-            textFormat: Text.PlainText
-            wrapMode: Text.WrapAnywhere
-            Layout.fillWidth: true
-        }
-        RowLayout {
-            spacing: Theme.s
-            AsbButton {
-                id: hookCheck
-                property bool done: false // a check that finds nothing new would otherwise show nothing
-                text: done ? Theme.t("已检查", "Checked") : Theme.t("检查", "Check")
-                onClicked: {
-                    App.checkClaudeHook()
-                    done = true
-                    hookCheckReset.restart()
-                }
-                Timer { id: hookCheckReset; interval: 1500; onTriggered: hookCheck.done = false }
-            }
-            AsbButton {
-                text: Theme.t("安装", "Install")
-                prominent: hookState === "missing" || hookState === "repair" // the action still needed
-                enabled: App.claudeHook.canModify === true
-                onClicked: App.installClaudeHook()
-            }
-            AsbButton {
-                text: Theme.t("卸载", "Uninstall")
-                enabled: App.claudeHook.canModify === true
-                onClicked: App.uninstallClaudeHook()
-            }
-        }
+        fallbackPath: "%USERPROFILE%\\.claude\\settings.json"
     }
 
     AsbSection {

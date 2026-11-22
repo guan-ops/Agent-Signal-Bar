@@ -83,15 +83,25 @@ bool owns(const QJsonObject &item) {
     return lower.contains("agent-signal") || lower.contains("agentsignal") || lower.contains("agent signal");
 }
 
-bool isCurrent(const QJsonObject &item, const QString &exe) {
+// The program word names this exe: first the exact string this installer writes (an 8.3 short
+// path, which canonicalFilePath does not expand), then any spelling of the long path.
+bool namesExe(const QString &program, const QString &exe) {
+    return program == ClaudeHookInstaller::commandPath(exe) || samePath(program, exe);
+}
+
+bool isCurrent(const QJsonObject &item, const QString &exe, ClaudeHookInstaller::Target target, const QString &event) {
     const QString command = item.value("command").toString();
-    if (item.contains("args")) {
-        // The exact string this installer writes first (it may be an 8.3 short path).
-        return item.value("args").toArray() == QJsonArray{"claude-hook"}
-            && (command == ClaudeHookInstaller::commandPath(exe) || samePath(command, exe));
+    if (target == ClaudeHookInstaller::Target::Codex) {
+        // `<exe> codex-hook <event>` (isCurrent with the wrapper's event argument), any quoting.
+        if (item.contains("args")) return false;
+        const auto words = shellWords(command);
+        return words && words->size() == 3 && words->at(1) == "codex-hook" && words->at(2) == event
+            && namesExe(words->first(), exe);
     }
+    if (item.contains("args"))
+        return item.value("args").toArray() == QJsonArray{"claude-hook"} && namesExe(command, exe);
     const auto words = shellWords(command);
-    return words && words->size() == 2 && words->at(1) == "claude-hook" && samePath(words->first(), exe);
+    return words && words->size() == 2 && words->at(1) == "claude-hook" && namesExe(words->first(), exe);
 }
 
 QByteArray serialize(const QJsonObject &document) { return QJsonDocument(document).toJson(QJsonDocument::Indented); }
@@ -114,8 +124,8 @@ void pruneBackups(const QString &settingsPath) {
 
 } // namespace
 
-ClaudeHookInstaller::ClaudeHookInstaller(QString claudeRoot, QString hookExe)
-    : m_root(std::move(claudeRoot)), m_exe(std::move(hookExe)) {}
+ClaudeHookInstaller::ClaudeHookInstaller(QString root, QString hookExe, Target target)
+    : m_root(std::move(root)), m_exe(std::move(hookExe)), m_target(target) {}
 
 QString ClaudeHookInstaller::defaultClaudeRoot(const QString &home, const QString &configDirEnv) {
     const QString value = configDirEnv.trimmed();
@@ -158,7 +168,8 @@ HookReport ClaudeHookInstaller::uninstall() const { return run(true, true); }
 
 HookReport ClaudeHookInstaller::run(bool write, bool remove) const {
     HookReport report;
-    const QString path = QDir::cleanPath(m_root + "/settings.json");
+    const bool codexTarget = m_target == Target::Codex;
+    const QString path = QDir::cleanPath(m_root + (codexTarget ? "/hooks.json" : "/settings.json"));
     report.settingsPath = QDir::toNativeSeparators(path);
     const auto fail = [&](const QString &message) {
         report.error = message;
@@ -176,8 +187,9 @@ HookReport ClaudeHookInstaller::run(bool write, bool remove) const {
     }
 
     const QFileInfo info(path);
+    const QString name = info.fileName(); // settings.json or hooks.json
     if (info.isSymLink())
-        return fail("settings.json 是符号链接，为安全起见不修改；请手动编辑链接目标 / settings.json is a symbolic link "
+        return fail(name + " 是符号链接，为安全起见不修改；请手动编辑链接目标 / " + name + " is a symbolic link "
                     "and is not modified for safety: " + report.settingsPath);
     QByteArray original;
     const bool exists = info.exists();
@@ -191,15 +203,15 @@ HookReport ClaudeHookInstaller::run(bool write, bool remove) const {
         QJsonParseError error;
         const QJsonDocument parsed = QJsonDocument::fromJson(original, &error);
         if (error.error != QJsonParseError::NoError || !parsed.isObject())
-            return fail("settings.json 不是有效的 JSON 对象，未修改 / settings.json is not a JSON object; not modified: "
+            return fail(name + " 不是有效的 JSON 对象，未修改 / " + name + " is not a JSON object; not modified: "
                         + report.settingsPath);
         document = parsed.object();
     }
     if (document.contains("hooks") && !document.value("hooks").isObject())
-        return fail("settings.json 里的 hooks 必须是对象 / hooks must be an object: " + report.settingsPath);
+        return fail(name + " 里的 hooks 必须是对象 / hooks must be an object: " + report.settingsPath);
     QJsonObject hooks = document.value("hooks").toObject();
     const QByteArray before = QJsonDocument(document).toJson(QJsonDocument::Compact);
-    const QStringList &events = claude::installedEvents();
+    const QStringList &events = codexTarget ? codex::installedEvents() : claude::installedEvents();
 
     QSet<QString> present;
     QStringList removed;
@@ -224,7 +236,7 @@ HookReport ClaudeHookInstaller::run(bool write, bool remove) const {
                     kept.append(itemValue);
                     continue;
                 }
-                if (wanted && matchesAllTools && !present.contains(event) && isCurrent(item, m_exe)) {
+                if (wanted && matchesAllTools && !present.contains(event) && isCurrent(item, m_exe, m_target, event)) {
                     present.insert(event);
                     kept.append(itemValue);
                 }
@@ -248,11 +260,12 @@ HookReport ClaudeHookInstaller::run(bool write, bool remove) const {
         report.missing.append(event);
         if (remove) continue;
         QJsonArray blocks = hooks.value(event).toArray();
-        blocks.append(QJsonObject{
-            {"matcher", ""},
-            {"hooks", QJsonArray{QJsonObject{{"type", "command"}, {"command", commandPath(m_exe)},
-                                             {"args", QJsonArray{"claude-hook"}},
-                                             {"timeout", event == "PermissionRequest" ? 10 : 5}}}}});
+        const int timeout = event == "PermissionRequest" ? 10 : 5;
+        const QJsonObject entry = codexTarget
+            ? QJsonObject{{"type", "command"}, {"command", commandPath(m_exe) + " codex-hook " + event}, {"timeout", timeout}}
+            : QJsonObject{{"type", "command"}, {"command", commandPath(m_exe)}, {"args", QJsonArray{"claude-hook"}},
+                          {"timeout", timeout}};
+        blocks.append(QJsonObject{{"matcher", codexTarget ? "*" : ""}, {"hooks", QJsonArray{entry}}});
         hooks.insert(event, blocks);
     }
     for (const QString &event : removed) {
@@ -261,6 +274,12 @@ HookReport ClaudeHookInstaller::run(bool write, bool remove) const {
     if (!hooks.isEmpty() || document.contains("hooks")) document.insert("hooks", hooks);
     const bool changed = QJsonDocument(document).toJson(QJsonDocument::Compact) != before;
     report.configured = !remove && !changed;
+    report.wouldChange = changed;
+    if (changed) {
+        if (!remove) report.added = report.missing;
+        report.removed = removed;
+        report.removed.sort();
+    }
     if (remove) report.missing.clear();
 
     if (write && changed) {
@@ -278,7 +297,7 @@ HookReport ClaudeHookInstaller::run(bool write, bool remove) const {
             if (again.open(QIODevice::ReadOnly)) current = again.readAll();
         }
         if ((exists && current != original) || (!exists && QFileInfo::exists(path)))
-            return fail("settings.json 刚被其他程序修改，请重试 / settings.json changed concurrently; retry");
+            return fail(name + " 刚被其他程序修改，请重试 / " + name + " changed concurrently; retry");
         QSaveFile save(path);
         if (!save.open(QIODevice::WriteOnly) || save.write(serialize(document)) < 0 || !save.commit())
             return fail("无法写入 / Cannot write: " + report.settingsPath);

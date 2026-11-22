@@ -27,4 +27,29 @@ QString agentName(const Environment &environment);
 QString sessionKey(const QJsonObject &payload, const Environment &environment);
 
 } // namespace claude
+
+// CodexHookAdapter: Codex hooks (`agent-signal codex-hook <event>`).
+namespace codex {
+
+// Codex's hook events (NativeHookInstaller.codexEvents).
+const QStringList &installedEvents();
+std::optional<QString> eventName(const QJsonObject &payload);
+QString chooseSignal(const std::optional<QString> &eventName, const QJsonObject &payload);
+QString agentName(const QJsonObject &payload, const Environment &environment);
+QString sessionKey(const QJsonObject &payload, const Environment &environment);
+// "codex-cli:<id>" (by source) unless the source is the desktop app or the id is scoped already.
+QString sourceScopedSessionKey(const QString &sessionID, const QString &agent);
+
+} // namespace codex
+
+// GenericHookAdapter: any other agent or script (`agent-signal agent-hook`).
+namespace generic {
+
+std::optional<QString> eventName(const QJsonObject &payload);
+QString chooseSignal(const std::optional<QString> &eventName, const QJsonObject &payload);
+QString agentName(const QJsonObject &payload, const Environment &environment);
+QString sessionKey(const QJsonObject &payload, const Environment &environment,
+                   const std::optional<QString> &agent = std::nullopt);
+
+} // namespace generic
 } // namespace asb::hooks

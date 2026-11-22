@@ -5,7 +5,9 @@ import "DemoData.js" as Demo
 
 // 运行 / Activity: current state, which agent drives the light, sessions, recent events.
 SettingsPage {
-    readonly property var sessionRows: App.paused ? [] : (App.liveData ? App.sessions : Demo.sessions(Theme.t))
+    // activitySessionRows: the running sessions, or the open desktop apps while nothing runs.
+    readonly property var runningRows: App.paused ? [] : (App.liveData ? App.sessions : Demo.sessions(Theme.t))
+    readonly property var sessionRows: runningRows.length > 0 || App.paused ? runningRows : App.presenceSessions
     readonly property var eventRows: App.liveData ? App.events : Demo.events(Theme.t)
     readonly property string updatedTime: App.liveData ? (App.codexConnection.lastActivity || "") : "16:05"
 
@@ -50,8 +52,8 @@ SettingsPage {
                 }
                 AsbText {
                     Layout.alignment: Qt.AlignRight
-                    text: Theme.t(sessionRows.length + " 个会话",
-                                  sessionRows.length === 1 ? "1 session" : sessionRows.length + " sessions")
+                    text: Theme.t(runningRows.length + " 个会话",
+                                  runningRows.length === 1 ? "1 session" : runningRows.length + " sessions")
                     caption: true
                     color: Theme.tertiary
                 }
@@ -63,7 +65,9 @@ SettingsPage {
         title: Theme.t("灯效 Agent", "Light Agent")
         AsbRow {
             title: Theme.t("跟随", "Follow")
-            subtitle: Theme.t("灯效跟随最活跃的 Agent", "The light follows the most active agent")
+            // Which agent the lamp shows right now, once there is live data.
+            subtitle: App.lightFollowingText.length > 0 ? App.lightFollowingText
+                : Theme.t("灯效跟随最活跃的 Agent", "The light follows the most active agent")
             Dropdown {
                 key: "lightAgentMode"
                 pickerWidth: 150
@@ -83,6 +87,14 @@ SettingsPage {
             title: Theme.t("空闲时显示其他 Agent", "Show Others While Idle")
             subtitle: Theme.t("已选 Agent 没在工作时，灯效暂时显示正在工作的其他 Agent", "When the selected agent is idle, the light shows another working agent")
             PrefSwitch { key: "showOtherAgentsWhenIdle" }
+        }
+        AsbText {
+            visible: text.length > 0
+            text: App.lightAgentHint
+            caption: true
+            color: Theme.toneForeground("caution")
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
         }
     }
 

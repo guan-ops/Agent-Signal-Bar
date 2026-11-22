@@ -29,6 +29,8 @@ public:
     void setPaused(bool paused);
     // Rescan and poll now ("检查连接").
     void pollNow();
+    // Running agent apps (PresenceMonitor), merged into the display as idle sessions.
+    void setPresence(const QList<asb::SessionStatus> &presence);
 
     const QString &stateFilePath() const { return m_stateFilePath; }
     const asb::display::DisplaySnapshot &display() const { return m_display; }
@@ -78,6 +80,7 @@ private:
     QFileSystemWatcher m_watcher;
     QString m_stateStamp; // size:mtime of status.json when last seen
     std::optional<asb::SignalSnapshot> m_snapshot;
+    QList<asb::SessionStatus> m_presence;
     asb::display::DisplaySnapshot m_display;
     QList<asb::SessionStatus> m_visibleSessions;
     QList<asb::SignalEvent> m_recentEvents;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LightScope.h"
 #include "SignalModel.h"
 
 #include <QColor>
@@ -48,6 +49,20 @@ class AppController : public QObject {
     // state (configured | missing | repair | error | unchecked), message, tone, settingsPath,
     // canModify, result (last action), stateFile.
     Q_PROPERTY(QVariantMap claudeHook READ claudeHook NOTIFY claudeHookChanged)
+    // The same for the optional Codex hooks (<Codex home>\hooks.json).
+    Q_PROPERTY(QVariantMap codexHook READ codexHook NOTIFY codexHookChanged)
+    // Export diagnostics: running, message, tone, folder, archive.
+    Q_PROPERTY(QVariantMap diagnostics READ diagnostics NOTIFY diagnosticsChanged)
+    // Install CLI: installed (the install folder is on PATH), directory, canModify, message, tone.
+    Q_PROPERTY(QVariantMap cli READ cli NOTIFY cliChanged)
+    Q_PROPERTY(QString debugLogPath READ debugLogPath CONSTANT)
+    // Which agent the lamp shows (signalLightFollowingText): "自动跟随 · Codex 终端", "暂时显示
+    // Claude 桌面版", or the manual selection; empty without live data.
+    Q_PROPERTY(QString lightFollowingText READ lightFollowingText NOTIFY activityChanged)
+    // signalLightAgentUnavailableHint: why a manual selection shows nothing, or what it borrows.
+    Q_PROPERTY(QString lightAgentHint READ lightAgentHint NOTIFY activityChanged)
+    // Open desktop apps (Codex / Claude desktop) as session rows, shown while nothing runs.
+    Q_PROPERTY(QVariantList presenceSessions READ presenceSessions NOTIFY activityChanged)
 
 public:
     // `live` starts the Codex monitor; capture and demo runs keep the synthetic signal.
@@ -79,7 +94,14 @@ public:
     QVariantList sessions() const { return m_sessions; }
     QVariantList events() const { return m_events; }
     QVariantMap codexConnection() const { return m_codexConnection; }
-    QVariantMap claudeHook() const { return m_claudeHook; }
+    QString lightFollowingText() const { return m_lightFollowingText; }
+    QString lightAgentHint() const { return m_lightAgentHint; }
+    QVariantList presenceSessions() const { return m_presenceSessions; }
+    QVariantMap claudeHook() const { return m_claudeHook.map; }
+    QVariantMap codexHook() const { return m_codexHook.map; }
+    QVariantMap diagnostics() const { return m_diagnostics; }
+    QVariantMap cli() const { return m_cli; }
+    QString debugLogPath() const;
 
     asb::EffectCustomization effectCustomization() const;
     void setTrayGeometry(const QRect &rect) { m_trayGeometry = rect; }
@@ -120,6 +142,16 @@ public:
     Q_INVOKABLE void checkClaudeHook();
     Q_INVOKABLE void installClaudeHook();
     Q_INVOKABLE void uninstallClaudeHook();
+    Q_INVOKABLE void checkCodexHook();
+    Q_INVOKABLE void installCodexHook();
+    Q_INVOKABLE void uninstallCodexHook();
+    Q_INVOKABLE void exportDiagnostics();
+    // Shows a file or folder selected in Explorer.
+    Q_INVOKABLE void revealPath(const QString &path) const;
+    Q_INVOKABLE void openDebugLog() const;
+    Q_INVOKABLE void copyDebugLog() const;
+    Q_INVOKABLE void installCli();
+    Q_INVOKABLE void uninstallCli();
     // Local path from a FolderDialog URL, so QML can store it in prefs.codexDataDir.
     Q_INVOKABLE QString localPath(const QUrl &url) const;
     Q_INVOKABLE void quit();
@@ -129,6 +161,9 @@ signals:
     void signalNameChanged();
     void activityChanged();
     void claudeHookChanged();
+    void codexHookChanged();
+    void diagnosticsChanged();
+    void cliChanged();
     void languageChanged();
     void themeChanged();
     void settingsRequested(const QString &page);
@@ -141,25 +176,51 @@ private:
     void applyLaunchAtLogin(bool enabled) const;
     QScreen *popupScreen() const; // the screen of the last tray click, else the primary
     void rebuildActivity();
-    void runClaudeHook(const QString &action);
-    void rebuildClaudeHook();
+    // Alert sounds (FloatingSignalWindowController.evaluateCompletionSound and
+    // evaluateActiveGreenPulseSound): a chime when the lamp turns "done", a tick each time the
+    // green lamp lights up while an agent works.
+    void evaluateSounds();
+    // Desktop app presence (pollDesktopAppPresence): every 20 s, 60 s in low-power mode.
+    void pollPresence();
+    void playSound(const QString &kind, const QString &sound, const QString &cue) const;
+    void stopCue(const QString &cue) const;
+    // What the Connect page shows for one hook target.
+    struct HookUi {
+        bool codex = false;
+        QString state = QStringLiteral("unchecked");
+        QString error;
+        QString result; // the last install/uninstall
+        QVariantMap map;
+    };
+    void runHook(HookUi &ui, const QString &action);
+    void rebuildHook(HookUi &ui);
     QString hookExePath() const;
     QString claudeRoot() const;
+    QString codexHome() const;
+    void configureLogging();
+    // Re-reads whether the install folder is on PATH; `message`/`tone` report the last action.
+    void refreshCli(const QString &message = QString(), const QString &tone = QStringLiteral("neutral"));
+    void setDiagnostics(const QVariantMap &state);
 
     QQmlPropertyMap *m_prefs;
     SignalRuntime *m_runtime = nullptr;
     QVariantList m_sessions;
     QVariantList m_events;
     QVariantMap m_codexConnection;
+    asb::light::Selector m_lightSelector;
+    asb::light::Selection m_light;
+    QString m_lightFollowingText;
+    QString m_lightAgentHint;
+    QVariantList m_presenceSessions;
+    QTimer m_presenceTimer;
+    bool m_presenceInFlight = false;
     QString m_liveSignal = QStringLiteral("idle");
     QString m_codexDirOverride;
     QString m_claudeDirOverride;
-    QVariantMap m_claudeHook;
-    // Last hook check: nullopt until checked.
-    std::optional<bool> m_claudeConfigured;
-    QString m_claudeState = QStringLiteral("unchecked");
-    QString m_claudeError;
-    QString m_claudeResult;
+    HookUi m_claudeHook;
+    HookUi m_codexHook{true};
+    QVariantMap m_diagnostics;
+    QVariantMap m_cli;
     std::unique_ptr<QSettings> m_settings;
     QString m_captureDir;
     QTimer m_timer;
@@ -170,4 +231,10 @@ private:
     bool m_paused = false;
     int m_tick = 0;
     int m_frameSkip = 0;
+    // Sounds: PlaySound reads the scaled WAV from this buffer while it plays asynchronously.
+    mutable QByteArray m_soundBuffer;
+    mutable QString m_activeCue; // completion | waiting | "" for a preview
+    bool m_soundPrimed = false;   // the state found at start never chimes
+    QString m_lastSoundSignature;
+    bool m_greenWasLit = false;
 };

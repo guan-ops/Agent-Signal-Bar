@@ -101,10 +101,27 @@ SettingsPage {
         title: Theme.t("命令行工具", "Command Line Tool")
         AsbRow {
             title: Theme.t("安装 CLI", "Install CLI")
-            subtitle: Theme.t("将 agent-signal 命令安装到 %LOCALAPPDATA%\\Programs\\AgentSignalBar 并加入 PATH。",
-                              "Installs agent-signal to %LOCALAPPDATA%\\Programs\\AgentSignalBar and adds it to PATH.")
-            // agent-signal.exe already sits in the install folder; adding it to PATH is not ported.
-            StatusPill { text: Theme.t("尚未移植", "Not ported"); tone: "neutral" }
+            subtitle: Theme.t("把 " + (App.cli.directory || "") + " 加入用户 PATH，新开的终端即可运行 agent-signal。",
+                              "Adds " + (App.cli.directory || "") + " to the user PATH so new terminals can run agent-signal.")
+            StatusPill {
+                visible: App.cli.installed === true
+                text: Theme.t("已在 PATH 中", "On PATH")
+                tone: "positive"
+            }
+            AsbButton {
+                text: App.cli.installed === true ? Theme.t("从 PATH 移除", "Remove from PATH") : Theme.t("安装", "Install")
+                enabled: App.cli.canModify === true
+                onClicked: App.cli.installed === true ? App.uninstallCli() : App.installCli()
+            }
+        }
+        AsbText {
+            visible: text.length > 0
+            text: App.cli.message || ""
+            caption: true
+            color: (App.cli.tone || "neutral") === "neutral" ? Theme.secondary : Theme.toneForeground(App.cli.tone)
+            textFormat: Text.PlainText
+            wrapMode: Text.WrapAnywhere
+            Layout.fillWidth: true
         }
     }
 }

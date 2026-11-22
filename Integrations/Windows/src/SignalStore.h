@@ -58,6 +58,10 @@ public:
                                       const QString &lastEvent, qint64 eventDate, qint64 now);
     // SignalStateStore.readSnapshot: prunes expired sessions first.
     SignalSnapshot readSnapshot(qint64 now);
+    // SignalStateStore.setManualSignal (`agent-signal set <signal>`): idle clears every session,
+    // a pause clears them and pauses the lamp, anything else becomes the "manual" session.
+    // clearSessions is setManualSignal("idle").
+    SignalSnapshot setManualSignal(const QString &signal, qint64 now);
     void clear();
 
     // SignalStateDocument coding: schema_version, aggregate, updated_at, sessions

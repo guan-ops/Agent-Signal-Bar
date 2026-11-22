@@ -20,10 +20,36 @@ SettingsPage {
         title: Theme.t("日志", "Logs")
         AsbRow {
             title: Theme.t("启用文件日志", "Enable file logging")
-            subtitle: Theme.t("将日志写入 %LOCALAPPDATA%\\AgentSignalBar\\debug.log 以进行调试。",
-                              "Writes logs to %LOCALAPPDATA%\\AgentSignalBar\\debug.log for debugging.")
-            // Nothing reads fileLogging or logLevel yet; a switch would promise a log that never appears.
-            StatusPill { text: Theme.t("尚未移植", "Not ported"); tone: "neutral" }
+            subtitle: Theme.t("将日志写入 " + App.debugLogPath + " 以进行调试。",
+                              "Writes logs to " + App.debugLogPath + " for debugging.")
+            PrefSwitch { key: "fileLogging" }
+        }
+        AsbRow {
+            title: Theme.t("详细程度", "Verbosity")
+            Segmented {
+                key: "logLevel"
+                options: [
+                    { value: "error", label: "Error" },
+                    { value: "info", label: "Info" },
+                    { value: "verbose", label: "Verbose" }
+                ]
+            }
+        }
+        RowLayout {
+            spacing: Theme.s
+            AsbButton { text: Theme.t("打开日志文件", "Open Log File"); onClicked: App.openDebugLog() }
+            AsbButton {
+                id: copyLog
+                property bool done: false
+                icon: "copy"
+                text: done ? Theme.t("已复制", "Copied") : Theme.t("复制", "Copy")
+                onClicked: {
+                    App.copyDebugLog()
+                    done = true
+                    copyLogReset.restart()
+                }
+                Timer { id: copyLogReset; interval: 1500; onTriggered: copyLog.done = false }
+            }
         }
     }
 
