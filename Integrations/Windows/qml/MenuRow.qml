@@ -24,23 +24,23 @@ Rectangle {
             visible: root.icon.length > 0
             name: root.icon
             size: 15
-            color: mouse.containsMouse ? "white" : Theme.text
+            color: mouse.containsMouse ? Theme.textOnAccent : Theme.text
         }
         AsbText {
             text: root.title
-            color: mouse.containsMouse ? "white" : Theme.text
+            color: mouse.containsMouse ? Theme.textOnAccent : Theme.text
             Layout.fillWidth: true
         }
         AsbText {
             visible: root.shortcut.length > 0
             text: root.shortcut
-            color: mouse.containsMouse ? Qt.rgba(1, 1, 1, 0.85) : Theme.secondary
+            color: mouse.containsMouse ? Qt.rgba(Theme.textOnAccent.r, Theme.textOnAccent.g, Theme.textOnAccent.b, 0.85) : Theme.secondary
         }
         Icon {
             visible: root.showChevron
             name: "chevronRight"
             size: 13
-            color: mouse.containsMouse ? "white" : Theme.secondary
+            color: mouse.containsMouse ? Theme.textOnAccent : Theme.secondary
         }
     }
     MouseArea {

@@ -21,7 +21,7 @@ DEFINES += ASB_WINDOWS_VERSION=\\\"$$ASB_VERSION\\\"
 win32 {
     CONFIG += windows
     DEFINES += NOMINMAX WIN32_LEAN_AND_MEAN
-    LIBS += -ldwmapi -lwinmm -luser32
+    LIBS += -ldwmapi -lwinmm -luser32 -ladvapi32
     RC_ICONS = resources/AgentSignalBar.ico
     QMAKE_TARGET_DESCRIPTION = "Agent Signal Bar"
     QMAKE_TARGET_PRODUCT = "Agent Signal Bar"

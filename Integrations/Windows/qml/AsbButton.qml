@@ -25,13 +25,13 @@ Rectangle {
             visible: root.icon.length > 0
             name: root.icon
             size: root.large ? 16 : 13
-            color: root.prominent ? "white" : Theme.text
+            color: root.prominent ? Theme.textOnAccent : Theme.text
         }
         AsbText {
             text: root.text
             strong: true
             font.pixelSize: root.large ? 14 : Theme.bodySize
-            color: root.prominent ? "white" : Theme.text
+            color: root.prominent ? Theme.textOnAccent : Theme.text
         }
     }
     MouseArea {

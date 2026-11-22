@@ -46,7 +46,7 @@ SettingsPage {
                 height: 30
                 radius: 15
                 color: Theme.accent
-                Icon { anchors.centerIn: parent; name: "person"; size: 18; color: "white" }
+                Icon { anchors.centerIn: parent; name: "person"; size: 18; color: Theme.textOnAccent }
             }
             ColumnLayout {
                 spacing: 1

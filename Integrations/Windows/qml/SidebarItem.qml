@@ -20,11 +20,11 @@ Rectangle {
         Icon {
             name: root.icon
             size: 16
-            color: root.selected ? "white" : Theme.accent
+            color: root.selected ? Theme.textOnAccent : Theme.accent
         }
         AsbText {
             text: root.label
-            color: root.selected ? "white" : Theme.text
+            color: root.selected ? Theme.textOnAccent : Theme.text
             Layout.fillWidth: true
         }
     }

@@ -78,7 +78,18 @@ SettingsPage {
             spacing: Theme.s
             AsbButton { icon: "folder"; text: Theme.t("选择数据目录…", "Choose Directory…"); onClicked: folderDialog.open() }
             AsbButton { text: Theme.t("使用默认目录", "Use Default"); onClicked: App.prefs.codexDataDir = "" }
-            AsbButton { icon: "check"; text: Theme.t("检查连接", "Check Connection"); onClicked: App.checkCodexConnection() }
+            AsbButton {
+                id: codexCheck
+                property bool done: false
+                icon: "check"
+                text: done ? Theme.t("已检查", "Checked") : Theme.t("检查连接", "Check Connection")
+                onClicked: {
+                    App.checkCodexConnection()
+                    done = true
+                    codexCheckReset.restart()
+                }
+                Timer { id: codexCheckReset; interval: 1500; onTriggered: codexCheck.done = false }
+            }
             StatusPill {
                 visible: App.liveData && !App.paused
                 text: Theme.t("自动监控", "Auto monitoring")
@@ -134,10 +145,20 @@ SettingsPage {
         }
         RowLayout {
             spacing: Theme.s
-            AsbButton { text: Theme.t("检查", "Check"); onClicked: App.checkClaudeHook() }
+            AsbButton {
+                id: hookCheck
+                property bool done: false // a check that finds nothing new would otherwise show nothing
+                text: done ? Theme.t("已检查", "Checked") : Theme.t("检查", "Check")
+                onClicked: {
+                    App.checkClaudeHook()
+                    done = true
+                    hookCheckReset.restart()
+                }
+                Timer { id: hookCheckReset; interval: 1500; onTriggered: hookCheck.done = false }
+            }
             AsbButton {
                 text: Theme.t("安装", "Install")
-                prominent: true
+                prominent: hookState === "missing" || hookState === "repair" // the action still needed
                 enabled: App.claudeHook.canModify === true
                 onClicked: App.installClaudeHook()
             }

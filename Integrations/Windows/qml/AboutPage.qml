@@ -10,14 +10,12 @@ SettingsPage {
             title: Theme.t("版本", "Version")
             AsbText { text: App.version + " (Windows)"; secondary: true }
         }
+        // Neither the switch nor the button did anything: update checks are not ported yet.
         AsbRow {
-            title: Theme.t("自动检查更新", "Check for updates automatically")
-            PrefSwitch { key: "autoUpdateCheck" }
-        }
-        AsbRow {
-            title: Theme.t("更新", "Updates")
-            subtitle: Theme.t("Windows 版更新检查尚未接入 GitHub Releases。", "Windows update checks are not wired to GitHub Releases yet.")
-            AsbButton { icon: "refresh"; text: Theme.t("检查更新", "Check for Updates") }
+            title: Theme.t("检查更新", "Check for updates")
+            subtitle: Theme.t("Windows 版更新检查尚未接入 GitHub Releases，请用下面的下载页面获取新版本。",
+                              "Windows update checks are not wired to GitHub Releases yet; get new versions from the download page below.")
+            StatusPill { text: Theme.t("尚未移植", "Not ported"); tone: "neutral" }
         }
         AsbRow {
             title: Theme.t("下载", "Download")

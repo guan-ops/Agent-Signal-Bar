@@ -158,6 +158,9 @@ SettingsPage {
 
     AsbSection {
         title: Theme.t("声音", "Sound")
+        // README: PlaySound previews only; automatic alerts and volume levels are not ported.
+        footer: Theme.t("Windows 版目前只能试听：任务完成或等待授权时还不会自动播放，音量档位也尚未移植。",
+                        "Windows can only preview the sounds so far: they do not play on completion or permission requests yet, and volume levels are not ported.")
         AsbRow { title: Theme.t("声音提醒", "Sound alerts"); PrefSwitch { key: "soundEnabled" } }
         AsbRow {
             title: Theme.t("完成提示音", "Completion sound")

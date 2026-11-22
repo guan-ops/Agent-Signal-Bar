@@ -150,19 +150,45 @@ Window {
         }
     }
 
+    // Styled like the tray menu: the Basic style's white menu showed the dark theme's pale text.
+    component LampMenuItem: MenuItem {
+        id: item
+        implicitWidth: 170
+        implicitHeight: 28
+        contentItem: AsbText {
+            text: item.text
+            leftPadding: 4
+            color: item.highlighted ? Theme.textOnAccent : Theme.text
+            verticalAlignment: Text.AlignVCenter
+        }
+        background: Rectangle {
+            radius: 5
+            color: item.highlighted ? Theme.accent : "transparent"
+        }
+    }
+
     Menu {
         id: contextMenu
         popupType: Popup.Window
-        MenuItem { text: Theme.t("小", "Small"); onTriggered: App.prefs.floatingSize = "compact" }
-        MenuItem { text: Theme.t("默认", "Default"); onTriggered: App.prefs.floatingSize = "standard" }
-        MenuItem { text: Theme.t("大", "Large"); onTriggered: App.prefs.floatingSize = "large" }
-        MenuSeparator {}
-        MenuItem {
+        padding: 5
+        background: Rectangle {
+            implicitWidth: 180
+            radius: 8
+            color: Theme.panelBg
+            border.color: Theme.panelStroke
+        }
+        LampMenuItem { text: Theme.t("小", "Small"); onTriggered: App.prefs.floatingSize = "compact" }
+        LampMenuItem { text: Theme.t("默认", "Default"); onTriggered: App.prefs.floatingSize = "standard" }
+        LampMenuItem { text: Theme.t("大", "Large"); onTriggered: App.prefs.floatingSize = "large" }
+        MenuSeparator {
+            contentItem: Rectangle { implicitHeight: 1; color: Theme.separator }
+        }
+        LampMenuItem {
             text: win.vertical ? Theme.t("切换为横向", "Horizontal") : Theme.t("切换为竖向", "Vertical")
             onTriggered: App.prefs.floatingLayout = win.vertical ? "horizontal" : "vertical"
         }
-        MenuItem { text: Theme.t("设置...", "Settings..."); onTriggered: App.openSettings("light") }
-        MenuItem { text: Theme.t("隐藏悬浮灯", "Hide Floating Light"); onTriggered: App.prefs.floatingEnabled = false }
+        LampMenuItem { text: Theme.t("设置...", "Settings..."); onTriggered: App.openSettings("light") }
+        LampMenuItem { text: Theme.t("隐藏悬浮灯", "Hide Floating Light"); onTriggered: App.prefs.floatingEnabled = false }
     }
 
     // Compact session & usage popover (ClaudeFloatingQuotaPopoverView / floating usage).

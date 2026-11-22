@@ -55,9 +55,14 @@ Item {
         }
     }
 
+    // Drawn inside the settings window: as a separate Popup.Window (Qt 6.8, Windows) the list
+    // received mouse moves but never the press, so no option could be picked. The margins keep a
+    // list near the bottom of the window inside it.
     Popup {
         id: popup
-        popupType: Popup.Window
+        popupType: Popup.Item
+        margins: Theme.s
+        focus: true // takes keyboard focus when open, so Esc closes it
         y: root.height + 4
         width: Math.max(root.width, 160)
         padding: 5
@@ -70,13 +75,31 @@ Item {
             spacing: 0
             Repeater {
                 model: root.options
-                MenuRow {
+                ItemDelegate {
+                    id: option
                     required property var modelData
-                    title: (modelData.value === root.value ? "✓  " : "     ") + modelData.label
+                    Layout.fillWidth: true
+                    implicitHeight: 26
+                    hoverEnabled: true
+                    padding: 0
+                    leftPadding: Theme.s
+                    rightPadding: Theme.s
+                    contentItem: AsbText {
+                        text: (option.modelData.value === root.value ? "✓  " : "     ") + option.modelData.label
+                        color: option.hovered ? Theme.textOnAccent : Theme.text
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                    background: Rectangle {
+                        radius: 5
+                        color: option.hovered ? Theme.accent : "transparent"
+                    }
                     onClicked: {
-                        if (root.key.length > 0) App.prefs[root.key] = modelData.value
-                        root.activated(modelData.value)
+                        // Close first: a new language relabels the options, the Repeater rebuilds
+                        // them and destroys this one before a later close() could run.
+                        const value = option.modelData.value
                         popup.close()
+                        if (root.key.length > 0) App.prefs[root.key] = value
+                        root.activated(value)
                     }
                 }
             }

@@ -346,7 +346,23 @@ bool AppController::dark() const {
     return QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark;
 }
 
-QColor AppController::accent() const { return QGuiApplication::palette().color(QPalette::Accent); }
+QColor AppController::accent() const {
+#ifdef Q_OS_WIN
+    // QPalette::Accent follows the system's light/dark mode, so a light theme on a dark system
+    // got the dark-mode accent (a light tint) on white: invisible icons and selections. Take the
+    // shade Windows 11 itself uses for the app's own theme from the accent palette instead:
+    // AccentLight2 in dark mode, AccentDark1 in light mode (entries 1 and 4, RGBA each).
+    BYTE palette[32] = {};
+    DWORD size = sizeof(palette);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Accent",
+                     L"AccentPalette", RRF_RT_REG_BINARY, nullptr, palette, &size) == ERROR_SUCCESS
+        && size >= sizeof(palette)) {
+        const BYTE *c = palette + (dark() ? 1 : 4) * 4;
+        return QColor(c[0], c[1], c[2]);
+    }
+#endif
+    return QGuiApplication::palette().color(QPalette::Accent);
+}
 
 QString AppController::platform() const {
 #ifdef Q_OS_WIN

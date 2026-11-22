@@ -9,6 +9,10 @@ QtObject {
     readonly property bool dark: App.dark
     readonly property string font: App.uiFont
     readonly property color accent: App.accent
+    // Text and icons on an accent fill. Windows hands Qt a light accent in dark mode and a dark
+    // one in light mode (a grey accent becomes #DFDEDC in dark mode), so a fixed white can vanish.
+    readonly property color textOnAccent: 0.2126 * accent.r + 0.7152 * accent.g + 0.0722 * accent.b > 0.55
+        ? Qt.rgba(0, 0, 0, 0.9) : "white"
 
     // Localisation: binding-safe (reads App.language, so text updates on language change).
     function t(zhHans, english) { return App.language === "zh" ? zhHans : english }

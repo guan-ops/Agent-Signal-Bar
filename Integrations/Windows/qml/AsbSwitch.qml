@@ -20,7 +20,7 @@ Item {
         radius: width / 2
         y: 2
         x: root.checked ? parent.width - width - 2 : 2
-        color: "white"
+        color: root.checked ? Theme.textOnAccent : "white" // a white knob vanishes on a light accent
         border.color: Qt.rgba(0, 0, 0, 0.08)
         Behavior on x { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
     }

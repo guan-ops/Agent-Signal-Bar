@@ -36,7 +36,7 @@ Rectangle {
                     anchors.centerIn: parent
                     text: modelData.label
                     strong: parent.selected
-                    color: parent.selected ? "white" : Theme.text
+                    color: parent.selected ? Theme.textOnAccent : Theme.text
                 }
                 MouseArea {
                     id: hover
