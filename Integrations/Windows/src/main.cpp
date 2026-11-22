@@ -24,13 +24,19 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QLockFile>
 #include <QTemporaryDir>
 #include <QTextStream>
+#include <QThread>
 #include <algorithm>
 #include <cstdio>
+#include <memory>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -148,6 +154,41 @@ int runProbe(QApplication &app, int seconds, const QString &dataDir) {
     return app.exec();
 }
 
+// One running app per user session: autostart plus a manual launch would otherwise show two
+// tray icons and two floating lamps, and both would poll Codex into the same status.json.
+QString instanceName() {
+    // Per user: named pipes on Windows are visible to every session on the machine.
+    const QByteArray user = QCryptographicHash::hash(QDir::homePath().toUtf8(), QCryptographicHash::Sha256).toHex().left(16);
+    return QStringLiteral("AgentSignalBar-") + QString::fromLatin1(user);
+}
+
+// True when no other instance holds the guard. The guard lives until the process exits.
+bool claimInstance(const QString &name) {
+#ifdef Q_OS_WIN
+    const std::wstring mutexName = (QStringLiteral("Local\\") + name).toStdWString();
+    if (!CreateMutexW(nullptr, FALSE, mutexName.c_str())) return true; // cannot tell; do not block startup
+    return GetLastError() != ERROR_ALREADY_EXISTS;
+#else
+    static QLockFile lock(QDir::tempPath() + '/' + name + ".lock");
+    return lock.tryLock(0);
+#endif
+}
+
+// Asks the running instance to show its settings window; it may still be starting up.
+void notifyRunningInstance(const QString &name) {
+    QLocalSocket socket;
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        socket.connectToServer(name);
+        if (socket.waitForConnected(200)) {
+            socket.write("settings\n");
+            socket.waitForBytesWritten(500);
+            socket.disconnectFromServer();
+            return;
+        }
+        QThread::msleep(200);
+    }
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -180,6 +221,20 @@ int main(int argc, char *argv[]) {
             QFile::remove(settingsFile);
         }
         writeTraySheet(captureDir);
+    }
+
+    // Capture, demo (--signal) and separate-settings runs may run beside the real app.
+    std::unique_ptr<QLocalServer> instanceServer;
+    if (captureDir.isEmpty() && !parser.isSet(signalOption) && !parser.isSet(settingsOption)) {
+        const QString name = instanceName();
+        if (!claimInstance(name)) {
+            notifyRunningInstance(name);
+            return 0;
+        }
+        instanceServer = std::make_unique<QLocalServer>();
+        instanceServer->setSocketOptions(QLocalServer::UserAccessOption);
+        QLocalServer::removeServer(name); // a crashed instance can leave its socket file (not on Windows)
+        instanceServer->listen(name);
     }
 
     // --codex-dir makes even a capture run live, against that (fixture) directory only.
@@ -216,6 +271,14 @@ int main(int argc, char *argv[]) {
         }
     });
     if (captureDir.isEmpty()) refreshTray();
+    if (instanceServer) {
+        QObject::connect(instanceServer.get(), &QLocalServer::newConnection, &controller, [&] {
+            while (QLocalSocket *socket = instanceServer->nextPendingConnection()) {
+                QObject::connect(socket, &QLocalSocket::disconnected, socket, &QObject::deleteLater);
+                controller.openSettings(); // another launch: show that the app is already running
+            }
+        });
+    }
 
     QQmlApplicationEngine engine;
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app, [] { QCoreApplication::exit(1); },

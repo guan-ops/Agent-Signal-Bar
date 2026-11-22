@@ -1,5 +1,6 @@
 # Builds Agent Signal Bar for Windows, runs the tests and installs a self-contained folder
-# (AgentSignalBar.exe, agent-signal.exe for Claude Code hooks, Qt runtime) with windeployqt.
+# (AgentSignalBar.exe, agent-signal.exe for Claude Code hooks, Qt runtime via windeployqt,
+# MSVC runtime DLLs) that also runs on PCs without the Visual C++ Redistributable.
 #
 #   powershell -ExecutionPolicy Bypass -File Integrations\Windows\build.ps1 -QtDir C:\Qt\6.8.3\msvc2022_64
 #
@@ -40,6 +41,16 @@ function Build-Project([string]$Name, [string]$ProFile) {
     return $dir
 }
 
+# QtTest writes nothing to a redirected stdout on Windows, so a logged build would only say
+# "tests failed". Log to a file instead and show everything but the PASS lines.
+function Run-Tests([string]$Dir, [string]$Exe, [string]$What) {
+    $results = Join-Path $Dir "results.txt"
+    & (Join-Path $Dir "release\$Exe") -o "$results,txt"
+    $code = $LASTEXITCODE
+    if (Test-Path $results) { Get-Content $results -Encoding UTF8 | Where-Object { $_ -notmatch '^PASS ' } | Out-Host }
+    if ($code -ne 0) { throw "$What failed" }
+}
+
 # Refuse before deleting anything: a running copy, or a folder that is not an install.
 if (Get-Process -Name "AgentSignalBar" -ErrorAction SilentlyContinue) { throw "Quit Agent Signal Bar first" }
 if ((Test-Path $InstallDir) -and (Get-ChildItem $InstallDir -Force | Select-Object -First 1) `
@@ -48,12 +59,8 @@ if ((Test-Path $InstallDir) -and (Get-ChildItem $InstallDir -Force | Select-Obje
 }
 
 if (-not $SkipTests) {
-    $lampTests = Build-Project "tests" "tests\signalmodel.pro"
-    & (Join-Path $lampTests "release\tst_signalmodel.exe") | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "lamp parity tests failed" }
-    $codexTests = Build-Project "tests-codex" "tests\codex.pro"
-    & (Join-Path $codexTests "release\tst_codex.exe") | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "data layer tests failed" }
+    Run-Tests (Build-Project "tests" "tests\signalmodel.pro") "tst_signalmodel.exe" "lamp parity tests"
+    Run-Tests (Build-Project "tests-codex" "tests\codex.pro") "tst_codex.exe" "data layer tests"
 }
 
 $appDir = Build-Project "app" "agent-signal-bar-windows.pro"
@@ -63,8 +70,23 @@ if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 Copy-Item (Join-Path $appDir "release\AgentSignalBar.exe") $InstallDir
 Copy-Item (Join-Path $cliDir "release\agent-signal.exe") $InstallDir
-& $deploy --release --qmldir (Join-Path $Source "qml") --no-translations (Join-Path $InstallDir "AgentSignalBar.exe") | Out-Host
+# windeployqt only drops the 25 MB vc_redist.x64.exe installer next to the app. Copy the MSVC
+# runtime DLLs themselves (app-local deployment): without them agent-signal.exe cannot start on
+# a PC lacking the Redistributable, and every Claude Code hook would raise a missing-DLL error.
+$crt = $null
+if ($env:VCToolsRedistDir) {
+    $crt = Get-ChildItem (Join-Path $env:VCToolsRedistDir "x64") -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+}
+$deployArgs = @("--release")
+if ($crt) { $deployArgs += "--no-compiler-runtime" } # an if expression would unroll a one-item array
+& $deploy @deployArgs --qmldir (Join-Path $Source "qml") --no-translations (Join-Path $InstallDir "AgentSignalBar.exe") | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
+if ($crt) {
+    Copy-Item (Join-Path $crt.FullName "*.dll") $InstallDir
+} else {
+    Write-Warning "MSVC runtime DLLs not found (VCToolsRedistDir is not set): the folder needs the Visual C++ Redistributable. Run from the x64 Native Tools Command Prompt."
+}
 
 Write-Host ""
 Write-Host "Installed: $InstallDir"

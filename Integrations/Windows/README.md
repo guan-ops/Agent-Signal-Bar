@@ -40,6 +40,10 @@ powershell -ExecutionPolicy Bypass -File Integrations\Windows\build.ps1 -QtDir C
 
 脚本会先编译并运行灯效与数据层测试，再编译 `AgentSignalBar.exe` 和 `agent-signal.exe`，最后用 `windeployqt` 安装到 `%LOCALAPPDATA%\Programs\AgentSignalBar\`（可用 `-InstallDir` 修改）。这个目录必须固定：Claude Code 的 Hook 会指向其中的 `agent-signal.exe`。重新编译前请先退出 Agent Signal Bar。
 
+安装目录自带 Qt 和 MSVC 运行库（`vcruntime140.dll` 等，从 `VCToolsRedistDir` 复制），没装 Visual C++ 运行库的电脑也能直接运行。不在 VS 命令提示符里运行时找不到这些 DLL，脚本会给出警告，这时目录里只有 `vc_redist.x64.exe` 安装包。
+
+程序每个用户只运行一个实例：已经在运行时再次启动，会打开正在运行的那个的设置窗口，然后退出。`--signal`、`--settings`、`--capture` 和 `--probe` 不受这个限制，可以和正常运行的程序同时使用。
+
 ### 检查 Codex 数据目录
 
 ```bat

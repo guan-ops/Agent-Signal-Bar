@@ -1,6 +1,6 @@
 # Agent Signal Bar for Windows (Qt 6). Builds on macOS too, for development and
 # --capture screenshots; the tray, backdrop and start-at-login code paths are Windows-only.
-QT += core gui widgets quick qml quickcontrols2 svg
+QT += core gui widgets quick qml quickcontrols2 svg network
 CONFIG += c++20
 CONFIG -= app_bundle
 TARGET = AgentSignalBar
