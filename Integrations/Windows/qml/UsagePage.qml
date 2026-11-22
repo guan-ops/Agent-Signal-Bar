@@ -7,8 +7,10 @@ import "DemoData.js" as Demo
 SettingsPage {
     id: page
     readonly property var account: Demo.account(Theme.t)
-    readonly property var days: Demo.days(Theme.t)
     readonly property bool claude: App.prefs.usagePlatform === "claude"
+    // Local token usage: the scan when live, else the demo set (Codex only).
+    readonly property var usage: App.liveData ? (App.usage[page.claude ? "claude" : "codex"] || null)
+                                              : (page.claude ? null : Demo.usage(Theme.t))
 
     RowLayout {
         Layout.fillWidth: true
@@ -19,8 +21,8 @@ SettingsPage {
             Layout.fillWidth: true
         }
         StatusPill {
-            visible: App.liveData
-            text: Theme.t("演示数据", "Demo data")
+            visible: App.liveData && !page.claude
+            text: Theme.t("账号与额度为演示数据", "Account & quota: demo data")
             tone: "caution"
         }
         Dropdown {
@@ -132,12 +134,22 @@ SettingsPage {
         }
     }
 
-    // Token usage.
+    // Token usage (Codex: CodexUsageDetailsView; Claude: ClaudeUsageSettingsView.historyCard).
     AsbSection {
-        visible: !page.claude
-        title: Theme.t("Token 使用", "Token Usage")
+        visible: page.usage !== null
+        title: page.claude ? Theme.t("本机 Token 使用", "Local Token Usage") : Theme.t("Token 使用", "Token Usage")
+        headerAccessory: AsbButton {
+            visible: App.liveData
+            icon: "refresh"
+            implicitWidth: 28
+            enabled: page.usage !== null && !page.usage.scanning
+            onClicked: App.refreshUsage()
+        }
         AsbText {
-            text: Theme.t("本机 Codex 会话汇总，不归属于当前所选账号。", "Local Codex sessions, not attributed to the selected account.")
+            text: page.claude
+                ? Theme.t("汇总本机 Claude Code 会话日志，包含缓存 Token；切换账号不影响统计范围。费用为估算，并非订阅账单。",
+                          "Local Claude Code session logs including cached tokens, across accounts. Costs are estimates, not subscription charges.")
+                : Theme.t("本机 Codex 会话汇总，不归属于当前所选账号。", "Local Codex sessions, not attributed to the selected account.")
             caption: true
             secondary: true
             wrapMode: Text.WordWrap
@@ -145,8 +157,16 @@ SettingsPage {
         }
         RowLayout {
             spacing: 5
-            Icon { name: "check"; size: 12; color: Theme.secondary }
-            AsbText { text: page.account.scan; caption: true; secondary: true }
+            Icon { name: page.usage && page.usage.ready && !page.usage.scanning ? "check" : "refresh"; size: 12; color: Theme.secondary }
+            AsbText { text: page.usage ? page.usage.scan : ""; caption: true; secondary: true }
+        }
+        AsbText {
+            visible: text.length > 0
+            text: page.usage ? (page.usage.status || "") : ""
+            caption: true
+            color: Theme.toneForeground("caution")
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
         }
         Rectangle {
             Layout.fillWidth: true
@@ -164,21 +184,20 @@ SettingsPage {
                     columnSpacing: 12
                     rowSpacing: 8
                     Layout.fillWidth: true
-                    AsbStat { label: Theme.t("今日", "Today"); value: "$7.32"; valueSize: Theme.bodySize }
-                    AsbStat { label: Theme.t("近 30 天费用", "30-day cost"); value: "$190.99"; valueSize: Theme.bodySize }
-                    AsbStat { label: Theme.t("今日 token 用量", "Today's tokens"); value: Theme.t("131.68万 token", "1.32M tokens"); valueSize: Theme.bodySize }
-                    AsbStat { label: Theme.t("近 30 天 token 用量", "30-day tokens"); value: Theme.t("3,437.79万 token", "34.38M tokens"); valueSize: Theme.bodySize }
+                    AsbStat { label: Theme.t("今日", "Today"); value: page.usage ? page.usage.today.costText : "—"; valueSize: Theme.bodySize }
+                    AsbStat { label: Theme.t("近 30 天费用", "30-day cost"); value: page.usage ? page.usage.month.costText : "—"; valueSize: Theme.bodySize }
+                    AsbStat { label: Theme.t("今日 token 用量", "Today's tokens"); value: page.usage ? page.usage.today.tokensText : "—"; valueSize: Theme.bodySize }
+                    AsbStat { label: Theme.t("近 30 天 token 用量", "30-day tokens"); value: page.usage ? page.usage.month.tokensText : "—"; valueSize: Theme.bodySize }
                 }
                 TokenChart {
                     id: chart
                     stacked: true
-                    days: page.days
+                    days: page.usage ? page.usage.days : []
                     chartHeight: 56
                 }
                 AsbText {
                     readonly property var d: chart.shown
-                    text: d ? d.label + "：$" + (d.models[0].cost + d.models[1].cost).toFixed(2) + " · "
-                              + (App.language === "zh" ? (d.total * 100).toFixed(2) + "万 token" : d.total.toFixed(2) + "M tokens") : ""
+                    text: d ? d.label + "：" + d.costText + " · " + d.tokensText : ""
                     strong: true
                 }
                 Repeater {
@@ -191,9 +210,7 @@ SettingsPage {
                             spacing: 1
                             AsbText { text: modelData.name; caption: true; strong: true }
                             AsbText {
-                                text: "$" + modelData.cost.toFixed(2) + " · "
-                                      + (App.language === "zh" ? (modelData.tokens * 100).toFixed(2) + "万 token" : modelData.tokens.toFixed(2) + "M tokens")
-                                      + " · " + Math.round(100 * modelData.tokens / chart.shown.total) + "%"
+                                text: modelData.costText + " · " + modelData.tokensText + " · " + modelData.share + "%"
                                 caption: true
                                 secondary: true
                             }
@@ -202,15 +219,33 @@ SettingsPage {
                 }
             }
         }
+        AsbText {
+            visible: text.length > 0
+            text: page.usage ? (page.usage.empty || "") : ""
+            caption: true
+            secondary: true
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+        AsbText {
+            visible: text.length > 0
+            text: App.liveData ? (App.usage.rateNote || "") : ""
+            caption: true
+            color: Theme.tertiary
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
     }
 
-    // Projects and sessions.
+    // Projects and sessions (CodexUsageDetails.projects / buildClaudeUsageDetails).
     AsbSection {
-        visible: !page.claude
+        visible: page.usage !== null && page.usage.projects.length > 0
         title: Theme.t("项目与会话 · 近 30 天", "Projects & Sessions · 30 days")
-        footer: Theme.t("本机 Codex 会话日志，按项目路径汇总；不归属于当前所选账号。", "Local Codex session logs by project path; not attributed to the selected account.")
+        footer: page.claude
+            ? Theme.t("本机 Claude Code 会话日志，按项目路径汇总。", "Local Claude Code session logs by project path.")
+            : Theme.t("本机 Codex 会话日志，按项目路径汇总；不归属于当前所选账号。", "Local Codex session logs by project path; not attributed to the selected account.")
         Repeater {
-            model: Demo.projects(Theme.t)
+            model: page.usage ? page.usage.projects : []
             ColumnLayout {
                 required property var modelData
                 Layout.fillWidth: true

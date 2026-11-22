@@ -9,11 +9,13 @@ SOURCES += src/main.cpp src/AppController.cpp src/SignalModel.cpp src/TrayIconRe
     src/CodexSessionParser.cpp src/CodexActivityMonitor.cpp src/SignalStore.cpp src/ActivityDisplay.cpp \
     src/ActivityText.cpp src/SignalRuntime.cpp src/SignalStateFile.cpp src/HookAdapters.cpp \
     src/ClaudeHookInstaller.cpp src/SoundFile.cpp src/LightScope.cpp src/PresenceMonitor.cpp \
-    src/DebugLog.cpp src/Diagnostics.cpp src/CliPath.cpp
+    src/DebugLog.cpp src/Diagnostics.cpp src/CliPath.cpp src/UsagePricing.cpp src/UsageScanner.cpp \
+    src/UsageService.cpp
 HEADERS += src/AppController.h src/SignalModel.h src/TrayIconRenderer.h \
     src/CodexSessionParser.h src/CodexActivityMonitor.h src/SignalStore.h src/ActivityDisplay.h \
     src/ActivityText.h src/SignalRuntime.h src/SignalStateFile.h src/HookAdapters.h src/ClaudeHookInstaller.h \
-    src/SoundFile.h src/LightScope.h src/PresenceMonitor.h src/DebugLog.h src/Diagnostics.h src/CliPath.h
+    src/SoundFile.h src/LightScope.h src/PresenceMonitor.h src/DebugLog.h src/Diagnostics.h src/CliPath.h \
+    src/UsagePricing.h src/UsageScanner.h src/UsageService.h
 RESOURCES += resources.qrc
 
 ASB_VERSION = $$(ASB_WINDOWS_VERSION)

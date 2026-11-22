@@ -10,6 +10,8 @@
 #include "PresenceMonitor.h"
 #include "SignalStateFile.h"
 #include "SoundFile.h"
+#include "UsageScanner.h"
+#include "UsageService.h"
 
 #include <QClipboard>
 #include <QDateTime>
@@ -34,6 +36,7 @@
 #include <QWindow>
 
 #include <algorithm>
+#include <cmath>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -72,6 +75,8 @@ const QVariantMap &defaultPrefs() {
         // Which corner each floating badge sits in; users move them by dragging.
         {"floatingSignalInfoBadgeCorner", "top-right"}, {"floatingSignalQuotaBadgeCorner", "top-left"},
         {"floatingSignalTokenBadgeCorner", "bottom-left"},
+        // The floating token badge counts today or the last 30 days (FloatingSignalTokenBadgeWindow).
+        {"floatingSignalTokenBadgeWindow", "today"},
         {"thinkingEffect", "green_fast_flash"}, {"workingEffect", "green_slow_flash"},
         {"needsReviewEffect", "slow_flash"}, {"permissionEffect", "slow_flash"},
         {"blockedEffect", "fast_flash"}, {"doneEffect", "green_steady"},
@@ -163,8 +168,22 @@ AppController::AppController(const QString &settingsFile, const QString &capture
             m_presenceTimer.start(m_prefs->value("lowPowerMode").toBool() ? 60000 : 20000);
             QTimer::singleShot(0, this, &AppController::pollPresence);
         }
+        // Local token usage. A fixture run (--codex-dir) scans that directory only and never
+        // goes online for prices.
+        m_usage = new UsageService(this);
+        m_usage->setLowPower(m_prefs->value("lowPowerMode").toBool());
+        m_usage->setCurrency(m_prefs->value("currency").toString());
+        const QStringList claudeRoots = !m_claudeDirOverride.isEmpty()
+            ? QStringList{QDir::cleanPath(m_claudeDirOverride + "/projects")}
+            : asb::usage::ClaudeScanner::defaultRoots(QDir::homePath(), qEnvironmentVariable("CLAUDE_CONFIG_DIR"),
+                                                      qEnvironmentVariable("APPDATA"));
+        m_usage->start(usageCodexRoots(), m_captureDir.isEmpty() ? claudeRoots : QStringList(),
+                       QFileInfo(asb::debuglog::path()).absolutePath() + "/Cache", m_captureDir.isEmpty());
+        connect(m_usage, &UsageService::changed, this, &AppController::rebuildUsage);
+        connect(this, &AppController::languageChanged, this, &AppController::rebuildUsage);
     }
     rebuildActivity();
+    rebuildUsage();
     refreshCli();
     // Capture runs never look at the real agent settings.
     if (m_captureDir.isEmpty()) {
@@ -388,6 +407,9 @@ void AppController::rebuildActivity() {
         m_liveSignal = aggregate;
         emit signalNameChanged();
     }
+    // A working agent spends tokens: scan on the short cadence (liveTokenUsageRevision).
+    if (m_usage && asb::displayState(aggregate) == asb::DisplayState::Active) m_usage->noteActivity();
+    rebuildUsage(); // the floating token badge follows the lamp's agent
     evaluateSounds(); // the completion chime follows the snapshot
 }
 
@@ -630,6 +652,7 @@ void AppController::showSystemMenu() { emit systemMenuRequested(); }
 void AppController::togglePause() {
     m_paused = !m_paused;
     if (m_runtime) m_runtime->setPaused(m_paused);
+    if (m_usage) m_usage->setPaused(m_paused); // keeps the last confirmed usage
     pollPresence(); // clears the open apps while paused, looks again on resume
     rebuildActivity();
     emit signalNameChanged();
@@ -778,6 +801,248 @@ void AppController::uninstallCli() {
     refreshCli(text("已从 PATH 移除。", "Removed from PATH."), "neutral");
 }
 
+// --- Local token usage -------------------------------------------------------------------
+
+// CodexTokenActivityScanner.defaultSessionRootURLs: the activity roots plus archived_sessions.
+QStringList AppController::usageCodexRoots() const {
+    const QString selected = m_codexDirOverride.isEmpty() ? m_prefs->value("codexDataDir").toString() : m_codexDirOverride;
+    const QList<asb::codex::Root> roots = m_codexDirOverride.isEmpty()
+        ? codexRoots(selected) : asb::codex::rootsForDirectory(QDir::homePath(), m_codexDirOverride);
+    QStringList paths;
+    for (const asb::codex::Root &root : roots) paths.append(root.path);
+    paths.append(asb::codex::primaryCodexHome(QDir::homePath(), qEnvironmentVariable("CODEX_HOME"), selected)
+                 + "/archived_sessions");
+    paths.removeDuplicates();
+    return paths;
+}
+
+void AppController::refreshUsage() {
+    if (m_usage) m_usage->requestScan();
+}
+
+// AppLanguage.compactTokenCountText: 万/亿 in Chinese, K/M/B in English, two decimals.
+QString AppController::compactTokens(qint64 count) const {
+    const double value = double(std::max<qint64>(0, count));
+    const QLocale locale = language() == "zh" ? QLocale(QLocale::Chinese, QLocale::China) : QLocale(QLocale::English);
+    const auto scaled = [&](double divisor, const char *suffix) {
+        return locale.toString(value / divisor, 'f', 2) + QString::fromUtf8(suffix);
+    };
+    if (language() == "zh") {
+        if (value >= 1e8) return scaled(1e8, "亿");
+        if (value >= 1e4) return scaled(1e4, "万");
+    } else {
+        if (value >= 1e9) return scaled(1e9, "B");
+        if (value >= 1e6) return scaled(1e6, "M");
+        if (value >= 1e3) return scaled(1e3, "K");
+    }
+    return locale.toString(qint64(value));
+}
+
+// CostCurrencyStore.format with ISO code presentation; "≥ " marks a confirmed subtotal.
+QString AppController::costText(std::optional<double> usd, bool partial) const {
+    if (!usd || !std::isfinite(*usd)) return QStringLiteral("—");
+    const auto [rate, code] = m_usage ? m_usage->rate(m_prefs->value("currency").toString())
+                                      : std::pair<double, QString>{1.0, QStringLiteral("USD")};
+    const double value = std::max(0.0, *usd) * rate;
+    const int decimals = code == "JPY" || code == "KRW" ? 0 : 2;
+    const QLocale locale = language() == "zh" ? QLocale(QLocale::Chinese, QLocale::China) : QLocale(QLocale::English);
+    return (partial ? QStringLiteral("≥ ") : QString()) + code + ' ' + locale.toString(value, 'f', decimals);
+}
+
+QVariantMap AppController::usageSide(const asb::usage::Report &report, bool claude) const {
+    const bool zh = language() == "zh";
+    const bool ready = m_usage && m_usage->hasResult();
+    const bool scanning = m_usage && m_usage->scanning();
+    const QString tokenSuffix = zh ? QStringLiteral(" token") : QStringLiteral(" tokens");
+    const QDate today = QDate::currentDate();
+    QHash<QString, const asb::usage::Day *> byKey;
+    for (const asb::usage::Day &day : report.days) byKey.insert(day.key, &day);
+
+    struct Window {
+        qint64 tokens = 0;
+        std::optional<double> cost;
+        bool partial = false;
+    };
+    Window todayWindow, monthWindow;
+    QHash<QString, qint64> modelTotals;
+    QVariantList days;
+    for (int back = 29; back >= 0; --back) {
+        const QDate date = today.addDays(-back);
+        const asb::usage::Day *day = byKey.value(date.toString("yyyy-MM-dd"));
+        QVariantList models;
+        if (day) {
+            struct Item {
+                QString name;
+                asb::usage::ModelPresentation presentation;
+                asb::usage::ModelDay usage;
+            };
+            QList<Item> items;
+            for (auto it = day->models.cbegin(); it != day->models.cend(); ++it) {
+                if (it->totalTokens <= 0) continue;
+                items.append({it.key(), claude ? asb::usage::claudeModelPresentation(it.key())
+                                               : asb::usage::codexModelPresentation(it.key()), it.value()});
+            }
+            std::sort(items.begin(), items.end(), [](const Item &a, const Item &b) {
+                if (a.presentation.sortRank != b.presentation.sortRank) return a.presentation.sortRank < b.presentation.sortRank;
+                return a.usage.totalTokens > b.usage.totalTokens;
+            });
+            for (const Item &item : items) {
+                const bool partial = item.usage.unpricedTokens > 0 || !item.usage.cost;
+                models.append(QVariantMap{
+                    {"name", item.presentation.displayName},
+                    {"tokens", double(item.usage.totalTokens) / 1e6},
+                    {"tokensText", compactTokens(item.usage.totalTokens) + tokenSuffix},
+                    {"costText", costText(item.usage.cost, partial && item.usage.cost.has_value())},
+                    {"share", day->totalTokens > 0 ? qRound(100.0 * item.usage.totalTokens / day->totalTokens) : 0},
+                    {"color", item.presentation.color.isEmpty() ? QStringLiteral("#8E8E93") : item.presentation.color}});
+                modelTotals[item.presentation.displayName] += item.usage.totalTokens;
+            }
+            monthWindow.tokens += day->totalTokens;
+            if (day->cost) monthWindow.cost = monthWindow.cost.value_or(0) + *day->cost;
+            monthWindow.partial = monthWindow.partial || day->partial;
+            if (back == 0) todayWindow = {day->totalTokens, day->cost, day->partial};
+        }
+        const qint64 total = day ? day->totalTokens : 0;
+        const std::optional<double> cost = day ? day->cost : (ready ? std::optional<double>(0) : std::nullopt);
+        days.append(QVariantMap{
+            {"label", zh ? QStringLiteral("%1月%2日").arg(date.month()).arg(date.day())
+                         : QLocale(QLocale::English).toString(date, "MMM d")},
+            {"total", double(total) / 1e6},
+            {"tokensText", compactTokens(total) + tokenSuffix},
+            {"costText", costText(cost, day && day->partial && cost.has_value())},
+            {"models", models}});
+    }
+    if (ready && monthWindow.tokens == 0) monthWindow.cost = 0;
+    if (ready && todayWindow.tokens == 0 && !todayWindow.cost) todayWindow.cost = 0;
+
+    const auto windowMap = [&](const Window &w, const QString &title) {
+        const QString cost = costText(w.cost, w.partial && w.cost.has_value());
+        return QVariantMap{
+            {"tokens", ready ? QVariant(w.tokens) : QVariant()},
+            {"tokensText", ready ? compactTokens(w.tokens) + tokenSuffix : text("暂无数据", "Unavailable")},
+            {"costText", cost},
+            {"costLine", w.cost ? text("费用 ", "cost ") + cost
+                                : (scanning ? text("正在计算…", "calculating…") : text("费用未知", "cost unavailable"))},
+            {"titleLine", ready ? title + " · " + compactTokens(w.tokens) + tokenSuffix : title + " · — " + tokenSuffix.trimmed()}};
+    };
+
+    QString topModel = QStringLiteral("—");
+    qint64 topTokens = 0;
+    for (auto it = modelTotals.cbegin(); it != modelTotals.cend(); ++it) {
+        if (it.value() > topTokens || (it.value() == topTokens && it.key() < topModel)) {
+            topModel = it.key();
+            topTokens = it.value();
+        }
+    }
+
+    // Projects: sessions grouped by working folder (CodexUsageDetails.projects).
+    struct Project {
+        QString path;
+        int sessions = 0;
+        qint64 tokens = 0;
+        std::optional<double> cost;
+        bool partial = false;
+    };
+    QHash<QString, Project> grouped;
+    qint64 projectTokens = 0;
+    for (const asb::usage::Session &session : report.sessions) {
+        Project &p = grouped[session.projectPath];
+        p.path = session.projectPath;
+        ++p.sessions;
+        p.tokens += session.totalTokens;
+        if (session.cost) p.cost = p.cost.value_or(0) + *session.cost;
+        p.partial = p.partial || session.partial;
+        projectTokens += session.totalTokens;
+    }
+    QList<Project> projectList = grouped.values();
+    std::sort(projectList.begin(), projectList.end(), [](const Project &a, const Project &b) {
+        return a.tokens != b.tokens ? a.tokens > b.tokens : a.path < b.path;
+    });
+    QVariantList projects;
+    for (const Project &p : projectList.mid(0, 10)) {
+        const QString name = p.path.isEmpty() ? text("未知项目", "Unknown project")
+                                              : (QFileInfo(p.path).fileName().isEmpty() ? p.path : QFileInfo(p.path).fileName());
+        projects.append(QVariantMap{{"name", name}, {"path", p.path}, {"sessions", p.sessions},
+                                    {"tokens", compactTokens(p.tokens)},
+                                    {"cost", costText(p.cost, p.partial && p.cost.has_value())},
+                                    {"share", projectTokens > 0 ? double(p.tokens) / double(projectTokens) : 0.0}});
+    }
+
+    QString status;
+    if (m_paused) status = text("监控已暂停；这里保留上次已确认的用量。", "Monitoring is paused; showing the last confirmed usage.");
+    else if (scanning && ready) status = text("正在扫描本机会话；已确认的数据会保留。", "Scanning local sessions; confirmed usage is retained.");
+    else if (!ready) status = text("等待本机会话扫描；暂无结果不代表用量为零。", "Waiting for a local scan; unavailable usage does not mean zero.");
+    else if (report.excludedSessions > 0)
+        status = text(QString("%1 个会话存在记录冲突，暂未计入历史；其余可信用量已显示。").arg(report.excludedSessions),
+                      QString("%1 sessions have conflicting records and are excluded from history; trusted usage is shown.")
+                          .arg(report.excludedSessions));
+
+    const bool badgeToday = m_prefs->value("floatingSignalTokenBadgeWindow").toString() != "last-30-days";
+    const qint64 badgeTokens = badgeToday ? todayWindow.tokens : monthWindow.tokens;
+    QString badge = QStringLiteral("--");
+    if (ready) {
+        // AppLanguage.compactTokenBadgeText: one decimal below 10, a bigger unit from 999.5.
+        const double value = double(std::max<qint64>(0, badgeTokens));
+        if (value < 1000) {
+            badge = QString::number(qint64(value));
+        } else {
+            static const QList<QPair<double, QString>> units = {{1e3, "K"}, {1e6, "M"}, {1e9, "B"}};
+            int unit = 0;
+            while (unit + 1 < units.size() && value >= units[unit + 1].first) ++unit;
+            double s = value / units[unit].first;
+            if (s >= 999.5 && unit + 1 < units.size()) s = value / units[++unit].first;
+            badge = QLocale(QLocale::English).toString(s, 'f', s < 10 ? 1 : 0);
+            if (badge.endsWith(".0")) badge.chop(2);
+            badge += units[unit].second;
+        }
+    }
+
+    return QVariantMap{
+        {"ready", ready}, {"scanning", scanning}, {"status", status},
+        {"scan", ready ? text("扫描完成 · ", "Scan complete · ")
+                             + QLocale::system().toString(QDateTime::fromMSecsSinceEpoch(m_usage->completedAtMs()).time(),
+                                                          QLocale::ShortFormat)
+                       : text("正在扫描…", "Scanning…")},
+        {"today", windowMap(todayWindow, text("今日", "Today"))},
+        {"month", windowMap(monthWindow, text("近 30 天", "Last 30 days"))},
+        {"days", days}, {"topModel", topModel}, {"projects", projects},
+        {"empty", ready && monthWindow.tokens == 0
+             ? (claude ? text("近 30 天未发现本地 Claude Code 用量记录。", "No local Claude Code usage records in the last 30 days.")
+                       : text("近 30 天未发现本地 Codex 用量记录。", "No local Codex usage records in the last 30 days."))
+             : QString()},
+        {"badgeText", badge},
+        {"badgeToday", badgeToday}};
+}
+
+void AppController::rebuildUsage() {
+    QVariantMap map;
+    if (m_usage) {
+        map.insert("codex", usageSide(m_usage->codex(), false));
+        map.insert("claude", usageSide(m_usage->claude(), true));
+        // The floating token badge counts the agent the lamp shows (selectedSignalLightProvider):
+        // Claude when every displayed scope is a Claude one, else Codex.
+        const bool claudeLamp = !m_light.scopes.isEmpty()
+            && std::all_of(m_light.scopes.cbegin(), m_light.scopes.cend(),
+                           [](const QString &scope) { return scope.startsWith("claude-"); });
+        map.insert("floatingProvider", claudeLamp ? QStringLiteral("claude") : QStringLiteral("codex"));
+        const QString currency = m_prefs->value("currency").toString();
+        if (currency != "USD") {
+            const auto [rate, code] = m_usage->rate(currency);
+            Q_UNUSED(rate);
+            map.insert("rateNote", code == currency
+                ? text("按 ", "Converted at the ")
+                      + QLocale::system().toString(QDateTime::fromMSecsSinceEpoch(m_usage->ratesUpdatedAtMs()).date(),
+                                                   QLocale::ShortFormat)
+                      + text(" 的汇率折算", " rate")
+                : text("暂无 ", "No ") + currency + text(" 汇率，按美元显示", " rate yet; showing USD"));
+        }
+    }
+    if (map != m_usageMap) {
+        m_usageMap = map;
+        emit usageChanged();
+    }
+}
+
 void AppController::setDemoSignal(const QString &signal) {
     if (const auto normalized = asb::normalizedSignal(signal)) {
         m_demoSignal = *normalized;
@@ -917,8 +1182,15 @@ void AppController::onPrefChanged(const QString &key, const QVariant &value) {
         restartTimer();
         if (m_runtime) m_runtime->setLowPower(value.toBool());
         if (m_presenceTimer.isActive()) m_presenceTimer.start(value.toBool() ? 60000 : 20000);
+        if (m_usage) m_usage->setLowPower(value.toBool());
+    } else if (key == "currency") {
+        if (m_usage) m_usage->setCurrency(value.toString());
+        rebuildUsage();
+    } else if (key == "floatingSignalTokenBadgeWindow") {
+        rebuildUsage();
     } else if (key == "codexDataDir") {
         if (m_runtime && m_codexDirOverride.isEmpty()) m_runtime->setRoots(codexRoots(value.toString()), true);
+        if (m_usage && m_codexDirOverride.isEmpty()) m_usage->setCodexRoots(usageCodexRoots());
         rebuildActivity();
         if (m_captureDir.isEmpty() && m_codexDirOverride.isEmpty()) checkCodexHook(); // another hooks.json
     } else if (key == "fileLogging" || key == "logLevel") {

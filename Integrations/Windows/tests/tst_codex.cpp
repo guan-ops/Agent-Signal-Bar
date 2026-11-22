@@ -13,6 +13,8 @@
 #include "../src/PresenceMonitor.h"
 #include "../src/SignalModel.h"
 #include "../src/CliPath.h"
+#include "../src/UsagePricing.h"
+#include "../src/UsageScanner.h"
 
 #include <QLockFile>
 
@@ -101,6 +103,44 @@ int ownedCommands(const QJsonObject &settings) {
         }
     }
     return count;
+}
+
+// Local time on a November 2026 day, as a UTC ISO timestamp (the form agents log).
+QString isoAt(int day, int hour, int minute = 0) {
+    return QDateTime(QDate(2026, 11, day), QTime(hour, minute)).toUTC().toString(Qt::ISODateWithMs);
+}
+
+QByteArray jsonLine(const QJsonObject &object) { return QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n'; }
+
+QByteArray codexLine(const QString &type, const QString &timestamp, const QJsonObject &payload) {
+    return jsonLine({{"timestamp", timestamp}, {"type", type}, {"payload", payload}});
+}
+
+QJsonObject codexUsage(qint64 input, qint64 cached, qint64 output) {
+    return {{"input_tokens", input}, {"cached_input_tokens", cached}, {"output_tokens", output},
+            {"total_tokens", input + output}};
+}
+
+QByteArray tokenCount(const QString &timestamp, const QJsonObject &total, const QJsonObject &last) {
+    QJsonObject info;
+    if (!total.isEmpty()) info.insert("total_token_usage", total);
+    if (!last.isEmpty()) info.insert("last_token_usage", last);
+    return codexLine("event_msg", timestamp, {{"type", "token_count"}, {"info", info}});
+}
+
+void writeFile(const QString &path, const QByteArray &data) {
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    f.write(data);
+}
+
+const usage::Day *findDay(const usage::Report &report, int day) {
+    const QString key = QDate(2026, 11, day).toString("yyyy-MM-dd");
+    for (const usage::Day &d : report.days) {
+        if (d.key == key) return &d;
+    }
+    return nullptr;
 }
 
 } // namespace
@@ -764,6 +804,185 @@ private slots:
         QVERIFY(installer.uninstall().changed);
         QCOMPARE(ownedCommands(readJson(home + "/hooks.json")), 0);
         QCOMPARE(readJson(home + "/hooks.json").value("hooks").toObject().keys(), QStringList{"Stop"});
+    }
+
+    // CostUsagePricing / ModelsDevPricing: model names, long-context tiers, historical rates and
+    // the models.dev fallback.
+    void usagePricingMatchesMacOSRules() {
+        QCOMPARE(usage::normalizeCodexModel("openai/gpt-5.2-2025-12-11"), QString("gpt-5.2"));
+        QCOMPARE(usage::normalizeCodexModel(" gpt-9-experimental "), QString("gpt-9-experimental"));
+        QCOMPARE(usage::normalizeClaudeModel("anthropic.claude-sonnet-4-5-20250929-v1:0"), QString("claude-sonnet-4-5"));
+        QCOMPARE(usage::normalizeClaudeModel("us.anthropic.claude-opus-4-1"), QString("claude-opus-4-1"));
+
+        // gpt-5.5: 800 uncached x 5e-6 + 200 cached x 5e-7 + 100 out x 3e-5.
+        QVERIFY(qFuzzyCompare(*usage::codexCostUSD("gpt-5.5", 1000, 200, 100), 0.0071));
+        // gpt-6-astra above 272K input uses the long-context rates (2e-5 in, 7.5e-5 out).
+        QVERIFY(qFuzzyCompare(*usage::codexCostUSD("gpt-6-astra", 300'000, 0, 1000), 6.075));
+        QVERIFY(!usage::codexCostUSD("gpt-9", 1000, 0, 1000));
+
+        // claude-sonnet-4-5: 100 in, 5000 read, 800 5-minute + 200 1-hour writes (2x input), 50 out.
+        QVERIFY(qFuzzyCompare(*usage::claudeCostUSD("claude-sonnet-4-5", 100, 5000, 1000, 200, 50), 0.00675));
+        // opus-4-6 had long-context rates before 2026-03-13.
+        const qint64 before = QDateTime(QDate(2026, 3, 1), QTime(12, 0), QTimeZone::UTC).toMSecsSinceEpoch();
+        const qint64 after = QDateTime(QDate(2026, 4, 1), QTime(12, 0), QTimeZone::UTC).toMSecsSinceEpoch();
+        QVERIFY(qFuzzyCompare(*usage::claudeCostUSD("claude-opus-4-6", 250'000, 0, 0, 0, 0, before), 2.5));
+        QVERIFY(qFuzzyCompare(*usage::claudeCostUSD("claude-opus-4-6", 250'000, 0, 0, 0, 0, after), 1.25));
+        QVERIFY(!usage::claudeCostUSD("claude-opus-5-5", 1000, 0, 0, 0, 1000));
+
+        const QStringList candidates = usage::modelsDevCandidates("claude-opus-5-5@20261101");
+        QVERIFY(candidates.contains("claude-opus-5-5-20261101"));
+        QVERIFY(candidates.contains("claude-opus-5-5"));
+
+        const auto catalog = usage::ModelsDevCatalog::fromJson(R"({
+            "anthropic": {"id": "anthropic", "models": {"claude-opus-5-5": {"id": "claude-opus-5-5",
+                "cost": {"input": 5, "output": 25, "cache_read": 0.5, "cache_write": 6.25}}}},
+            "openai": {"id": "openai", "models": {"gpt-9": {"id": "gpt-9", "cost": {"input": 1, "output": 2}},
+                "gpt-5.5": {"id": "gpt-5.5", "cost": {"input": 6, "output": 30, "cache_read": 0.6}}}},
+            "other": {"id": "other", "models": {"x": {"id": "x"}}}})");
+        QVERIFY(catalog.has_value());
+        QVERIFY(catalog->isPlausible());
+        QVERIFY(qFuzzyCompare(*usage::claudeCostUSD("claude-opus-5-5-20261101", 1000, 0, 0, 0, 1000, {}, &*catalog), 0.03));
+        QVERIFY(qFuzzyCompare(*usage::codexCostUSD("gpt-9", 1000, 0, 1000, &*catalog), 0.003));
+        // Non-official models prefer the catalog; the bundled 272K tier still applies.
+        QVERIFY(qFuzzyCompare(*usage::codexCostUSD("gpt-5.5", 1000, 0, 0, &*catalog), 0.006));
+        QVERIFY(qFuzzyCompare(*usage::codexCostUSD("gpt-5.5", 300'000, 0, 0, &*catalog), 300'000 * 1e-5));
+        // Official rates win over the catalog for the newest models.
+        QVERIFY(qFuzzyCompare(*usage::codexCostUSD("gpt-6-astra", 1000, 0, 0, &*catalog), 0.01));
+        QVERIFY(!usage::ModelsDevCatalog::fromJson(R"({"openai": {"models": {}}})")->isPlausible());
+    }
+
+    // parseCodexFile + the daily report: growth of cumulative totals per event, per-event prices,
+    // copies of one session counted once, forks without their inherited history.
+    void codexUsageScanCountsEachTokenOnce() {
+        QTemporaryDir dir;
+        const QString sessions = dir.path() + "/codex/sessions";
+        const QString archived = dir.path() + "/codex/archived_sessions";
+        QByteArray a;
+        a += codexLine("session_meta", isoAt(19, 8), {{"id", "A"}, {"cwd", "C:\\work\\alpha"}, {"timestamp", isoAt(19, 8)}});
+        a += codexLine("turn_context", isoAt(19, 8), {{"model", "gpt-5.5"}});
+        a += codexLine("event_msg", isoAt(19, 8), {{"type", "task_started"}, {"turn_id", "t1"}});
+        a += tokenCount(isoAt(19, 9), codexUsage(1000, 200, 100), codexUsage(1000, 200, 100));
+        a += tokenCount(isoAt(20, 9), codexUsage(3000, 1200, 300), codexUsage(2000, 1000, 200));
+        a += tokenCount(isoAt(20, 9, 1), codexUsage(3000, 1200, 300), codexUsage(2000, 1000, 200)); // repeat, no growth
+        a += codexLine("turn_context", isoAt(20, 10), {{"model", "gpt-6-astra"}});
+        a += tokenCount(isoAt(20, 10), codexUsage(303'000, 1200, 1300), codexUsage(300'000, 0, 1000));
+        writeFile(sessions + "/2026/11/19/rollout-a.jsonl", a);
+        writeFile(archived + "/rollout-a.jsonl", a); // an archived copy counts once
+
+        // Two copies of B that disagree: left out, as on macOS.
+        QByteArray b = codexLine("session_meta", isoAt(20, 8), {{"id", "B"}})
+            + codexLine("turn_context", isoAt(20, 8), {{"model", "gpt-5.5"}});
+        writeFile(sessions + "/2026/11/20/rollout-b1.jsonl", b + tokenCount(isoAt(20, 9), codexUsage(10, 0, 1), {}));
+        writeFile(sessions + "/2026/11/20/rollout-b2.jsonl", b + tokenCount(isoAt(20, 9), codexUsage(20, 0, 2), {}));
+
+        // P is forked into C at 10:00 on the 18th: C's totals include P's 1100 tokens from 09:00.
+        QByteArray p = codexLine("session_meta", isoAt(18, 8), {{"id", "P"}})
+            + codexLine("turn_context", isoAt(18, 8), {{"model", "gpt-5.5"}})
+            + tokenCount(isoAt(18, 9), codexUsage(1000, 0, 100), codexUsage(1000, 0, 100))
+            + tokenCount(isoAt(18, 12), codexUsage(2000, 0, 200), codexUsage(1000, 0, 100));
+        writeFile(sessions + "/2026/11/18/rollout-p.jsonl", p);
+        QByteArray c = codexLine("session_meta", isoAt(18, 10), {{"id", "C"}, {"forked_from_id", "P"}, {"timestamp", isoAt(18, 10)}})
+            + codexLine("turn_context", isoAt(18, 10), {{"model", "gpt-5.5"}})
+            + tokenCount(isoAt(18, 11), codexUsage(1500, 0, 150), codexUsage(500, 0, 50));
+        writeFile(sessions + "/2026/11/18/rollout-c.jsonl", c);
+        // A fork whose parent is gone counts its own last_token_usage, capped by total growth.
+        QByteArray d = codexLine("session_meta", isoAt(17, 8), {{"id", "D"}, {"forked_from_id", "gone"}, {"timestamp", isoAt(17, 8)}})
+            + codexLine("turn_context", isoAt(17, 8), {{"model", "gpt-5.5"}})
+            + tokenCount(isoAt(17, 9), codexUsage(5000, 0, 500), codexUsage(400, 0, 40))
+            + tokenCount(isoAt(17, 10), codexUsage(5600, 0, 560), codexUsage(600, 0, 60));
+        writeFile(sessions + "/2026/11/17/rollout-d.jsonl", d);
+
+        usage::CodexScanner scanner({sessions, archived});
+        const qint64 now = QDateTime(QDate(2026, 11, 20), QTime(23, 0)).toMSecsSinceEpoch();
+        const usage::Report report = scanner.scan(now, 30, nullptr);
+        QCOMPARE(report.excludedSessions, 1);
+
+        const usage::Day *d19 = findDay(report, 19);
+        QVERIFY(d19);
+        QCOMPARE(d19->totalTokens, 1100);
+        QVERIFY(qFuzzyCompare(*d19->cost, 0.0071));
+        const usage::Day *d20 = findDay(report, 20);
+        QVERIFY(d20);
+        QCOMPARE(d20->models.value("gpt-5.5").totalTokens, 2200);
+        QCOMPARE(d20->models.value("gpt-5.5").cached, 1000);
+        QCOMPARE(d20->models.value("gpt-6-astra").totalTokens, 301'000);
+        QCOMPARE(d20->totalTokens, 303'200);
+        QVERIFY(qFuzzyCompare(*d20->cost, 0.0115 + 6.075));
+        QVERIFY(!d20->partial);
+
+        const usage::Day *d18 = findDay(report, 18);
+        QVERIFY(d18);
+        QCOMPARE(d18->totalTokens, 2200 + 550); // P's own 2200 + C's 550 after the fork
+        const usage::Day *d17 = findDay(report, 17);
+        QVERIFY(d17);
+        QCOMPARE(d17->totalTokens, 440 + 660);
+
+        QCOMPARE(report.sessions.size(), 4); // A, C, P, D (B is excluded)
+        const auto sessionA = std::find_if(report.sessions.cbegin(), report.sessions.cend(),
+                                           [](const usage::Session &s) { return s.id == "A"; });
+        QVERIFY(sessionA != report.sessions.cend());
+        QCOMPARE(sessionA->totalTokens, 304'300);
+        QCOMPARE(sessionA->projectPath, QString("C:\\work\\alpha"));
+        QCOMPARE(sessionA->models, (QStringList{"gpt-5.5", "gpt-6-astra"}));
+        QCOMPARE(report.sessions.first().id, QString("A")); // newest activity first
+
+        // An unpriced model makes the day partial, never zero-cost.
+        writeFile(sessions + "/2026/11/20/rollout-e.jsonl",
+                  codexLine("session_meta", isoAt(20, 8), {{"id", "E"}})
+                      + codexLine("turn_context", isoAt(20, 8), {{"model", "gpt-9"}})
+                      + tokenCount(isoAt(20, 9), codexUsage(100, 0, 10), {}));
+        const usage::Report again = scanner.scan(now, 30, nullptr);
+        QVERIFY(findDay(again, 20)->partial);
+        QCOMPARE(findDay(again, 20)->models.value("gpt-9").unpricedTokens, 110);
+        QVERIFY(qFuzzyCompare(*findDay(again, 20)->cost, 0.0115 + 6.075));
+    }
+
+    // parseClaudeFile + reconciledClaudeRows: the final streaming chunk wins, a message logged by a
+    // parent and a subagent counts once, incomplete and unpriced requests mark the day partial.
+    void claudeUsageScanReconcilesMessages() {
+        QTemporaryDir dir;
+        const QString projects = dir.path() + "/claude/projects";
+        const auto assistant = [](const QString &ts, const QString &id, const QString &request, const QString &model,
+                                  const QJsonObject &usageObject, bool stopNull = false) {
+            QJsonObject message{{"id", id}, {"model", model}, {"usage", usageObject}};
+            if (stopNull) message.insert("stop_reason", QJsonValue::Null);
+            return jsonLine({{"type", "assistant"}, {"timestamp", ts}, {"sessionId", "S1"}, {"requestId", request},
+                             {"message", message}});
+        };
+        const QJsonObject m1Partial{{"input_tokens", 100}, {"cache_creation_input_tokens", 1000},
+                                    {"cache_creation", QJsonObject{{"ephemeral_1h_input_tokens", 200}}},
+                                    {"cache_read_input_tokens", 5000}, {"output_tokens", 10}};
+        QJsonObject m1Final = m1Partial;
+        m1Final.insert("output_tokens", 50);
+        QByteArray main = jsonLine({{"type", "user"}, {"sessionId", "S1"}, {"cwd", "C:\\work\\beta"}, {"timestamp", isoAt(20, 9)}});
+        main += assistant(isoAt(20, 9, 1), "m1", "r1", "claude-sonnet-4-5", m1Partial);
+        main += assistant(isoAt(20, 9, 2), "m1", "r1", "claude-sonnet-4-5", m1Final);
+        main += assistant(isoAt(20, 9, 3), "m2", "r2", "claude-opus-4-1", {{"input_tokens", 10}, {"output_tokens", 5}});
+        main += assistant(isoAt(20, 9, 4), "m3", "r3", "claude-opus-4-1", {{"input_tokens", 7}}, true);
+        main += assistant(isoAt(20, 9, 5), "m4", "r4", "claude-unknown-9", {{"input_tokens", 100}, {"output_tokens", 100}});
+        writeFile(projects + "/proj/s1.jsonl", main);
+        writeFile(projects + "/proj/s1/subagents/agent-x.jsonl",
+                  assistant(isoAt(20, 9, 2), "m1", "r1", "claude-sonnet-4-5", m1Final));
+
+        usage::ClaudeScanner scanner({projects});
+        const qint64 now = QDateTime(QDate(2026, 11, 20), QTime(23, 0)).toMSecsSinceEpoch();
+        const usage::Report report = scanner.scan(now, 30, nullptr);
+        const usage::Day *day = findDay(report, 20);
+        QVERIFY(day);
+        QCOMPARE(day->models.value("claude-sonnet-4-5").totalTokens, 6150); // counted once, final chunk
+        QCOMPARE(day->models.value("claude-opus-4-1").totalTokens, 15);
+        QCOMPARE(day->models.value("claude-opus-4-1").incomplete, 1);
+        QCOMPARE(day->totalTokens, 6150 + 15 + 200);
+        QVERIFY(qFuzzyCompare(*day->cost, 0.00675 + 0.000525));
+        QVERIFY(!day->models.value("claude-unknown-9").cost);
+        QVERIFY(day->partial);
+        QCOMPARE(report.sessions.size(), 1);
+        QCOMPARE(report.sessions.first().projectPath, QString("C:\\work\\beta"));
+        QCOMPARE(report.sessions.first().totalTokens, 6365);
+
+        const QStringList roots = usage::ClaudeScanner::defaultRoots("C:/Users/me", "", "");
+        QCOMPARE(roots, (QStringList{"C:/Users/me/.config/claude/projects", "C:/Users/me/.claude/projects"}));
+        QCOMPARE(usage::ClaudeScanner::defaultRoots("C:/Users/me", "D:/profile", ""), QStringList{"D:/profile/projects"});
     }
 
     // Install CLI edits the user PATH as a string; the registry calls are not exercised here.

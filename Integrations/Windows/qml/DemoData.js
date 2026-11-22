@@ -14,19 +14,42 @@ const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 function days(t) {
     const out = []
     const start = new Date(2026, 7, 10) // 10 Aug
+    const tokens = millions => t((millions * 100).toFixed(2) + "万 token", millions.toFixed(2) + "M tokens")
+    const cost = usd => "USD " + usd.toFixed(2)
     for (let i = 0; i < astra.length; ++i) {
         const d = new Date(start.getTime() + i * 86400000)
         const total = astra[i] + gpt56[i]
+        const model = (name, millions, color) => ({
+            name: name, tokens: millions, tokensText: tokens(millions), costText: cost(millions * 5.559),
+            share: Math.round(100 * millions / total), color: color
+        })
         out.push({
             label: t((d.getMonth() + 1) + "月" + d.getDate() + "日", months[d.getMonth()] + " " + d.getDate()),
             total: total,
-            models: [
-                { name: "GPT-6 Astra", tokens: astra[i], cost: astra[i] * 5.559, color: "#6F52F0" },
-                { name: "gpt-5.6", tokens: gpt56[i], cost: gpt56[i] * 5.559, color: "#D56F9B" }
-            ]
+            tokensText: tokens(total),
+            costText: cost(total * 5.559),
+            models: [model("GPT-6 Astra", astra[i], "#6F52F0"), model("GPT-5.6 Sol", gpt56[i], "#D56F9B")]
         })
     }
     return out
+}
+
+// Same shape as App.usage.codex (AppController::usageSide).
+function usage(t) {
+    return {
+        ready: true, scanning: false, status: "", empty: "",
+        scan: t("扫描完成 · 16:25", "Scan complete · 16:25"),
+        today: { tokensText: t("131.68万 token", "1.32M tokens"), costText: "USD 7.32",
+                 costLine: t("费用 USD 7.32", "cost USD 7.32"), titleLine: t("今日 · 131.68万 token", "Today · 1.32M tokens") },
+        month: { tokensText: t("3,437.79万 token", "34.38M tokens"), costText: "USD 190.99",
+                 costLine: t("费用 USD 190.99", "cost USD 190.99"),
+                 titleLine: t("近 30 天 · 3,437.79万 token", "Last 30 days · 34.38M tokens") },
+        days: days(t),
+        topModel: "GPT-6 Astra",
+        projects: projects(t),
+        badgeText: "1.3M",
+        badgeToday: true
+    }
 }
 
 function tokensText(t, millions) {
@@ -71,8 +94,8 @@ function events(t) {
 
 function projects(t) {
     return [
-        { name: "agent-signal-bar", sessions: 14, tokens: t("1,821.40万", "18.21M"), cost: "$102.40", share: 0.53 },
-        { name: "agentsignalbar.app", sessions: 6, tokens: t("912.06万", "9.12M"), cost: "$51.30", share: 0.27 },
-        { name: "scratch", sessions: 9, tokens: t("704.33万", "7.04M"), cost: "$37.29", share: 0.20 }
+        { name: "agent-signal-bar", sessions: 14, tokens: t("1,821.40万", "18.21M"), cost: "USD 102.40", share: 0.53 },
+        { name: "agentsignalbar.app", sessions: 6, tokens: t("912.06万", "9.12M"), cost: "USD 51.30", share: 0.27 },
+        { name: "scratch", sessions: 9, tokens: t("704.33万", "7.04M"), cost: "USD 37.29", share: 0.20 }
     ]
 }

@@ -18,6 +18,8 @@
 class QScreen;
 class QWindow;
 class SignalRuntime;
+class UsageService;
+namespace asb::usage { struct Report; }
 
 // The bridge between QML and the platform: preferences, the shared animation tick,
 // the displayed signal, localisation and Windows integration (tray placement,
@@ -56,6 +58,10 @@ class AppController : public QObject {
     // Install CLI: installed (the install folder is on PATH), directory, canModify, message, tone.
     Q_PROPERTY(QVariantMap cli READ cli NOTIFY cliChanged)
     Q_PROPERTY(QString debugLogPath READ debugLogPath CONSTANT)
+    // Local token usage (Usage page, tray card, floating token badge): {codex, claude}, each with
+    // ready, scanning, status, scan, today/month {tokens, tokensText, costText, costLine},
+    // days (30, for TokenChart), topModel, projects, badgeText, empty; plus rateNote.
+    Q_PROPERTY(QVariantMap usage READ usage NOTIFY usageChanged)
     // Which agent the lamp shows (signalLightFollowingText): "自动跟随 · Codex 终端", "暂时显示
     // Claude 桌面版", or the manual selection; empty without live data.
     Q_PROPERTY(QString lightFollowingText READ lightFollowingText NOTIFY activityChanged)
@@ -102,6 +108,7 @@ public:
     QVariantMap diagnostics() const { return m_diagnostics; }
     QVariantMap cli() const { return m_cli; }
     QString debugLogPath() const;
+    QVariantMap usage() const { return m_usageMap; }
 
     asb::EffectCustomization effectCustomization() const;
     void setTrayGeometry(const QRect &rect) { m_trayGeometry = rect; }
@@ -152,6 +159,7 @@ public:
     Q_INVOKABLE void copyDebugLog() const;
     Q_INVOKABLE void installCli();
     Q_INVOKABLE void uninstallCli();
+    Q_INVOKABLE void refreshUsage();
     // Local path from a FolderDialog URL, so QML can store it in prefs.codexDataDir.
     Q_INVOKABLE QString localPath(const QUrl &url) const;
     Q_INVOKABLE void quit();
@@ -164,6 +172,7 @@ signals:
     void codexHookChanged();
     void diagnosticsChanged();
     void cliChanged();
+    void usageChanged();
     void languageChanged();
     void themeChanged();
     void settingsRequested(const QString &page);
@@ -201,6 +210,11 @@ private:
     // Re-reads whether the install folder is on PATH; `message`/`tone` report the last action.
     void refreshCli(const QString &message = QString(), const QString &tone = QStringLiteral("neutral"));
     void setDiagnostics(const QVariantMap &state);
+    void rebuildUsage();
+    QVariantMap usageSide(const asb::usage::Report &report, bool claude) const;
+    QString costText(std::optional<double> usd, bool partial) const;
+    QString compactTokens(qint64 count) const;
+    QStringList usageCodexRoots() const;
 
     QQmlPropertyMap *m_prefs;
     SignalRuntime *m_runtime = nullptr;
@@ -221,6 +235,8 @@ private:
     HookUi m_codexHook{true};
     QVariantMap m_diagnostics;
     QVariantMap m_cli;
+    UsageService *m_usage = nullptr;
+    QVariantMap m_usageMap;
     std::unique_ptr<QSettings> m_settings;
     QString m_captureDir;
     QTimer m_timer;

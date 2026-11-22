@@ -50,7 +50,10 @@ Window {
     readonly property var corners: ["top-left", "top-right", "bottom-left"]
     readonly property bool infoVisible: App.prefs.badgeRunning && infoSessions.length > 0
     readonly property bool quotaVisible: App.prefs.badgeQuota && !App.liveData
-    readonly property bool tokenVisible: App.prefs.badgeToken && !App.liveData && !App.paused
+    readonly property bool tokenVisible: App.prefs.badgeToken && !App.paused && win.tokenUsage !== null
+    // The token badge counts the lamp's agent (isClaudeFloatingUsage): the local scan when live.
+    readonly property string tokenProvider: App.liveData ? (App.usage.floatingProvider || "codex") : "codex"
+    readonly property var tokenUsage: App.liveData ? (App.usage[tokenProvider] || null) : Demo.usage(Theme.t)
     function firstFreeCorner(preferred, occupied) {
         if (occupied.indexOf(preferred) < 0) return preferred
         for (const c of corners) if (occupied.indexOf(c) < 0) return c
@@ -266,13 +269,9 @@ Window {
     Badge {
         visible: win.tokenVisible
         kind: "token"
-        text: "1.3M"
+        text: win.tokenUsage ? win.tokenUsage.badgeText : "--"
         textColor: Theme.accent
-        // No token panel on Windows yet; the Usage page has the token chart.
-        onClicked: {
-            panel.hide()
-            App.openSettings("usage")
-        }
+        onClicked: win.togglePanel("token", corner)
     }
 
     // resizeHandleTarget: a hotspot over the lamp's bottom-right corner; the handle itself sits
@@ -405,7 +404,7 @@ Window {
     // the badge that opened them.
     Window {
         id: panel
-        property string mode: "info"   // info | quota
+        property string mode: "info"   // info | quota | token
         property string corner: "top-right"
         flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
         color: "transparent"
@@ -483,7 +482,103 @@ Window {
                         detail: modelData.reset
                     }
                 }
+
+                // Device tokens (FloatingSignalTokenPopoverView): today and the last 30 days; the
+                // chosen row is what the badge counts.
+                RowLayout {
+                    visible: panel.mode === "token"
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 9
+                    Layout.rightMargin: 9
+                    Layout.topMargin: 3
+                    AsbText {
+                        text: (win.tokenProvider === "claude" ? "Claude" : "Codex") + Theme.t(" · 本机", " · Device")
+                        strong: true
+                        Layout.fillWidth: true
+                    }
+                    AsbText {
+                        visible: win.tokenUsage !== null && win.tokenUsage.scanning === true
+                        text: Theme.t("扫描中…", "Scanning…")
+                        caption: true
+                        secondary: true
+                    }
+                }
+                TokenChoiceRow {
+                    visible: panel.mode === "token"
+                    windowKey: "today"
+                    usage: win.tokenUsage ? win.tokenUsage.today : null
+                }
+                Rectangle {
+                    visible: panel.mode === "token"
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 9
+                    Layout.rightMargin: 9
+                    height: 1
+                    color: Theme.separator
+                }
+                TokenChoiceRow {
+                    visible: panel.mode === "token"
+                    windowKey: "last-30-days"
+                    usage: win.tokenUsage ? win.tokenUsage.month : null
+                }
+                AsbText {
+                    visible: panel.mode === "token" && text.length > 0
+                    text: App.liveData ? (App.usage.rateNote || "") : ""
+                    caption: true
+                    color: Theme.tertiary
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 9
+                    Layout.rightMargin: 9
+                }
             }
+        }
+    }
+
+    // FloatingUsageChoiceRow: title, cost line and a check on the window the badge shows.
+    component TokenChoiceRow: Rectangle {
+        id: choice
+        property string windowKey
+        property var usage
+        readonly property bool selected: (App.prefs.floatingSignalTokenBadgeWindow || "today") === windowKey
+        Layout.fillWidth: true
+        implicitHeight: choiceColumn.implicitHeight + 12
+        radius: Theme.radiusControl
+        color: choiceArea.containsMouse ? Theme.hoverFill : "transparent"
+        ColumnLayout {
+            id: choiceColumn
+            x: 9
+            y: 6
+            width: parent.width - 18 - 18
+            spacing: 2
+            AsbText {
+                text: choice.usage ? choice.usage.titleLine : ""
+                strong: true
+                elide: Text.ElideRight
+                Layout.fillWidth: true
+            }
+            AsbText {
+                text: choice.usage ? choice.usage.costLine : ""
+                caption: true
+                secondary: true
+                Layout.fillWidth: true
+            }
+        }
+        Icon {
+            visible: choice.selected
+            anchors.right: parent.right
+            anchors.rightMargin: 9
+            anchors.verticalCenter: parent.verticalCenter
+            name: "check"
+            size: 13
+            color: Theme.accent
+        }
+        MouseArea {
+            id: choiceArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: App.prefs.floatingSignalTokenBadgeWindow = choice.windowKey
         }
     }
 }

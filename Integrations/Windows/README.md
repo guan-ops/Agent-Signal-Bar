@@ -19,6 +19,7 @@ Windows 版沿用 CodexBar `Integrations/Linux` 的分层方式：C++ 控制器 
 | `cli/` | `agent-signal.exe`：Hook 调用的命令和 `agent-signal` 命令行工具（只依赖 QtCore；Hook 命令始终返回 0、不输出内容） |
 | `src/LightScope.*`、`src/PresenceMonitor.*`、`src/SoundFile.*` | 灯效 Agent 的跟随与借用、桌面应用在线检测、提示音音量 |
 | `src/DebugLog.*`、`src/Diagnostics.*`、`src/CliPath.*` | 文件日志、导出诊断、把 CLI 加入 PATH |
+| `src/UsageScanner.*`、`src/UsagePricing.*`、`src/UsageService.*` | `AgentSignalCostUsage` 的移植：本机 Codex/Claude 日志的 Token 与费用统计、价格表与 models.dev、后台扫描与汇率 |
 | `src/ActivityDisplay.*`、`src/ActivityText.*` | `ActivityPresentation.swift` 与 `MenuBarStatusModel` 显示规则的移植：哪些会话显示、按来源去重、灯显示什么，以及会话和事件的中英文文案 |
 | `src/SignalRuntime.*` | 后台线程每 2 秒（低功耗 6 秒）轮询一次，每 5 秒（15 秒）刷新显示，让完成和中断的会话按时消失 |
 | `qml/Theme.qml` | `DesignSystem.swift`（ASB）的移植，包括字号、间距、圆角、色调和灯色 |
@@ -52,7 +53,7 @@ powershell -ExecutionPolicy Bypass -File Integrations\Windows\build.ps1 -QtDir C
 start /wait %LOCALAPPDATA%\Programs\AgentSignalBar\AgentSignalBar.exe --probe 10
 ```
 
-`AgentSignalBar.exe` 是窗口程序，不加 `start /wait` 时命令提示符会立刻返回，输出会和提示符混在一起。`--probe` 不打开任何窗口，只在终端里打印 10 秒内看到的内容：Codex 数据目录、找到的 rollout 文件，以及信号灯和各会话的状态（会回放最近 30 分钟的活动）。每个文件一行，包括大小、已读取的字节数和“几秒前修改”；Codex 正在写入时，这几个数字应该在增长。数据目录的顺序是：设置里选择的目录 → `CODEX_HOME` → `%USERPROFILE%\.codex`，日志在其中的 `sessions` 文件夹。可以用 `--codex-dir <目录>` 临时指定别的目录，例如 WSL 里的 `\\wsl.localhost\Ubuntu\home\<用户>\.codex`。
+`AgentSignalBar.exe` 是窗口程序，不加 `start /wait` 时命令提示符会立刻返回，输出会和提示符混在一起。`--probe` 不打开任何窗口，只在终端里打印 10 秒内看到的内容：Codex 数据目录、找到的 rollout 文件，以及信号灯和各会话的状态（会回放最近 30 分钟的活动）。开头还会打印近 30 天的本机 Token 统计（`Usage Codex/Claude: … 文件、会话、今日/30 天 Token、费用`，以及每个模型的 Token 数，没有价格的模型标“no price”）。输出也可以重定向到文件：`AgentSignalBar.exe --probe 10 > probe.txt`。每个文件一行，包括大小、已读取的字节数和“几秒前修改”；Codex 正在写入时，这几个数字应该在增长。数据目录的顺序是：设置里选择的目录 → `CODEX_HOME` → `%USERPROFILE%\.codex`，日志在其中的 `sessions` 文件夹。可以用 `--codex-dir <目录>` 临时指定别的目录，例如 WSL 里的 `\\wsl.localhost\Ubuntu\home\<用户>\.codex`。
 
 运行时加上 `--signal working` 会进入演示模式，不读取 Codex，也不读写状态文件。
 
@@ -98,7 +99,7 @@ Integrations/Windows/dev-macos.sh capture
 | 灯效 Agent（按 Agent 跟随、空闲时显示其他 Agent） | `LightScope`（`MenuBarStatusModel` 的灯效范围规则） | ✅ 自动跟随最近活跃的 Agent 并保持粘性；手动选择某个 Agent 时，它空闲且打开了“空闲时显示其他 Agent”就临时借用其他 Agent 的状态。“运行”页和托盘面板显示“自动跟随 · …”/“暂时显示 …”，有单元测试 |
 | 桌面应用在线检测（Codex/Claude 桌面版已打开） | `PresenceMonitor`（按可执行文件路径识别，每 20 秒、低功耗 60 秒） | ✅ 识别 Codex 桌面版、Codex CLI、VS Code/JetBrains 里的 Codex 和 Claude 桌面版；桌面版要求有可见、未最小化的窗口（与 macOS 一致）。没有正在运行的会话时，“运行”页和托盘面板列出已打开的应用。已在实机上识别出 Claude 桌面版 |
 | Xcode、JetBrains 的 Codex 会话目录 | — | ⚠️ macOS 开发版会读取；Windows 上的 JetBrains 目录未知，暂不读取 |
-| Token/费用扫描 | — | ❌ 未移植；用量页、卡片面板的用量与悬浮灯的额度、Token 角标仍是演示数据（实时模式下角标隐藏，用量标注“演示数据”） |
+| Token/费用扫描（`CostUsageScanner`、`CodexUsageDetails`） | `UsageScanner` + `UsagePricing` + `UsageService` | ✅ 近 30 天本机 Codex（sessions、archived_sessions 等活动目录）和 Claude Code（`~/.claude/projects`、`%APPDATA%\Claude` 下的桌面会话）日志：Codex 按累计用量的增长逐事件计入当前模型，分叉会话扣除继承的父会话用量，同一会话的副本只算一次、内容冲突的副本排除并提示；Claude 按消息 id + 请求 id 去重（流式取最后一块，父/子 Agent 重复只算一次），不完整请求单独标注。逐请求计价（长上下文阶梯价），内置价格表与 macOS 相同，缺的模型用 models.dev 价格（每天最多取一次，缓存到 `%LOCALAPPDATA%\AgentSignalBar\Cache`）；选择非美元货币时按 open.er-api.com 汇率折算。用量页（Codex/Claude）、托盘卡片、悬浮灯 Token 角标与浮层（今日/近 30 天）都显示真实数据；工作时每 60 秒、空闲时每 5 分钟重扫。单元测试覆盖计价规则、Codex 增长/分叉/副本、Claude 去重。⚠️ 未移植：Codex 优先级（fast）计价（要读 Codex 的 `logs_2.sqlite`）、增量追加解析与磁盘缓存（未变文件在内存中复用）、分页历史恢复、Pi 会话。账号和额度部分仍是演示数据（页面标注“账号与额度为演示数据”） |
 | Codex 多账号、额度、限额重置 | — | ❌ 未移植；Keychain 改用 Windows 凭据管理器或 DPAPI |
 | Claude 额度 | — | ❌ 未移植 |
 | 浏览器 Cookie 导入（SweetCookieKit） | — | ❌ 不打算直接移植；Windows 上的 Chrome Cookie 使用 App-Bound Encryption，要另行评估 |

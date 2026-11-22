@@ -6,10 +6,11 @@ TARGET = tst_codex
 SOURCES += tst_codex.cpp ../src/SignalModel.cpp ../src/CodexSessionParser.cpp ../src/CodexActivityMonitor.cpp \
     ../src/SignalStore.cpp ../src/ActivityDisplay.cpp ../src/SignalStateFile.cpp ../src/HookAdapters.cpp \
     ../src/ClaudeHookInstaller.cpp ../src/SoundFile.cpp ../src/LightScope.cpp ../src/PresenceMonitor.cpp \
-    ../src/CliPath.cpp
+    ../src/CliPath.cpp ../src/UsagePricing.cpp ../src/UsageScanner.cpp
 HEADERS += ../src/SignalModel.h ../src/CodexSessionParser.h ../src/CodexActivityMonitor.h ../src/SignalStore.h \
     ../src/ActivityDisplay.h ../src/SignalStateFile.h ../src/HookAdapters.h ../src/ClaudeHookInstaller.h \
-    ../src/SoundFile.h ../src/LightScope.h ../src/PresenceMonitor.h ../src/CliPath.h
+    ../src/SoundFile.h ../src/LightScope.h ../src/PresenceMonitor.h ../src/CliPath.h \
+    ../src/UsagePricing.h ../src/UsageScanner.h
 win32: DEFINES += NOMINMAX WIN32_LEAN_AND_MEAN
 win32: LIBS += -ldwmapi -luser32 -ladvapi32
 DEFINES += CODEX_GOLDEN_PATH=\\\"$$PWD/golden/codex_golden.jsonl\\\" CODEX_LINES_PATH=\\\"$$PWD/golden/codex/lines.jsonl\\\" \

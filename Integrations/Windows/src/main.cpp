@@ -22,6 +22,7 @@
 #include "SignalRuntime.h"
 #include "SignalStateFile.h"
 #include "TrayIconRenderer.h"
+#include "UsageScanner.h"
 
 #include <QApplication>
 #include <QCommandLineParser>
@@ -33,6 +34,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QLockFile>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QThread>
@@ -99,8 +101,11 @@ void writeTraySheet(const QString &dir) {
 // attaches to the calling console).
 int runProbe(QApplication &app, int seconds, const QString &dataDir) {
 #ifdef Q_OS_WIN
-    // A GUI-subsystem exe has no console of its own; borrow the caller's (use `start /wait`).
-    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+    // A GUI-subsystem exe has no console of its own; borrow the caller's (use `start /wait`),
+    // unless stdout is already redirected to a file or pipe.
+    const HANDLE redirected = GetStdHandle(STD_OUTPUT_HANDLE);
+    const bool hasStdout = redirected && redirected != INVALID_HANDLE_VALUE && GetFileType(redirected) != FILE_TYPE_UNKNOWN;
+    if (!hasStdout && AttachConsole(ATTACH_PARENT_PROCESS)) {
         std::freopen("CONOUT$", "w", stdout);
         SetConsoleOutputCP(CP_UTF8);
     }
@@ -122,6 +127,50 @@ int runProbe(QApplication &app, int seconds, const QString &dataDir) {
     for (const asb::SessionStatus &s : asb::presence::detect(asb::presence::runningProcesses(), 0)) apps.append(s.agent);
     out << "Apps running: " << (apps.isEmpty() ? QStringLiteral("none detected") : apps.join(", ")) << "\n";
     out.flush();
+    // Local token usage over 30 days, priced from the bundled tables and the cached models.dev copy.
+    {
+        QStringList codexRoots;
+        for (const auto &root : roots) codexRoots.append(root.path);
+        codexRoots.append(asb::codex::primaryCodexHome(QDir::homePath(), qEnvironmentVariable("CODEX_HOME"), dataDir)
+                          + "/archived_sessions");
+        QFile cached(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/AgentSignalBar/Cache/models-dev.json");
+        std::optional<asb::usage::ModelsDevCatalog> catalog;
+        if (cached.open(QIODevice::ReadOnly)) catalog = asb::usage::ModelsDevCatalog::fromJson(cached.readAll());
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const auto summarize = [&](const char *name, const asb::usage::Report &report) {
+            qint64 month = 0, today = 0;
+            double cost = 0;
+            bool partial = false;
+            const QString todayKey = QDate::currentDate().toString("yyyy-MM-dd");
+            for (const asb::usage::Day &day : report.days) {
+                month += day.totalTokens;
+                if (day.key == todayKey) today = day.totalTokens;
+                cost += day.cost.value_or(0);
+                partial = partial || day.partial;
+            }
+            out << "Usage " << name << ": " << report.files << " files, " << report.sessions.size() << " sessions, today "
+                << today << " tokens, 30 days " << month << " tokens, " << (partial ? ">= " : "") << "USD "
+                << QString::number(cost, 'f', 2);
+            if (report.excludedSessions > 0) out << ", " << report.excludedSessions << " conflicting sessions left out";
+            out << "\n";
+            QMap<QString, QPair<qint64, bool>> models; // tokens, priced
+            for (const asb::usage::Day &day : report.days) {
+                for (auto it = day.models.cbegin(); it != day.models.cend(); ++it) {
+                    auto &entry = models[it.key()];
+                    entry.first += it->totalTokens;
+                    entry.second = entry.second || it->cost.has_value();
+                }
+            }
+            for (auto it = models.cbegin(); it != models.cend(); ++it)
+                out << "  model " << it.key() << ": " << it->first << " tokens" << (it->second ? "" : " (no price)") << "\n";
+            out.flush();
+        };
+        summarize("Codex", asb::usage::CodexScanner(codexRoots).scan(now, 30, catalog ? &*catalog : nullptr));
+        summarize("Claude", asb::usage::ClaudeScanner(asb::usage::ClaudeScanner::defaultRoots(
+                                QDir::homePath(), qEnvironmentVariable("CLAUDE_CONFIG_DIR"), qEnvironmentVariable("APPDATA")))
+                                .scan(now, 30, catalog ? &*catalog : nullptr));
+        out << "Prices: bundled tables" << (catalog ? " + cached models.dev" : " only (models.dev not cached yet)") << "\n";
+    }
     QTemporaryDir scratch;
     const QString probeState = scratch.path() + "/status.json";
     QFile::copy(realState, probeState);
