@@ -100,8 +100,8 @@ public:
     Q_INVOKABLE QPoint popupPosition(int width, int height, const QString &placement = QStringLiteral("panel")) const;
     // Tallest a tray popup may be on the clicked screen; taller content scrolls.
     Q_INVOKABLE int popupMaxHeight() const;
-    // A popover next to the window at (x, y, anchorWidth, anchorHeight), on that window's screen.
-    Q_INVOKABLE QPoint besidePosition(int x, int y, int anchorWidth, int anchorHeight, int width, int height) const;
+    // A floating-lamp badge's panel, placed as on macOS: above the badge, right-aligned to it.
+    Q_INVOKABLE QPoint badgePanelPosition(int badgeX, int badgeY, int badgeSize, int width, int height) const;
     // Bottom-right of the primary screen's work area; also used to rescue a saved
     // position that is no longer on any screen (monitor unplugged).
     Q_INVOKABLE QPoint floatingPosition(int x, int y, int width, int height) const;

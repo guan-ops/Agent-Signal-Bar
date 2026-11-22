@@ -5,8 +5,8 @@ import QtQuick.Window
 import AgentSignal
 import "DemoData.js" as Demo
 
-// FloatingSignalWindowController: an always-on-top, draggable, resizable desktop lamp
-// with corner badges (quota, running agents, tokens) and a click popover.
+// FloatingSignalWindowController: an always-on-top, draggable, resizable desktop lamp with
+// corner badges (running agents, quota, tokens), each opening its panel, as on macOS.
 Window {
     id: win
     readonly property bool vertical: App.prefs.floatingLayout !== "horizontal"
@@ -14,19 +14,58 @@ Window {
         switch (App.prefs.floatingSize) {
         case "compact": return 1.15
         case "large": return 1.95
-        case "custom": return Math.min(2.6, Math.max(0.85, App.prefs.floatingScale))
+        case "custom": return Math.min(maxScale, Math.max(minScale, App.prefs.floatingScale))
         default: return 1.5
         }
     }
-    readonly property int badgeInset: 14
-    readonly property alias popoverWindow: popover
+    // FloatingSignalScale.minimumVisualScale / maximumVisualScale; the menu steps by 0.18.
+    readonly property real minScale: 0.85
+    readonly property real maxScale: 2.6
+    readonly property alias popoverWindow: panel
+    readonly property var infoSessions: App.paused ? [] : (App.liveData ? App.sessions : Demo.sessions(Theme.t))
     function showContextMenu() { contextMenu.popup() }
+
+    // FloatingSignalPanelLayout (macOS): 24 px round badges, a 2 px gap, badges overlapping the
+    // lamp by 4 px; the window keeps room for badges on the top, left and right and for the
+    // resize handle below the lamp.
+    readonly property int badgeSize: 24
+    readonly property int controlGap: 2
+    readonly property int badgeOverlap: 4
+    readonly property int resizeHandleSize: 20
+    readonly property int edgeOutset: badgeSize + controlGap
+    readonly property int trailingOutset: Math.max(badgeSize, resizeHandleSize) + controlGap
+    readonly property int bottomOutset: resizeHandleSize + controlGap
+
+    // infoBadgeOffset: a badge's top-left for each corner. Defaults as on macOS: running agents
+    // top right, quota top left, tokens bottom left (moving badges by dragging is not ported).
+    function badgePoint(corner) {
+        const leadingX = edgeOutset - badgeSize + badgeOverlap
+        if (corner === "topRight") return Qt.point(edgeOutset + lamp.width - badgeOverlap, 0)
+        if (corner === "bottomLeft") return Qt.point(leadingX, edgeOutset + lamp.height - controlGap)
+        return Qt.point(leadingX, 0)
+    }
+
+    // Opens a badge's panel, or closes it when that panel is already open.
+    function togglePanel(mode, corner) {
+        if (panel.visible && panel.mode === mode) {
+            panel.hide()
+            return
+        }
+        panel.mode = mode
+        panel.corner = corner
+        panel.present()
+    }
+
+    function stepScale(delta) {
+        App.prefs.floatingScale = Math.min(maxScale, Math.max(minScale, visualScale + delta))
+        App.prefs.floatingSize = "custom"
+    }
 
     title: "Agent Signal Bar Floating Light"
     flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
     color: "transparent"
-    width: lamp.implicitWidth + badgeInset * 2
-    height: lamp.implicitHeight + badgeInset * 2
+    width: edgeOutset + lamp.implicitWidth + trailingOutset
+    height: edgeOutset + lamp.implicitHeight + bottomOutset
 
     function placeDefault() {
         const p = App.floatingPosition(App.prefs.floatingX, App.prefs.floatingY, width, height)
@@ -47,12 +86,14 @@ Window {
 
     TrafficSignal {
         id: lamp
-        x: win.badgeInset
-        y: win.badgeInset
+        x: win.edgeOutset
+        y: win.edgeOutset
         layout: win.vertical ? "vertical" : "horizontal"
         diameter: 16 * win.visualScale
     }
 
+    // The lamp drags the window. A left click also opens the running-agents panel (macOS opens
+    // it from the badge only; kept here so the panel is reachable with the badge turned off).
     MouseArea {
         anchors.fill: lamp
         acceptedButtons: Qt.LeftButton | Qt.RightButton
@@ -65,204 +106,291 @@ Window {
         onPositionChanged: mouse => {
             if (!dragged && (Math.abs(mouse.x - pressPos.x) > 3 || Math.abs(mouse.y - pressPos.y) > 3)) {
                 dragged = true
-                popover.hide() // it would stay behind, detached from the lamp
+                panel.hide() // it would stay behind, detached from the lamp
                 win.startSystemMove()
             }
         }
         onReleased: mouse => {
             if (dragged) return
             if (mouse.button === Qt.RightButton) {
-                popover.hide()
+                panel.hide()
                 contextMenu.popup()
             } else {
-                popover.toggle()
+                win.togglePanel("info", "topRight")
             }
         }
     }
 
-    // Corner badges.
-    // Clickable like the macOS badges (each opens its panel); dragging a badge to another corner
-    // is not ported.
-    component Badge: Rectangle {
+    // asbBadgeBackground: a 24 px circle in the group fill with a hairline and a soft shadow;
+    // badgeFontSize shrinks the bold digits as the text grows.
+    component Badge: Item {
         id: badge
+        property string corner
         property alias text: label.text
         property color textColor: Theme.text
-        property bool inverted: false
         signal clicked()
-        width: Math.max(height, label.implicitWidth + 8)
-        height: 20
-        radius: height / 2
-        color: inverted ? "white" : Theme.groupFill
-        border.color: Theme.groupStroke
+        readonly property point origin: win.badgePoint(corner)
+        x: origin.x
+        y: origin.y
+        width: win.badgeSize
+        height: win.badgeSize
+        Rectangle { // shadow: black 22 %, 1 px down
+            anchors.fill: parent
+            anchors.topMargin: 1
+            anchors.bottomMargin: -1
+            radius: width / 2
+            color: Qt.rgba(0, 0, 0, 0.22)
+        }
+        Rectangle {
+            anchors.fill: parent
+            radius: width / 2
+            color: Theme.groupFill
+            border.color: Theme.groupStroke
+            border.width: 1
+        }
         AsbText {
             id: label
             anchors.centerIn: parent
-            font.pixelSize: Theme.badgeSize
+            font.pixelSize: text.length > 3 ? 7 : text.length > 2 ? 9 : text.length > 1 ? 11 : 13
             font.weight: Font.Bold
-            color: parent.inverted ? "black" : parent.textColor
+            color: badge.textColor
+            elide: Text.ElideNone
         }
         MouseArea {
             anchors.fill: parent
-            anchors.margins: -3 // a 20 px badge is a small target
             cursorShape: Qt.PointingHandCursor
             onClicked: badge.clicked()
         }
+    }
+    Badge {
+        readonly property int running: win.infoSessions.length
+        visible: App.prefs.badgeRunning && running > 0
+        corner: "topRight"
+        text: running > 99 ? "99+" : String(running)
+        onClicked: win.togglePanel("info", corner)
     }
     // Quota and token badges wait for the usage data layer; live runs hide them rather than
     // show demo numbers next to a live lamp.
     Badge {
         visible: App.prefs.badgeQuota && !App.liveData
-        x: 0
-        y: 0
+        corner: "topLeft"
         text: "76%"
         textColor: Theme.toneForeground("positive")
-        onClicked: popover.toggle() // the popover lists the quota windows
+        onClicked: win.togglePanel("quota", corner)
     }
     Badge {
-        readonly property int running: App.liveData ? App.sessions.length : 1
-        visible: App.prefs.badgeRunning && running > 0 && !App.paused
-        x: win.width - width
-        y: 0
-        text: String(running)
-        inverted: true
-        onClicked: popover.toggle() // "click to see the running agents"
-    }
-    Badge {
-        visible: App.prefs.badgeToken && !App.liveData
-        x: 0
-        y: win.height - height
+        visible: App.prefs.badgeToken && !App.liveData && !App.paused
+        corner: "bottomLeft"
         text: "1.3M"
         textColor: Theme.accent
         // No token panel on Windows yet; the Usage page has the token chart.
         onClicked: {
-            popover.hide()
+            panel.hide()
             App.openSettings("usage")
         }
     }
-    // Free resize handle (bottom-right arrow): switches the size to "custom".
-    Icon {
-        name: "resize"
-        size: 12
-        color: Qt.rgba(1, 1, 1, resizeArea.containsMouse ? 0.9 : 0.35)
-        x: lamp.x + lamp.width - 13
-        y: lamp.y + lamp.height - 13
-        MouseArea {
-            id: resizeArea
-            anchors.fill: parent
-            anchors.margins: -4
-            hoverEnabled: true
-            cursorShape: Qt.SizeFDiagCursor
-            property real startX
-            property real startScale
-            onPressed: mouse => {
-                startX = mapToGlobal(mouse.x, mouse.y).x
-                startScale = win.visualScale
-            }
-            onPositionChanged: mouse => {
-                if (!pressed) return
-                const dx = mapToGlobal(mouse.x, mouse.y).x - startX
-                App.prefs.floatingSize = "custom"
-                App.prefs.floatingScale = Math.min(2.6, Math.max(0.85, startScale + dx / 60))
-            }
+
+    // resizeHandleTarget: a hotspot over the lamp's bottom-right corner; the handle itself sits
+    // just outside that corner and shows while hovered or dragged. Dragging switches to "custom".
+    MouseArea {
+        id: resizeArea
+        x: lamp.x + lamp.width - win.resizeHandleSize
+        y: lamp.y + lamp.height - win.resizeHandleSize
+        width: win.resizeHandleSize + win.controlGap + win.resizeHandleSize
+        height: width
+        hoverEnabled: true
+        cursorShape: Qt.SizeFDiagCursor
+        property real startX
+        property real startScale
+        onPressed: mouse => {
+            startX = mapToGlobal(mouse.x, mouse.y).x
+            startScale = win.visualScale
+            panel.hide()
+        }
+        onPositionChanged: mouse => {
+            if (!pressed) return
+            const dx = mapToGlobal(mouse.x, mouse.y).x - startX
+            App.prefs.floatingSize = "custom"
+            App.prefs.floatingScale = Math.min(win.maxScale, Math.max(win.minScale, startScale + dx / 60))
+        }
+        Icon {
+            name: "resize"
+            size: 12
+            x: parent.width - win.resizeHandleSize + (win.resizeHandleSize - size) / 2
+            y: parent.height - win.resizeHandleSize + (win.resizeHandleSize - size) / 2
+            color: Theme.secondary
+            opacity: resizeArea.containsMouse || resizeArea.pressed ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: 120 } }
         }
     }
 
     // Styled like the tray menu: the Basic style's white menu showed the dark theme's pale text.
     component LampMenuItem: MenuItem {
         id: item
-        implicitWidth: 170
+        implicitWidth: 180
         implicitHeight: 28
         contentItem: AsbText {
             text: item.text
             leftPadding: 4
             color: item.highlighted ? Theme.textOnAccent : Theme.text
+            opacity: item.enabled ? 1 : 0.4
             verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
             radius: 5
-            color: item.highlighted ? Theme.accent : "transparent"
+            color: item.highlighted && item.enabled ? Theme.accent : "transparent"
         }
     }
+    component LampMenuSeparator: MenuSeparator {
+        contentItem: Rectangle { implicitHeight: 1; color: Theme.separator }
+    }
 
+    // The macOS context menu, item for item.
     Menu {
         id: contextMenu
         popupType: Popup.Window
         padding: 5
         background: Rectangle {
-            implicitWidth: 180
+            implicitWidth: 190
             radius: 8
             color: Theme.panelBg
             border.color: Theme.panelStroke
         }
-        LampMenuItem { text: Theme.t("小", "Small"); onTriggered: App.prefs.floatingSize = "compact" }
-        LampMenuItem { text: Theme.t("默认", "Default"); onTriggered: App.prefs.floatingSize = "standard" }
-        LampMenuItem { text: Theme.t("大", "Large"); onTriggered: App.prefs.floatingSize = "large" }
-        MenuSeparator {
-            contentItem: Rectangle { implicitHeight: 1; color: Theme.separator }
+        LampMenuItem { text: Theme.t("隐藏悬浮灯", "Hide Floating Signal"); onTriggered: App.prefs.floatingEnabled = false }
+        LampMenuItem { text: Theme.t("设置...", "Settings..."); onTriggered: App.openSettings("light") }
+        LampMenuSeparator {}
+        LampMenuItem {
+            text: Theme.t("缩小", "Smaller")
+            enabled: win.visualScale > win.minScale + 0.01
+            onTriggered: win.stepScale(-0.18)
         }
         LampMenuItem {
-            text: win.vertical ? Theme.t("切换为横向", "Horizontal") : Theme.t("切换为竖向", "Vertical")
+            text: Theme.t("放大", "Larger")
+            enabled: win.visualScale < win.maxScale - 0.01
+            onTriggered: win.stepScale(0.18)
+        }
+        LampMenuSeparator {}
+        LampMenuItem {
+            text: win.vertical ? Theme.t("切换为横向", "Switch to Horizontal") : Theme.t("切换为竖向", "Switch to Vertical")
             onTriggered: App.prefs.floatingLayout = win.vertical ? "horizontal" : "vertical"
         }
-        LampMenuItem { text: Theme.t("设置...", "Settings..."); onTriggered: App.openSettings("light") }
-        LampMenuItem { text: Theme.t("隐藏悬浮灯", "Hide Floating Light"); onTriggered: App.prefs.floatingEnabled = false }
+        LampMenuSeparator {}
+        LampMenuItem {
+            text: App.prefs.soundEnabled ? Theme.t("关闭声音提醒", "Turn Sound Off") : Theme.t("开启声音提醒", "Turn Sound On")
+            onTriggered: App.prefs.soundEnabled = !App.prefs.soundEnabled
+        }
+        LampMenuItem {
+            text: Theme.t("试听完成音", "Preview Completion Sound")
+            onTriggered: App.previewSound("completion", App.prefs.completionSound)
+        }
+        LampMenuItem {
+            text: Theme.t("试听闪烁音", "Preview Flash Sound")
+            onTriggered: App.previewSound("waiting", App.prefs.waitingSound)
+        }
     }
 
-    // Compact session & usage popover (ClaudeFloatingQuotaPopoverView / floating usage).
+    // FloatingSignalInfoPopoverView card: status dot, bold title, "status · time" caption.
+    component InfoCard: Item {
+        id: card
+        property string title
+        property string subtitle
+        property string signalState // not `state`: Item already has one
+        Layout.fillWidth: true
+        implicitHeight: Math.max(40, texts.implicitHeight + 14)
+        Rectangle {
+            x: 9
+            anchors.verticalCenter: parent.verticalCenter
+            width: 7
+            height: 7
+            radius: 3.5
+            color: Theme.toneLamp(Theme.toneForState(card.signalState))
+        }
+        ColumnLayout {
+            id: texts
+            x: 24
+            width: parent.width - 24 - 9
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 2
+            AsbText { text: card.title; strong: true; textFormat: Text.PlainText; Layout.fillWidth: true }
+            AsbText { text: card.subtitle; caption: true; secondary: true; textFormat: Text.PlainText; Layout.fillWidth: true }
+        }
+    }
+
+    // The badges' panels (FloatingSignal{Info,Quota}PanelAnchor): 250 px wide, anchored above
+    // the badge that opened them.
     Window {
-        id: popover
+        id: panel
+        property string mode: "info"   // info | quota
+        property string corner: "topRight"
         flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
         color: "transparent"
-        width: 280
-        height: pop.implicitHeight
-        function toggle() {
-            if (visible) { hide(); return }
-            const p = App.besidePosition(win.x, win.y, win.width, win.height, width, height)
+        width: 250
+        height: Math.max(44, surface.implicitHeight)
+
+        function place() {
+            const b = win.badgePoint(corner)
+            const p = App.badgePanelPosition(win.x + b.x, win.y + b.y, win.badgeSize, width, height)
             x = p.x
             y = p.y
+        }
+        function present() {
+            place()
             show()
             requestActivate()
         }
+        function toggle() { win.togglePanel("info", "topRight") }
+
+        // The content lays out after the mode changes; keep the bottom edge above the badge.
+        onHeightChanged: if (visible) place()
         onActiveChanged: if (!active && visible && App.captureDir.length === 0) hide()
-        // Qt counts the popover as active while its parent, the lamp, has focus, and tells only
+        // Qt counts the panel as active while its parent, the lamp, has focus, and tells only
         // the window that loses focus: when focus moves on from the lamp, close it here.
         Connections {
             target: win
             function onActiveChanged() {
-                if (!win.active && popover.visible && App.captureDir.length === 0) popover.hide()
+                if (!win.active && panel.visible && App.captureDir.length === 0) panel.hide()
             }
         }
+
         Rectangle {
-            id: pop
+            id: surface
             anchors.fill: parent
-            implicitHeight: col.implicitHeight + Theme.m * 2
+            implicitHeight: column.implicitHeight + 12
             radius: Theme.radiusPanel
             color: Theme.panelBg
             border.color: Theme.panelStroke
             ColumnLayout {
-                id: col
-                x: Theme.m
-                y: Theme.m
-                width: parent.width - Theme.m * 2
-                spacing: Theme.s
-                RowLayout {
-                    StatusPill { text: Theme.stateTitle(App.displayState); tone: Theme.toneForState(App.displayState) }
-                    AsbText { text: Theme.stateAction(App.displayState); caption: true; secondary: true }
-                }
+                id: column
+                x: 6
+                y: 6
+                width: parent.width - 12
+                spacing: 7
+
+                // Running agents.
                 Repeater {
-                    model: App.paused ? [] : (App.liveData ? App.sessions : Demo.sessions(Theme.t))
-                    RowLayout {
+                    model: panel.mode === "info" ? win.infoSessions : []
+                    InfoCard {
                         required property var modelData
-                        Rectangle { width: 7; height: 7; radius: 3.5; color: Theme.toneLamp(Theme.toneForState(modelData.state)) }
-                        AsbText { text: modelData.agent; strong: true; textFormat: Text.PlainText }
-                        AsbText { text: modelData.detail; secondary: true; textFormat: Text.PlainText; Layout.fillWidth: true }
+                        title: modelData.title
+                        subtitle: modelData.time ? modelData.detail + " · " + modelData.time : modelData.detail
+                        signalState: modelData.state
                     }
                 }
-                Rectangle { visible: !App.liveData; Layout.fillWidth: true; height: 1; color: Theme.separator }
+                InfoCard {
+                    visible: panel.mode === "info" && win.infoSessions.length === 0
+                    title: Theme.t("暂无运行中的 Agent", "No active agent sessions")
+                    subtitle: Theme.stateSummary(App.displayState)
+                    signalState: App.displayState
+                }
+
+                // Quota windows (demo data until the usage layer is ported).
                 Repeater {
-                    model: App.liveData ? [] : Demo.account(Theme.t).quotas
+                    model: panel.mode === "quota" ? Demo.account(Theme.t).quotas : []
                     QuotaLine {
                         required property var modelData
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 9
+                        Layout.rightMargin: 9
                         compact: true
                         title: modelData.title
                         valueText: modelData.remaining + "%"

@@ -490,21 +490,22 @@ int AppController::popupMaxHeight() const {
     return std::max(240, popupScreen()->availableGeometry().height() - 16);
 }
 
-QPoint AppController::besidePosition(int x, int y, int anchorWidth, int anchorHeight, int width, int height) const {
-    // Beside the anchor window on its own screen: to the right, else to the left, top-aligned,
-    // kept inside that screen's work area. Screens left of or above the primary have negative
-    // coordinates, and Qt leaves gaps between scaled screens, so the whole desktop's size says
-    // nothing about where there is room.
-    const QRect anchor(x, y, anchorWidth, anchorHeight);
-    QScreen *screen = QGuiApplication::screenAt(anchor.center());
+QPoint AppController::badgePanelPosition(int badgeX, int badgeY, int badgeSize, int width, int height) const {
+    // FloatingSignal{Info,Quota,Token}PanelAnchor.position (macOS): the panel window sits above
+    // the badge, its right edge 4 pt past the badge's and its bottom 2 pt below the badge's top,
+    // and draws its surface inside an 8 pt margin. The visible panel therefore ends 4 pt inside
+    // the badge's right edge and 6 pt above it; this window has no margin, so place it there.
+    // Kept inside the work area of the badge's own screen (screens left of or above the primary
+    // have negative coordinates, and Qt leaves gaps between scaled screens).
+    const QRect badge(badgeX, badgeY, badgeSize, badgeSize);
+    QScreen *screen = QGuiApplication::screenAt(badge.center());
     if (!screen) screen = QGuiApplication::primaryScreen();
     const QRect avail = screen->availableGeometry();
-    const int gap = 6;
-    int px = anchor.left() + anchor.width() + gap;
-    if (px + width > avail.left() + avail.width()) px = anchor.left() - gap - width;
-    px = std::clamp(px, avail.left(), std::max(avail.left(), avail.left() + avail.width() - width));
-    const int py = std::clamp(anchor.top(), avail.top(), std::max(avail.top(), avail.top() + avail.height() - height));
-    return {px, py};
+    const int margin = 8;
+    const int x = badge.left() + badge.width() - 4 - width;
+    const int y = badge.top() - 6 - height;
+    return {std::clamp(x, avail.left() + margin, std::max(avail.left() + margin, avail.left() + avail.width() - width - margin)),
+            std::clamp(y, avail.top() + margin, std::max(avail.top() + margin, avail.top() + avail.height() - height - margin))};
 }
 
 QPoint AppController::floatingPosition(int x, int y, int width, int height) const {
