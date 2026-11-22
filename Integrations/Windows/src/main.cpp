@@ -25,6 +25,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QCryptographicHash>
+#include <QCursor>
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
@@ -176,6 +177,11 @@ bool claimInstance(const QString &name) {
 
 // Asks the running instance to show its settings window; it may still be starting up.
 void notifyRunningInstance(const QString &name) {
+#ifdef Q_OS_WIN
+    // This launch came from the user and may take the foreground; pass that on, or Windows
+    // refuses the running instance's activation and only flashes its taskbar button.
+    AllowSetForegroundWindow(ASFW_ANY);
+#endif
     QLocalSocket socket;
     for (int attempt = 0; attempt < 10; ++attempt) {
         socket.connectToServer(name);
@@ -260,7 +266,7 @@ int main(int argc, char *argv[]) {
     QObject::connect(&controller, &AppController::signalNameChanged, &tray, refreshTray);
     QObject::connect(controller.prefs(), &QQmlPropertyMap::valueChanged, &tray, refreshTray);
     QObject::connect(&tray, &QSystemTrayIcon::activated, &controller, [&](QSystemTrayIcon::ActivationReason reason) {
-        controller.setTrayGeometry(tray.geometry());
+        controller.setTrayActivation(tray.geometry(), QCursor::pos());
         if (reason == QSystemTrayIcon::Trigger) {
             if (controller.prefs()->value("menuMode").toString() == "simple") controller.showSystemMenu();
             else controller.showPanel();

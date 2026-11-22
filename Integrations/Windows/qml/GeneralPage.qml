@@ -78,7 +78,8 @@ SettingsPage {
         }
         AsbRow {
             title: App.paused ? Theme.t("监控已暂停", "Monitoring paused") : Theme.t("实时监控", "Live monitoring")
-            subtitle: App.paused ? "" : Theme.t("1 个会话", "1 session")
+            readonly property int sessionCount: App.liveData ? App.sessions.length : 1 // demo data shows one
+            subtitle: App.paused ? "" : Theme.t(sessionCount + " 个会话", sessionCount === 1 ? "1 session" : sessionCount + " sessions")
             AsbButton {
                 icon: App.paused ? "play" : "pause"
                 text: App.paused ? Theme.t("恢复监控", "Resume") : Theme.t("暂停监控", "Pause")
@@ -102,7 +103,8 @@ SettingsPage {
             title: Theme.t("安装 CLI", "Install CLI")
             subtitle: Theme.t("将 agent-signal 命令安装到 %LOCALAPPDATA%\\Programs\\AgentSignalBar 并加入 PATH。",
                               "Installs agent-signal to %LOCALAPPDATA%\\Programs\\AgentSignalBar and adds it to PATH.")
-            AsbButton { icon: "terminal"; text: Theme.t("安装 CLI", "Install CLI") }
+            // agent-signal.exe already sits in the install folder; adding it to PATH is not ported.
+            StatusPill { text: Theme.t("尚未移植", "Not ported"); tone: "neutral" }
         }
     }
 }

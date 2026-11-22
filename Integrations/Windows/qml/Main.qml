@@ -16,15 +16,17 @@ QtObject {
     property Connections router: Connections {
         target: App
         function onSettingsRequested(page) { root.settings.open(page) }
+        // A click on the icon while a popup is open closes it: by the time the click arrives the
+        // taskbar took focus and the popup already hid itself, so do not open it again.
         function onPanelRequested() {
             root.systemMenu.hide()
             if (root.panel.visible) root.panel.hide()
-            else root.panel.present()
+            else if (!root.panel.justAutoHidden()) root.panel.present()
         }
         function onSystemMenuRequested() {
             root.panel.hide()
             if (root.systemMenu.visible) root.systemMenu.hide()
-            else root.systemMenu.present()
+            else if (!root.systemMenu.justAutoHidden()) root.systemMenu.present()
         }
     }
 

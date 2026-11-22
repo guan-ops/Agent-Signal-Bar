@@ -28,7 +28,9 @@ Window {
 
     function open(pageId) {
         if (pageId && pageId.length > 0) page = pageId
-        show()
+        // show() leaves a minimized window minimized.
+        if (visibility === Window.Minimized) showNormal()
+        else show()
         raise()
         requestActivate()
     }
@@ -36,8 +38,14 @@ Window {
     Connections {
         target: App.prefs
         function onValueChanged(key) {
-            if (["glassEnabled", "glassEffect", "theme"].indexOf(key) >= 0 && win.visible) App.applyBackdrop(win, "window")
+            if (["glassEnabled", "glassEffect"].indexOf(key) >= 0 && win.visible) App.applyBackdrop(win, "window")
         }
+    }
+    // The theme preference and, while it follows the system, a Windows light/dark switch:
+    // the title bar's dark mode is set through DWM, so it needs a new call.
+    Connections {
+        target: App
+        function onThemeChanged() { if (win.visible) App.applyBackdrop(win, "window") }
     }
 
     Shortcut {

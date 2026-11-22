@@ -25,7 +25,7 @@ SettingsPage {
         footer: Theme.t("导出诊断包、查看状态文件和版本", "Export a diagnostics bundle, see the state file and the version")
         AsbRow {
             title: Theme.t("导出诊断", "Export diagnostics")
-            AsbButton { icon: "download"; text: Theme.t("导出诊断", "Export") }
+            StatusPill { text: Theme.t("尚未移植", "Not ported"); tone: "neutral" }
         }
         AsbRow {
             title: Theme.t("状态文件", "State file")
@@ -72,7 +72,9 @@ SettingsPage {
             wrapMode: Text.WordWrap
             Layout.fillWidth: true
         }
-        RowLayout {
+        // Wraps: in English the three buttons and the pill are wider than the page.
+        Flow {
+            Layout.fillWidth: true
             spacing: Theme.s
             AsbButton { icon: "folder"; text: Theme.t("选择数据目录…", "Choose Directory…"); onClicked: folderDialog.open() }
             AsbButton { text: Theme.t("使用默认目录", "Use Default"); onClicked: App.prefs.codexDataDir = "" }

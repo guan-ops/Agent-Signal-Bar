@@ -109,4 +109,17 @@ PopupWindow {
             onClicked: App.quit()
         }
     }
+
+    // The shortcuts the two rows above show.
+    Shortcut {
+        sequence: "Ctrl+,"
+        onActivated: {
+            panel.hide()
+            App.openSettings("")
+        }
+    }
+    Shortcut {
+        sequence: "Ctrl+Q"
+        onActivated: App.quit()
+    }
 }

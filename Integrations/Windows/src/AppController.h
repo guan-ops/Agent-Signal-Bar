@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 
+class QScreen;
 class QWindow;
 class SignalRuntime;
 
@@ -34,7 +35,7 @@ class AppController : public QObject {
     Q_PROPERTY(QString platform READ platform CONSTANT)
     Q_PROPERTY(QString version READ version CONSTANT)
     Q_PROPERTY(QString captureDir READ captureDir CONSTANT)
-    Q_PROPERTY(QString uiFont READ uiFont CONSTANT)
+    Q_PROPERTY(QString uiFont READ uiFont NOTIFY languageChanged)
     // DWMWA_SYSTEMBACKDROP_TYPE needs Windows 11 22H2 (build 22621); older systems stay opaque.
     Q_PROPERTY(bool supportsBackdrop READ supportsBackdrop CONSTANT)
     // True when the lamp follows Codex activity; false for capture and --signal demo runs.
@@ -82,6 +83,11 @@ public:
 
     asb::EffectCustomization effectCustomization() const;
     void setTrayGeometry(const QRect &rect) { m_trayGeometry = rect; }
+    // A tray click: the icon's rectangle and the cursor position, both in logical pixels.
+    void setTrayActivation(const QRect &iconRect, const QPoint &clickPoint) {
+        m_trayGeometry = iconRect;
+        m_trayClick = clickPoint;
+    }
 
     Q_INVOKABLE QString text(const QString &zhHans, const QString &english) const;
     // `signal` is explicit so QML bindings re-evaluate when App.signalName changes.
@@ -89,7 +95,13 @@ public:
     Q_INVOKABLE double lampScale(const QString &color, const QString &signal, int tick, bool allLightsOn,
                                  const QString &style) const;
     Q_INVOKABLE QString dominantLamp(const QString &signal, int tick) const;
-    Q_INVOKABLE QPoint popupPosition(int width, int height) const;
+    // Where a tray popup opens. "panel": a flyout above the taskbar, centred on the icon;
+    // "menu": like a native context menu, with a corner at the click point.
+    Q_INVOKABLE QPoint popupPosition(int width, int height, const QString &placement = QStringLiteral("panel")) const;
+    // Tallest a tray popup may be on the clicked screen; taller content scrolls.
+    Q_INVOKABLE int popupMaxHeight() const;
+    // A popover next to the window at (x, y, anchorWidth, anchorHeight), on that window's screen.
+    Q_INVOKABLE QPoint besidePosition(int x, int y, int anchorWidth, int anchorHeight, int width, int height) const;
     // Bottom-right of the primary screen's work area; also used to rescue a saved
     // position that is no longer on any screen (monitor unplugged).
     Q_INVOKABLE QPoint floatingPosition(int x, int y, int width, int height) const;
@@ -127,6 +139,7 @@ private:
     void onPrefChanged(const QString &key, const QVariant &value);
     void restartTimer();
     void applyLaunchAtLogin(bool enabled) const;
+    QScreen *popupScreen() const; // the screen of the last tray click, else the primary
     void rebuildActivity();
     void runClaudeHook(const QString &action);
     void rebuildClaudeHook();
@@ -151,6 +164,7 @@ private:
     QString m_captureDir;
     QTimer m_timer;
     QRect m_trayGeometry;
+    std::optional<QPoint> m_trayClick;
     QString m_demoSignal = QStringLiteral("working");
     QString m_debugSignal;
     bool m_paused = false;

@@ -65,13 +65,18 @@ Window {
         onPositionChanged: mouse => {
             if (!dragged && (Math.abs(mouse.x - pressPos.x) > 3 || Math.abs(mouse.y - pressPos.y) > 3)) {
                 dragged = true
+                popover.hide() // it would stay behind, detached from the lamp
                 win.startSystemMove()
             }
         }
         onReleased: mouse => {
             if (dragged) return
-            if (mouse.button === Qt.RightButton) contextMenu.popup()
-            else popover.toggle()
+            if (mouse.button === Qt.RightButton) {
+                popover.hide()
+                contextMenu.popup()
+            } else {
+                popover.toggle()
+            }
         }
     }
 
@@ -169,12 +174,21 @@ Window {
         height: pop.implicitHeight
         function toggle() {
             if (visible) { hide(); return }
-            x = win.x + win.width + 6 + width > Screen.desktopAvailableWidth ? win.x - width - 6 : win.x + win.width + 6
-            y = Math.max(8, win.y)
+            const p = App.besidePosition(win.x, win.y, win.width, win.height, width, height)
+            x = p.x
+            y = p.y
             show()
             requestActivate()
         }
         onActiveChanged: if (!active && visible && App.captureDir.length === 0) hide()
+        // Qt counts the popover as active while its parent, the lamp, has focus, and tells only
+        // the window that loses focus: when focus moves on from the lamp, close it here.
+        Connections {
+            target: win
+            function onActiveChanged() {
+                if (!win.active && popover.visible && App.captureDir.length === 0) popover.hide()
+            }
+        }
         Rectangle {
             id: pop
             anchors.fill: parent

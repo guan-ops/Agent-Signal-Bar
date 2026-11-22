@@ -7,6 +7,7 @@ PopupWindow {
     id: menu
     title: "Agent Signal Bar"
     padding: 6
+    placement: "menu"
 
     ColumnLayout {
         Layout.fillWidth: true

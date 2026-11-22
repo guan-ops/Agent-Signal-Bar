@@ -415,31 +415,87 @@ QString AppController::dominantLamp(const QString &signal, int tick) const {
     return *color == asb::LampColor::Red ? "red" : *color == asb::LampColor::Yellow ? "yellow" : "green";
 }
 
-QPoint AppController::popupPosition(int width, int height) const {
-    // Anchor to the notification-area icon: above a bottom taskbar, below a top one,
-    // and beside a vertical one. Falls back to the primary screen's bottom-right corner.
-    const QPoint anchor = m_trayGeometry.isValid() ? m_trayGeometry.center() : QPoint();
-    QScreen *screen = m_trayGeometry.isValid() ? QGuiApplication::screenAt(anchor) : nullptr;
-    if (!screen) screen = QGuiApplication::primaryScreen();
+QPoint AppController::popupPosition(int width, int height, const QString &placement) const {
+    // Anchor to where the tray icon was clicked. The icon rectangle alone is not enough: on
+    // Windows 11 a new icon sits in the hidden-icons flyout, and Shell_NotifyIconGetRect then
+    // reports the "^" chevron on the taskbar, not the icon that was clicked. Without a click
+    // (capture runs) fall back to the icon, then to the primary screen's bottom-right corner.
+    const bool clickOnIcon = m_trayClick && m_trayGeometry.isValid() && m_trayGeometry.contains(*m_trayClick);
+    std::optional<QPoint> anchor = m_trayClick;
+    if (clickOnIcon || (!anchor && m_trayGeometry.isValid())) anchor = m_trayGeometry.center();
+    const QScreen *screen = popupScreen();
     const QRect full = screen->geometry();
     const QRect avail = screen->availableGeometry();
     const int gap = 8;
+    enum class Edge { Bottom, Top, Left, Right };
+    const Edge taskbar = avail.top() > full.top()     ? Edge::Top
+                       : avail.left() > full.left()   ? Edge::Left
+                       : avail.right() < full.right() ? Edge::Right
+                                                      : Edge::Bottom;
+
+    if (placement == QLatin1String("menu") && m_trayClick) {
+        // A native context menu: one corner at the click point, opening away from the taskbar
+        // and towards the side with room. Like those menus it may overlap the taskbar.
+        const QPoint c = *m_trayClick;
+        int x = taskbar == Edge::Right ? c.x() - width : c.x();
+        if (taskbar != Edge::Left && x + width > full.left() + full.width()) x = c.x() - width;
+        int y = taskbar == Edge::Top ? c.y() : c.y() - height;
+        if (y < full.top()) y = c.y(); // no room above: open downwards
+        x = std::clamp(x, full.left(), std::max(full.left(), full.left() + full.width() - width));
+        y = std::clamp(y, full.top(), std::max(full.top(), full.top() + full.height() - height));
+        return {x, y};
+    }
+
+    // A flyout: just off the taskbar, centred on the icon (or on the click in the flyout).
     int x = avail.right() - width - gap;
     int y = avail.bottom() - height - gap;
-    if (m_trayGeometry.isValid()) {
-        x = anchor.x() - width / 2;
-        if (avail.top() > full.top()) y = avail.top() + gap;                    // taskbar / menu bar on top
-        else if (avail.left() > full.left()) { x = avail.left() + gap; y = anchor.y() - height / 2; }
-        else if (avail.right() < full.right()) { x = avail.right() - width - gap; y = anchor.y() - height / 2; }
+    if (anchor) {
+        switch (taskbar) {
+        case Edge::Bottom: x = anchor->x() - width / 2; break;
+        case Edge::Top: x = anchor->x() - width / 2; y = avail.top() + gap; break;
+        case Edge::Left: x = avail.left() + gap; y = anchor->y() - height / 2; break;
+        case Edge::Right: x = avail.right() - width - gap; y = anchor->y() - height / 2; break;
+        }
     }
-    x = std::clamp(x, avail.left() + gap, avail.right() - width - gap);
+    x = std::clamp(x, avail.left() + gap, std::max(avail.left() + gap, avail.right() - width - gap));
     y = std::clamp(y, avail.top() + gap, std::max(avail.top() + gap, avail.bottom() - height - gap));
     return {x, y};
 }
 
+QScreen *AppController::popupScreen() const {
+    const bool known = m_trayClick || m_trayGeometry.isValid();
+    QScreen *screen = known ? QGuiApplication::screenAt(m_trayClick.value_or(m_trayGeometry.center())) : nullptr;
+    return screen ? screen : QGuiApplication::primaryScreen();
+}
+
+int AppController::popupMaxHeight() const {
+    // The work area of the clicked screen, less the gap above and below: on a 1080p screen at
+    // 125 % or 150 % the system menu and the card panel are taller than that.
+    return std::max(240, popupScreen()->availableGeometry().height() - 16);
+}
+
+QPoint AppController::besidePosition(int x, int y, int anchorWidth, int anchorHeight, int width, int height) const {
+    // Beside the anchor window on its own screen: to the right, else to the left, top-aligned,
+    // kept inside that screen's work area. Screens left of or above the primary have negative
+    // coordinates, and Qt leaves gaps between scaled screens, so the whole desktop's size says
+    // nothing about where there is room.
+    const QRect anchor(x, y, anchorWidth, anchorHeight);
+    QScreen *screen = QGuiApplication::screenAt(anchor.center());
+    if (!screen) screen = QGuiApplication::primaryScreen();
+    const QRect avail = screen->availableGeometry();
+    const int gap = 6;
+    int px = anchor.left() + anchor.width() + gap;
+    if (px + width > avail.left() + avail.width()) px = anchor.left() - gap - width;
+    px = std::clamp(px, avail.left(), std::max(avail.left(), avail.left() + avail.width() - width));
+    const int py = std::clamp(anchor.top(), avail.top(), std::max(avail.top(), avail.top() + avail.height() - height));
+    return {px, py};
+}
+
 QPoint AppController::floatingPosition(int x, int y, int width, int height) const {
     const QRect saved(x, y, width, height);
-    if (x >= 0 && y >= 0) {
+    // (-1, -1) means never placed. Any other position is kept while a screen still shows the
+    // lamp, including negative ones on a monitor left of or above the primary.
+    if (x != -1 || y != -1) {
         for (QScreen *screen : QGuiApplication::screens()) {
             if (screen->availableGeometry().intersects(saved)) return saved.topLeft();
         }

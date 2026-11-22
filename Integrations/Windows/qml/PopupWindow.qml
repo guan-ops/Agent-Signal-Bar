@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Window
 import AgentSignal
@@ -10,22 +11,49 @@ Window {
     default property alias content: column.data
     property int panelWidth: 360
     property int padding: Theme.m
+    // "panel": a flyout above the taskbar; "menu": a context menu at the click point.
+    property string placement: "panel"
+    // At most the clicked screen's work area; taller content scrolls (1080p at 125 % or more).
+    property int maxHeight: 100000
+    // When focus loss last closed the popup. The tray click that caused it arrives just after
+    // (the taskbar takes focus on mouse down, the icon reports the click on mouse up).
+    property double autoHiddenAt: 0
+    // A function, not a binding: Date.now() would never re-evaluate a binding.
+    function justAutoHidden() { return Date.now() - autoHiddenAt < 500 }
 
     flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
     color: "transparent"
     width: panelWidth
-    height: surface.implicitHeight
+    height: Math.min(surface.implicitHeight, maxHeight)
 
-    function present() {
-        const p = App.popupPosition(width, height)
+    function place() {
+        maxHeight = App.popupMaxHeight()
+        const p = App.popupPosition(width, height, placement)
         x = p.x
         y = p.y
+    }
+
+    function present() {
+        flick.contentY = 0
+        place()
         show()
         raise()
         requestActivate()
     }
 
-    onActiveChanged: if (!active && visible && App.captureDir.length === 0) hide()
+    // The content finishes its layout only after the first show, and a taller panel placed with
+    // the old height would cover the taskbar: keep it anchored as it grows.
+    onHeightChanged: if (visible) place()
+
+    onActiveChanged: if (!active && visible && App.captureDir.length === 0) {
+        autoHiddenAt = Date.now()
+        hide()
+    }
+
+    Shortcut {
+        sequence: "Esc"
+        onActivated: win.hide()
+    }
 
     Rectangle {
         id: surface
@@ -36,12 +64,22 @@ Window {
         border.color: Theme.panelStroke
         border.width: 1
 
-        ColumnLayout {
-            id: column
-            x: win.padding
-            y: win.padding
-            width: surface.width - win.padding * 2
-            spacing: Theme.s
+        Flickable {
+            id: flick
+            anchors.fill: parent
+            anchors.margins: win.padding
+            contentWidth: width
+            contentHeight: column.implicitHeight
+            clip: contentHeight > height
+            interactive: contentHeight > height
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: flick.interactive ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+
+            ColumnLayout {
+                id: column
+                width: flick.width
+                spacing: Theme.s
+            }
         }
     }
 }

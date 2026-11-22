@@ -22,24 +22,18 @@ SettingsPage {
             title: Theme.t("启用文件日志", "Enable file logging")
             subtitle: Theme.t("将日志写入 %LOCALAPPDATA%\\AgentSignalBar\\debug.log 以进行调试。",
                               "Writes logs to %LOCALAPPDATA%\\AgentSignalBar\\debug.log for debugging.")
-            PrefSwitch { key: "fileLogging" }
-        }
-        AsbRow {
-            title: Theme.t("详细程度", "Verbosity")
-            Segmented {
-                key: "logLevel"
-                options: [{ value: "info", label: "Info" }, { value: "debug", label: "Debug" }, { value: "trace", label: "Trace" }]
-            }
+            // Nothing reads fileLogging or logLevel yet; a switch would promise a log that never appears.
+            StatusPill { text: Theme.t("尚未移植", "Not ported"); tone: "neutral" }
         }
     }
 
     AsbSection {
         title: Theme.t("缓存", "Caches")
         footer: Theme.t("清除缓存的费用扫描结果或浏览器 Cookie 缓存。", "Clear cached cost scans or the browser cookie cache.")
-        RowLayout {
-            spacing: Theme.s
-            AsbButton { text: Theme.t("清除费用缓存", "Clear Cost Cache") }
-            AsbButton { text: Theme.t("清除 Cookie 缓存", "Clear Cookie Cache") }
+        // Cost scans and cookie import are not ported, so there is nothing to clear yet.
+        AsbRow {
+            title: Theme.t("清除费用缓存 / Cookie 缓存", "Clear cost / cookie cache")
+            StatusPill { text: Theme.t("尚未移植", "Not ported"); tone: "neutral" }
         }
     }
 
