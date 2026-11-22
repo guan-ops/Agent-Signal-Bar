@@ -57,6 +57,9 @@ const QVariantMap &defaultPrefs() {
         {"floatingLayout", "vertical"}, {"floatingSize", "standard"}, {"floatingScale", 1.0},
         {"floatingX", -1}, {"floatingY", -1},
         {"badgeRunning", true}, {"badgeQuota", true}, {"badgeToken", true},
+        // Which corner each floating badge sits in; users move them by dragging.
+        {"floatingSignalInfoBadgeCorner", "top-right"}, {"floatingSignalQuotaBadgeCorner", "top-left"},
+        {"floatingSignalTokenBadgeCorner", "bottom-left"},
         {"thinkingEffect", "green_fast_flash"}, {"workingEffect", "green_slow_flash"},
         {"needsReviewEffect", "slow_flash"}, {"permissionEffect", "slow_flash"},
         {"blockedEffect", "fast_flash"}, {"doneEffect", "green_steady"},

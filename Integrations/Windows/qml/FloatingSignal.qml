@@ -36,13 +36,64 @@ Window {
     readonly property int trailingOutset: Math.max(badgeSize, resizeHandleSize) + controlGap
     readonly property int bottomOutset: resizeHandleSize + controlGap
 
-    // infoBadgeOffset: a badge's top-left for each corner. Defaults as on macOS: running agents
-    // top right, quota top left, tokens bottom left (moving badges by dragging is not ported).
+    // infoBadgeOffset: a badge's top-left for each corner (FloatingSignalInfoBadgeCorner values).
     function badgePoint(corner) {
         const leadingX = edgeOutset - badgeSize + badgeOverlap
-        if (corner === "topRight") return Qt.point(edgeOutset + lamp.width - badgeOverlap, 0)
-        if (corner === "bottomLeft") return Qt.point(leadingX, edgeOutset + lamp.height - controlGap)
+        if (corner === "top-right") return Qt.point(edgeOutset + lamp.width - badgeOverlap, 0)
+        if (corner === "bottom-left") return Qt.point(leadingX, edgeOutset + lamp.height - controlGap)
         return Qt.point(leadingX, 0)
+    }
+
+    // Badge corners as on macOS: each badge keeps its own corner (defaults: running agents top
+    // right, quota top left, tokens bottom left); a later badge whose corner is taken by an
+    // earlier visible one moves to the first free corner.
+    readonly property var corners: ["top-left", "top-right", "bottom-left"]
+    readonly property bool infoVisible: App.prefs.badgeRunning && infoSessions.length > 0
+    readonly property bool quotaVisible: App.prefs.badgeQuota && !App.liveData
+    readonly property bool tokenVisible: App.prefs.badgeToken && !App.liveData && !App.paused
+    function firstFreeCorner(preferred, occupied) {
+        if (occupied.indexOf(preferred) < 0) return preferred
+        for (const c of corners) if (occupied.indexOf(c) < 0) return c
+        return preferred
+    }
+    readonly property string infoCorner: App.prefs.floatingSignalInfoBadgeCorner
+    readonly property string quotaCorner: firstFreeCorner(App.prefs.floatingSignalQuotaBadgeCorner,
+                                                          infoVisible ? [infoCorner] : [])
+    readonly property string tokenCorner: firstFreeCorner(App.prefs.floatingSignalTokenBadgeCorner,
+                                                          (infoVisible ? [infoCorner] : []).concat(quotaVisible ? [quotaCorner] : []))
+    function resolvedCorner(kind) { return kind === "info" ? infoCorner : kind === "quota" ? quotaCorner : tokenCorner }
+    function cornerKey(kind) {
+        return kind === "info" ? "floatingSignalInfoBadgeCorner"
+             : kind === "quota" ? "floatingSignalQuotaBadgeCorner" : "floatingSignalTokenBadgeCorner"
+    }
+    function visibleBadges(except) {
+        const out = []
+        if (infoVisible && except !== "info") out.push("info")
+        if (quotaVisible && except !== "quota") out.push("quota")
+        if (tokenVisible && except !== "token") out.push("token")
+        return out
+    }
+    // nearestInfoBadgeCorner + moveBadge: a dropped badge snaps to the corner nearest its centre
+    // and swaps with a visible badge already there; the visible badges' corners are then saved.
+    function dropBadge(kind, fromCorner, centreX, centreY) {
+        let target = fromCorner
+        let best = Infinity
+        for (const c of corners) {
+            const p = badgePoint(c)
+            const d = Math.pow(p.x + badgeSize / 2 - centreX, 2) + Math.pow(p.y + badgeSize / 2 - centreY, 2)
+            if (d < best) {
+                best = d
+                target = c
+            }
+        }
+        if (target !== fromCorner) {
+            const occupying = visibleBadges(kind).find(k => resolvedCorner(k) === target)
+            if (occupying) App.prefs[cornerKey(occupying)] = fromCorner
+        }
+        App.prefs[cornerKey(kind)] = target
+        for (const k of visibleBadges("")) {
+            if (App.prefs[cornerKey(k)] !== resolvedCorner(k)) App.prefs[cornerKey(k)] = resolvedCorner(k)
+        }
     }
 
     // Opens a badge's panel, or closes it when that panel is already open.
@@ -116,22 +167,27 @@ Window {
                 panel.hide()
                 contextMenu.popup()
             } else {
-                win.togglePanel("info", "topRight")
+                win.togglePanel("info", win.infoCorner)
             }
         }
     }
 
     // asbBadgeBackground: a 24 px circle in the group fill with a hairline and a soft shadow;
-    // badgeFontSize shrinks the bold digits as the text grows.
+    // badgeFontSize shrinks the bold digits as the text grows. A click opens the badge's panel;
+    // a drag (FloatingSignalInfoBadgeDragView: 3 px threshold) moves it to another corner.
     component Badge: Item {
         id: badge
-        property string corner
+        property string kind // info | quota | token
+        readonly property string corner: win.resolvedCorner(kind)
         property alias text: label.text
         property color textColor: Theme.text
+        property point dragOffset: Qt.point(0, 0)
+        property bool dragging: false
         signal clicked()
         readonly property point origin: win.badgePoint(corner)
-        x: origin.x
-        y: origin.y
+        x: origin.x + dragOffset.x
+        y: origin.y + dragOffset.y
+        z: dragging ? 2 : 1
         width: win.badgeSize
         height: win.badgeSize
         Rectangle { // shadow: black 22 %, 1 px down
@@ -158,29 +214,58 @@ Window {
         }
         MouseArea {
             anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: badge.clicked()
+            cursorShape: badge.dragging ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+            property point start
+            function reset() {
+                badge.dragOffset = Qt.point(0, 0)
+                badge.dragging = false
+            }
+            onPressed: mouse => {
+                start = mapToGlobal(mouse.x, mouse.y)
+                badge.dragging = false
+            }
+            onPositionChanged: mouse => {
+                if (!pressed) return
+                const p = mapToGlobal(mouse.x, mouse.y)
+                const dx = p.x - start.x
+                const dy = p.y - start.y
+                if (!badge.dragging && Math.hypot(dx, dy) < 3) return
+                if (!badge.dragging) {
+                    badge.dragging = true
+                    panel.hide()
+                }
+                badge.dragOffset = Qt.point(dx, dy)
+            }
+            onReleased: {
+                if (!badge.dragging) {
+                    badge.clicked()
+                    return
+                }
+                win.dropBadge(badge.kind, badge.corner, badge.x + win.badgeSize / 2, badge.y + win.badgeSize / 2)
+                reset()
+            }
+            onCanceled: reset()
         }
     }
     Badge {
         readonly property int running: win.infoSessions.length
-        visible: App.prefs.badgeRunning && running > 0
-        corner: "topRight"
+        visible: win.infoVisible
+        kind: "info"
         text: running > 99 ? "99+" : String(running)
         onClicked: win.togglePanel("info", corner)
     }
     // Quota and token badges wait for the usage data layer; live runs hide them rather than
     // show demo numbers next to a live lamp.
     Badge {
-        visible: App.prefs.badgeQuota && !App.liveData
-        corner: "topLeft"
+        visible: win.quotaVisible
+        kind: "quota"
         text: "76%"
         textColor: Theme.toneForeground("positive")
         onClicked: win.togglePanel("quota", corner)
     }
     Badge {
-        visible: App.prefs.badgeToken && !App.liveData && !App.paused
-        corner: "bottomLeft"
+        visible: win.tokenVisible
+        kind: "token"
         text: "1.3M"
         textColor: Theme.accent
         // No token panel on Windows yet; the Usage page has the token chart.
@@ -321,7 +406,7 @@ Window {
     Window {
         id: panel
         property string mode: "info"   // info | quota
-        property string corner: "topRight"
+        property string corner: "top-right"
         flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
         color: "transparent"
         width: 250
@@ -338,7 +423,7 @@ Window {
             show()
             requestActivate()
         }
-        function toggle() { win.togglePanel("info", "topRight") }
+        function toggle() { win.togglePanel("info", win.infoCorner) }
 
         // The content lays out after the mode changes; keep the bottom edge above the badge.
         onHeightChanged: if (visible) place()
