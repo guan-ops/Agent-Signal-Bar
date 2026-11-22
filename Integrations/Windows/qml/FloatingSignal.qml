@@ -81,10 +81,14 @@ Window {
     }
 
     // Corner badges.
+    // Clickable like the macOS badges (each opens its panel); dragging a badge to another corner
+    // is not ported.
     component Badge: Rectangle {
+        id: badge
         property alias text: label.text
         property color textColor: Theme.text
         property bool inverted: false
+        signal clicked()
         width: Math.max(height, label.implicitWidth + 8)
         height: 20
         radius: height / 2
@@ -97,6 +101,12 @@ Window {
             font.weight: Font.Bold
             color: parent.inverted ? "black" : parent.textColor
         }
+        MouseArea {
+            anchors.fill: parent
+            anchors.margins: -3 // a 20 px badge is a small target
+            cursorShape: Qt.PointingHandCursor
+            onClicked: badge.clicked()
+        }
     }
     // Quota and token badges wait for the usage data layer; live runs hide them rather than
     // show demo numbers next to a live lamp.
@@ -106,6 +116,7 @@ Window {
         y: 0
         text: "76%"
         textColor: Theme.toneForeground("positive")
+        onClicked: popover.toggle() // the popover lists the quota windows
     }
     Badge {
         readonly property int running: App.liveData ? App.sessions.length : 1
@@ -114,6 +125,7 @@ Window {
         y: 0
         text: String(running)
         inverted: true
+        onClicked: popover.toggle() // "click to see the running agents"
     }
     Badge {
         visible: App.prefs.badgeToken && !App.liveData
@@ -121,6 +133,11 @@ Window {
         y: win.height - height
         text: "1.3M"
         textColor: Theme.accent
+        // No token panel on Windows yet; the Usage page has the token chart.
+        onClicked: {
+            popover.hide()
+            App.openSettings("usage")
+        }
     }
     // Free resize handle (bottom-right arrow): switches the size to "custom".
     Icon {
