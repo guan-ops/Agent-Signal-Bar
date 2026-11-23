@@ -18,6 +18,7 @@
         <file>qml/PrefSwitch.qml</file>
         <file>qml/Segmented.qml</file>
         <file>qml/Dropdown.qml</file>
+        <file>qml/SecretField.qml</file>
         <file>qml/StatusPill.qml</file>
         <file>qml/QuotaLine.qml</file>
         <file>qml/MenuRow.qml</file>

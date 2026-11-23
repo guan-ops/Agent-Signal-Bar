@@ -2,6 +2,8 @@
 
 #include "ActivityText.h"
 #include "ClaudeHookInstaller.h"
+#include "ClaudeUiMonitor.h"
+#include "CodexAccounts.h"
 #include "CliPath.h"
 #include "DebugLog.h"
 #include "I18n.h"
@@ -13,6 +15,7 @@
 #include "SoundFile.h"
 #include "UsageScanner.h"
 #include "UsageService.h"
+#include "QuotaService.h"
 
 #include <QClipboard>
 #include <QDateTime>
@@ -78,6 +81,10 @@ const QVariantMap &defaultPrefs() {
         {"floatingSignalTokenBadgeCorner", "bottom-left"},
         // The floating token badge counts today or the last 30 days (FloatingSignalTokenBadgeWindow).
         {"floatingSignalTokenBadgeWindow", "today"},
+        // Account quota (MenuBarStatusModel / ClaudeSupportModel keys).
+        {"floatingSignalQuotaBadgeWindow", "five-hours"}, {"codexUsageDataSource", "automatic"},
+        {"codexOpenAICookieMode", "off"}, {"claudeProviderSource", "oauth"}, {"claudeCredentialConsent", false},
+        {"claudeWebOrganization", ""}, {"claudeFloatingQuotaWindow", "five_hour"}, {"claudeUIStatusMonitoring", false},
         {"thinkingEffect", "green_fast_flash"}, {"workingEffect", "green_slow_flash"},
         {"needsReviewEffect", "slow_flash"}, {"permissionEffect", "slow_flash"},
         {"blockedEffect", "fast_flash"}, {"doneEffect", "green_steady"},
@@ -183,9 +190,22 @@ AppController::AppController(const QString &settingsFile, const QString &capture
                        QFileInfo(asb::debuglog::path()).absolutePath() + "/Cache", m_captureDir.isEmpty());
         connect(m_usage, &UsageService::changed, this, &AppController::rebuildUsage);
         connect(this, &AppController::languageChanged, this, &AppController::rebuildUsage);
+        // Account quota reads this user's real logins, so capture runs keep the demo numbers.
+        if (m_captureDir.isEmpty()) {
+            m_quota = new QuotaService(qEnvironmentVariable("APPDATA") + "/AgentSignalBar", QDir::homePath(), this);
+            m_quota->setCodexSource(m_prefs->value("codexUsageDataSource").toString());
+            m_quota->setCookieMode(m_prefs->value("codexOpenAICookieMode").toString());
+            m_quota->setClaudeSource(m_prefs->value("claudeProviderSource").toString());
+            m_quota->setClaudeOrganization(m_prefs->value("claudeWebOrganization").toString());
+            m_quota->setClaudeConsent(m_prefs->value("claudeCredentialConsent").toBool());
+            connect(m_quota, &QuotaService::changed, this, &AppController::rebuildQuota);
+            connect(this, &AppController::languageChanged, this, &AppController::rebuildQuota);
+            m_quota->start(true);
+        }
     }
     rebuildActivity();
     rebuildUsage();
+    rebuildQuota();
     refreshCli();
     // Capture runs never look at the real agent settings.
     if (m_captureDir.isEmpty()) {
@@ -425,13 +445,28 @@ void AppController::pollPresence() {
     m_presenceInFlight = true;
     // Enumerating processes and windows takes a few milliseconds; keep it off the GUI thread.
     QPointer<AppController> self(this);
-    QThreadPool::globalInstance()->start([self] {
-        const QList<asb::SessionStatus> sessions =
-            asb::presence::detect(asb::presence::runningProcesses(), QDateTime::currentMSecsSinceEpoch());
-        QMetaObject::invokeMethod(QCoreApplication::instance(), [self, sessions] {
+    const bool checkClaudeUi = m_prefs->value("claudeUIStatusMonitoring").toBool();
+    QThreadPool::globalInstance()->start([self, checkClaudeUi] {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        QList<asb::SessionStatus> sessions = asb::presence::detect(asb::presence::runningProcesses(), now);
+        // The optional reply-state check: a replying Claude desktop replaces its idle presence row.
+        QString uiState;
+        if (checkClaudeUi) {
+            const asb::claudeui::State state = asb::claudeui::observe();
+            uiState = asb::claudeui::stateKey(state);
+            if (state == asb::claudeui::State::Working) {
+                sessions.removeIf([](const asb::SessionStatus &s) { return s.sessionID == "platform-presence:claude-desktop"; });
+                sessions.append(asb::claudeui::workingSession(now));
+            }
+        }
+        QMetaObject::invokeMethod(QCoreApplication::instance(), [self, sessions, uiState] {
             if (!self) return;
             self->m_presenceInFlight = false;
             if (self->m_runtime && !self->m_paused) self->m_runtime->setPresence(sessions);
+            if (self->m_claudeUiState != uiState) {
+                self->m_claudeUiState = uiState;
+                self->rebuildQuota();
+            }
         }, Qt::QueuedConnection);
     });
 }
@@ -658,6 +693,7 @@ void AppController::togglePause() {
     m_paused = !m_paused;
     if (m_runtime) m_runtime->setPaused(m_paused);
     if (m_usage) m_usage->setPaused(m_paused); // keeps the last confirmed usage
+    if (m_quota) m_quota->setPaused(m_paused);
     pollPresence(); // clears the open apps while paused, looks again on resume
     rebuildActivity();
     emit signalNameChanged();
@@ -667,6 +703,296 @@ void AppController::setDebugSignal(const QString &signal) {
     m_debugSignal = signal.isEmpty() ? QString() : asb::normalizedSignal(signal).value_or(QString());
     asb::debuglog::append(m_debugSignal.isEmpty() ? QStringLiteral("debug light cleared") : "debug light signal " + m_debugSignal);
     emit signalNameChanged();
+}
+
+// --- Account quota -------------------------------------------------------------------------
+
+// AppLanguage.displayName(for: quota window): 5 小时, 一周, 30 天, ...
+QString AppController::quotaWindowTitle(std::optional<int> minutes) const {
+    if (!minutes || *minutes <= 0) return text("5 小时", "5 hours");
+    if (*minutes % (24 * 60) == 0) {
+        const int days = *minutes / (24 * 60);
+        return days == 7 ? text("一周", "1 week") : text(QString("%1 天").arg(days), QString("%1d").arg(days));
+    }
+    if (*minutes % 60 == 0) return text(QString("%1 小时").arg(*minutes / 60), QString("%1 hours").arg(*minutes / 60));
+    return text(QString("%1 分钟").arg(*minutes), QString("%1 minutes").arg(*minutes));
+}
+
+// quotaResetText: "重置 18:25", or with the date for weekly windows.
+QString AppController::quotaResetText(std::optional<qint64> resetsAtMs, bool withDate) const {
+    if (!resetsAtMs) return text("重置时间未知", "reset time unavailable");
+    const QDateTime at = QDateTime::fromMSecsSinceEpoch(*resetsAtMs);
+    const QLocale locale = asb::i18n::locale();
+    const QString time = locale.toString(at.time(), "HH:mm");
+    QString when = time;
+    if (withDate) {
+        const QString lang = language();
+        when = (lang.startsWith("zh") || lang == "ja" ? QStringLiteral("%1月%2日 ").arg(at.date().month()).arg(at.date().day())
+                : lang == "ko" ? QStringLiteral("%1월 %2일 ").arg(at.date().month()).arg(at.date().day())
+                : locale.toString(at.date(), "MMM d, ")) + time;
+    }
+    return text("重置 " + when, "resets " + when);
+}
+
+void AppController::refreshQuota(const QString &provider) {
+    if (!m_quota) return;
+    if (provider != "claude") m_quota->refreshCodex();
+    if (provider != "codex") m_quota->refreshClaude();
+}
+void AppController::saveCodexAccount() { if (m_quota) m_quota->saveCurrentAccount(); }
+void AppController::switchCodexAccount(const QString &id) { if (m_quota) m_quota->switchAccount(id); }
+void AppController::removeCodexAccount(const QString &id) { if (m_quota) m_quota->removeAccount(id); }
+void AppController::addCodexAccount() { if (m_quota) m_quota->addAccount(); }
+void AppController::cancelAddCodexAccount() { if (m_quota) m_quota->cancelAddAccount(); }
+
+bool AppController::setCodexCookie(const QString &pasted) {
+    if (!m_quota) return false;
+    if (!pasted.trimmed().isEmpty() && asb::quota::sanitizeCookieHeader(pasted).isEmpty()) return false;
+    m_quota->setCookie(pasted);
+    return true;
+}
+
+bool AppController::setClaudeSession(const QString &pasted) { return m_quota && m_quota->setClaudeSession(pasted); }
+
+void AppController::rebuildQuota() {
+    QVariantMap map;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const auto updatedText = [this](qint64 ms) {
+        return ms > 0 ? text("更新 ", "Updated ") + QLocale::system().toString(QDateTime::fromMSecsSinceEpoch(ms).time(), QLocale::ShortFormat)
+                      : QString();
+    };
+    const auto remainingText = [this](double remaining) {
+        const int value = qRound(remaining);
+        return text(QString("剩余 %1%").arg(value), QString("%1% left").arg(value));
+    };
+    const auto tone = [](double remaining) {
+        return remaining <= 0 ? QStringLiteral("critical") : remaining < 20 ? QStringLiteral("caution") : QStringLiteral("positive");
+    };
+
+    if (m_quota) {
+        // Codex.
+        const QuotaService::CodexState &state = m_quota->codex();
+        const auto active = m_quota->accounts().active();
+        QVariantList accounts;
+        for (const asb::codexauth::Account &a : m_quota->accounts().accounts()) {
+            const QString title = !a.label.isEmpty() ? a.label : !a.email.isEmpty() ? a.email
+                : "Codex " + a.fingerprint.left(6) + "…" + a.fingerprint.right(4);
+            accounts.append(QVariantMap{{"id", a.id}, {"title", title}, {"plan", a.plan},
+                                        {"active", active && active->id == a.id}});
+        }
+        const auto identity = [&]() -> std::optional<asb::codexauth::Identity> {
+            QFile file(m_quota->codexAuthPath());
+            return file.open(QIODevice::ReadOnly) ? asb::codexauth::parseIdentity(file.readAll()) : std::nullopt;
+        }();
+        QString plan = state.hasResult ? state.result.usage.plan : QString();
+        if (plan.isEmpty() && identity) plan = identity->plan;
+        if (!plan.isEmpty()) plan[0] = plan[0].toUpper();
+
+        // FloatingSignalQuotaBadgeWindow: exact 5-hour / weekly windows; a lone short window
+        // stands in for the 5-hour slot.
+        const QString badgeKey = m_prefs->value("floatingSignalQuotaBadgeWindow").toString();
+        QList<asb::quota::Window> windows;
+        if (state.hasResult && state.result.usage.primary) windows.append(*state.result.usage.primary);
+        if (state.hasResult && state.result.usage.secondary) windows.append(*state.result.usage.secondary);
+        const auto windowFor = [&](const QString &key) -> std::optional<asb::quota::Window> {
+            const int exact = key == "weekly" ? 7 * 24 * 60 : 5 * 60;
+            for (const auto &w : windows) {
+                if (w.minutes == exact) return w;
+            }
+            if (windows.size() == 1 && key == "five-hours" && windows[0].minutes != 7 * 24 * 60) return windows[0];
+            return std::nullopt;
+        };
+        QVariantList windowRows;
+        for (const auto &w : windows) {
+            QString key;
+            for (const QString &k : {QStringLiteral("five-hours"), QStringLiteral("weekly")}) {
+                const auto match = windowFor(k);
+                if (match && match->id == w.id && key.isEmpty()) key = k;
+            }
+            const double remaining = 100 - w.usedPercent;
+            windowRows.append(QVariantMap{
+                {"title", quotaWindowTitle(w.minutes)}, {"remaining", qRound(remaining)},
+                {"valueText", remainingText(remaining)},
+                {"reset", quotaResetText(w.resetsAtMs, key == "weekly" || w.minutes.value_or(0) >= 24 * 60)},
+                {"key", key}, {"selected", !key.isEmpty() && key == badgeKey}});
+        }
+        QString badge = QStringLiteral("--"), badgeTone = QStringLiteral("neutral");
+        if (const auto selected = windowFor(badgeKey)) {
+            badge = QString::number(qRound(100 - selected->usedPercent)) + '%';
+            badgeTone = tone(100 - selected->usedPercent);
+        } else if (state.hasResult && windows.isEmpty() && state.result.usage.credits && state.result.usage.credits->remaining) {
+            const double credits = *state.result.usage.credits->remaining;
+            badge = credits < 1 ? QStringLiteral("<1c") : credits >= 1000 ? QString::number(credits / 1000, 'f', 1) + "Kc"
+                                                                            : QString::number(qRound(credits)) + 'c';
+        }
+        QString creditsText;
+        if (state.hasResult && state.result.usage.credits) {
+            const asb::quota::Credit &c = *state.result.usage.credits;
+            creditsText = c.limit ? text("每月额度 · 剩余 ", "Monthly credit limit · ") + QString::number(c.remaining.value_or(0), 'f', 0)
+                                        + " / " + QString::number(*c.limit, 'f', 0) + text("", " left")
+                                  : text("额度余额 ", "Credits ") + QString::number(c.balance.value_or(0), 'f', 0);
+        }
+        // Limit reset credits: count plus up to four expiry countdowns.
+        QVariantMap resetCredits;
+        if (state.hasResult && state.result.resetCredits) {
+            const QList<asb::quota::ResetCredit> available = asb::quota::availableResetCredits(*state.result.resetCredits, now);
+            QStringList items;
+            for (const auto &c : available.mid(0, 4)) {
+                if (!c.expiresAtMs) {
+                    items.append(text("无到期时间", "No expiry"));
+                    continue;
+                }
+                const qint64 minutes = std::max<qint64>(0, (*c.expiresAtMs - now) / 60'000);
+                items.append(minutes >= 1440 ? QString("%1d %2h").arg(minutes / 1440).arg(minutes % 1440 / 60)
+                             : minutes >= 60 ? QString("%1h %2m").arg(minutes / 60).arg(minutes % 60)
+                                             : QString("%1m").arg(minutes));
+            }
+            if (available.size() > 4) items.append(QString("+%1").arg(available.size() - 4));
+            resetCredits = {{"title", text(QString("%1 次可用").arg(available.size()), QString("%1 available").arg(available.size()))},
+                            {"detail", items.isEmpty() ? text("暂无可用额度", "No credits available") : items.join(" · ")}};
+        }
+        QString status;
+        const QString error = state.error;
+        if (error == "noCredentials") status = text("未登录 Codex：请在 Codex 中登录，或添加账号。", "Not signed in to Codex. Sign in with Codex or add an account.");
+        else if (error == "apiKey") status = text("当前用 API Key 登录，无法读取订阅额度。", "Signed in with an API key; subscription quota is unavailable.");
+        else if (error == "unauthorized" || error == "refreshRejected") status = text("登录已失效，请在 Codex 中重新登录。", "Sign-in expired. Sign in to Codex again.");
+        else if (error == "credentialsChanged") status = text("登录信息刚刚变化，稍后重试。", "The sign-in just changed; retrying shortly.");
+        else if (error == "noRateLimits") status = text("账号没有返回额度信息。", "The account returned no limits.");
+        else if (error == "network") status = text("网络不可用，稍后重试。", "Network unavailable; retrying later.");
+        else if (error.startsWith("server ")) status = text("服务器返回 ", "Server returned ") + error.mid(7);
+        if (!status.isEmpty() && state.hasResult) status = text("上次读取结果 · ", "Previous snapshot · ") + status;
+        const QString message = m_quota->accountMessage();
+        const QString accountMessage = message == "codexCliMissing"
+            ? text("找不到 Codex CLI。请先安装（npm i -g @openai/codex），或在 Codex 中登录后点“保存当前账号”。",
+                   "Codex CLI not found. Install it (npm i -g @openai/codex), or sign in with Codex and click Save Current.")
+            : message == "loginStarted" ? text("已打开登录页面，完成登录后会自动添加。", "Sign-in page opened; the account is added when you finish.")
+            : message == "accountAdded" ? text("已添加账号。", "Account added.")
+            : message == "loginFailed" ? text("登录没有完成。", "Sign-in did not finish.")
+            : message == "saved" ? text("已保存当前账号。", "Current account saved.") : message;
+        const QString limitTitle = state.hasResult && !state.result.usage.limitName.isEmpty() ? state.result.usage.limitName
+            : state.hasResult && !state.result.usage.limitId.isEmpty() ? state.result.usage.limitId : text("Codex 配额", "Codex quota");
+        map.insert("codex", QVariantMap{
+            {"accounts", accounts},
+            {"activeId", active ? active->id : QString()},
+            {"email", identity ? identity->email : QString()},
+            {"signedIn", identity.has_value()},
+            {"plan", plan},
+            {"needsSave", m_quota->accounts().currentNeedsSaving()},
+            {"cliFound", m_quota->codexCliFound()},
+            {"adding", m_quota->addingAccount()},
+            {"message", accountMessage},
+            {"fetching", state.fetching},
+            {"ready", state.hasResult},
+            {"status", status},
+            {"source", state.result.source == "Cookie" ? QStringLiteral("OpenAI Cookie") : QStringLiteral("Codex OAuth")},
+            {"updated", updatedText(state.updatedAtMs)},
+            {"limitTitle", limitTitle},
+            {"limitId", state.hasResult ? state.result.usage.limitId : QString()},
+            {"windows", windowRows},
+            {"credits", creditsText},
+            {"resetCredits", resetCredits},
+            {"badgeText", badge},
+            {"badgeTone", badgeTone},
+            {"hasCookie", m_quota->hasCookie()}});
+
+        // Claude.
+        const QuotaService::ClaudeState &claude = m_quota->claude();
+        const asb::quota::ClaudeUsage &usage = claude.result.usage;
+        const QString claudeBadgeKey = m_prefs->value("claudeFloatingQuotaWindow").toString();
+        QVariantList claudeWindows;
+        std::optional<double> claudeBadge;
+        double worstUsed = -1;
+        for (const asb::quota::Window &w : claude.hasResult ? usage.windows : QList<asb::quota::Window>()) {
+            const QStringList titles = w.title.split(" / ");
+            const QString title = titles.size() == 2 ? text(titles[0], titles[1]) : w.title;
+            const double remaining = 100 - w.usedPercent;
+            claudeWindows.append(QVariantMap{{"id", w.id}, {"title", title}, {"remaining", qRound(remaining)},
+                                             {"valueText", remainingText(remaining)},
+                                             {"reset", quotaResetText(w.resetsAtMs, w.id != "five_hour")},
+                                             {"selected", w.id == claudeBadgeKey}});
+            if (w.id == claudeBadgeKey) claudeBadge = remaining;
+            const bool current = !w.resetsAtMs || *w.resetsAtMs > now;
+            if (claudeBadgeKey == "automatic" && current && w.usedPercent > worstUsed) {
+                worstUsed = w.usedPercent;
+                claudeBadge = remaining;
+            }
+        }
+        const auto money = [](std::optional<double> value, const QString &currency) {
+            return value ? currency + ' ' + QString::number(*value, 'f', 2) : QStringLiteral("—");
+        };
+        QStringList balances;
+        if (claude.hasResult) {
+            if (usage.extraUsed || usage.extraLimit)
+                balances.append(text("额外用量 · 已用 ", "Extra usage · Used ") + money(usage.extraUsed, usage.extraCurrency)
+                                + text(" · 月上限 ", " · Monthly limit ") + money(usage.extraLimit, usage.extraCurrency));
+            if (usage.prepaidBalance)
+                balances.append(text("预充值余额 ", "Prepaid balance ") + money(usage.prepaidBalance, usage.prepaidCurrency));
+            if (usage.cloudLimit)
+                balances.append(text("云端额度 · 剩余 ", "Cloud credits · ") + money(usage.cloudRemaining, "USD")
+                                + " / " + money(usage.cloudLimit, "USD") + text("", " left"));
+            if (usage.resetsLeft)
+                balances.append(text(QString("限额重置 · %1 次可用").arg(*usage.resetsLeft),
+                                     QString("Limit resets · %1 available").arg(*usage.resetsLeft)));
+            if (usage.renewsAtMs)
+                balances.append(text("下次续费 ", "Renews ")
+                                + QLocale::system().toString(QDateTime::fromMSecsSinceEpoch(*usage.renewsAtMs).date(), QLocale::ShortFormat));
+        }
+        QString claudeStatus;
+        const QString claudeError = claude.error;
+        if (claudeError == "consentRequired") claudeStatus = text("需要先允许读取 Claude Code 凭据。", "Allow reading the Claude Code credentials first.");
+        else if (claudeError == "noCredentials") claudeStatus = text("没有找到 Claude Code 登录（.credentials.json）。请先在 Claude Code 中登录。", "No Claude Code sign-in (.credentials.json). Sign in with Claude Code first.");
+        else if (claudeError == "noSession") claudeStatus = text("请粘贴 claude.ai 的 sessionKey。", "Paste the claude.ai sessionKey.");
+        else if (claudeError == "loginRequired") claudeStatus = text("Claude 登录已过期，请重新登录。", "Claude sign-in expired. Sign in again.");
+        else if (claudeError == "unauthorized") claudeStatus = text("Claude 拒绝了请求（403）。", "Claude refused the request (403).");
+        else if (claudeError == "rateLimited")
+            claudeStatus = text("请求过于频繁，", "Rate limited; retrying at ")
+                + QLocale::system().toString(QDateTime::fromMSecsSinceEpoch(claude.retryAfterMs).time(), QLocale::ShortFormat)
+                + text(" 后重试。", ".");
+        else if (claudeError == "challenge") claudeStatus = text("claude.ai 要求浏览器验证。请在浏览器中打开 claude.ai 后重新粘贴 sessionKey。", "claude.ai asked for a browser check. Open claude.ai in a browser, then paste the sessionKey again.");
+        else if (claudeError == "chooseOrganization") claudeStatus = text("请选择组织。", "Choose an organization.");
+        else if (claudeError == "network") claudeStatus = text("网络不可用，稍后重试。", "Network unavailable; retrying later.");
+        else if (claudeError == "invalidResponse") claudeStatus = text("Claude 返回的数据无法识别。", "Claude returned data that could not be read.");
+        else if (claudeError.startsWith("server ")) claudeStatus = text("服务器返回 ", "Server returned ") + claudeError.mid(7);
+        if (!claudeStatus.isEmpty() && claude.hasResult) claudeStatus = text("上次读取结果 · ", "Previous snapshot · ") + claudeStatus;
+        QVariantList organizations;
+        for (const QString &entry : claude.result.organizations) {
+            const QStringList parts = entry.split('\t');
+            organizations.append(QVariantMap{{"value", parts.value(0)}, {"label", parts.value(1).isEmpty() ? parts.value(0) : parts.value(1)}});
+        }
+        map.insert("claude", QVariantMap{
+            {"consent", m_prefs->value("claudeCredentialConsent").toBool()},
+            {"hasCredentials", m_quota->hasClaudeCredentials()},
+            {"hasSession", m_quota->hasClaudeSession()},
+            {"organizations", organizations},
+            {"fetching", claude.fetching},
+            {"ready", claude.hasResult},
+            {"status", claudeStatus},
+            {"email", claude.hasResult ? usage.email : QString()},
+            {"plan", claude.hasResult ? usage.plan : QString()},
+            {"organization", claude.hasResult ? usage.organization : QString()},
+            {"source", claude.hasResult ? usage.source : QString()},
+            {"updated", updatedText(claude.updatedAtMs)},
+            {"windows", claudeWindows},
+            {"balances", balances},
+            {"badgeText", claudeBadge ? QString::number(qRound(*claudeBadge)) + '%' : QStringLiteral("—")},
+            {"badgeTone", claudeBadge ? tone(*claudeBadge) : QStringLiteral("neutral")}});
+    }
+
+    // Claude desktop reply state (claudeUIConnectionMessage).
+    const bool uiEnabled = m_prefs->value("claudeUIStatusMonitoring").toBool();
+    const QString ui = m_claudeUiState;
+    const QString uiMessage = !uiEnabled ? text("已关闭", "Off")
+        : ui.isEmpty() ? text("正在检查…", "Checking…")
+        : ui == "notRunning" ? text("Claude 桌面版未运行。", "Claude desktop is not running.")
+        : ui == "working" ? text("Claude 正在回复。", "Claude is responding.")
+        : ui == "notResponding" ? text("未检测到正在回复；后台任务是否完成无法判断。", "Not responding now; background completion is unknown.")
+        : text("暂时无法读取 Claude 窗口，可能是 Claude 更新了界面。", "Cannot read the Claude window right now; its interface may have changed.");
+    const QVariantMap claudeUi{{"enabled", uiEnabled}, {"state", ui}, {"message", uiMessage}};
+    if (map != m_quotaMap || claudeUi != m_claudeUi) {
+        m_quotaMap = map;
+        m_claudeUi = claudeUi;
+        emit quotaChanged();
+    }
 }
 
 // --- Logs, diagnostics, CLI --------------------------------------------------------------
@@ -1200,6 +1526,22 @@ void AppController::onPrefChanged(const QString &key, const QVariant &value) {
         rebuildUsage();
     } else if (key == "floatingSignalTokenBadgeWindow") {
         rebuildUsage();
+    } else if (key == "floatingSignalQuotaBadgeWindow" || key == "claudeFloatingQuotaWindow") {
+        rebuildQuota();
+    } else if (key == "codexUsageDataSource" || key == "codexOpenAICookieMode" || key == "claudeProviderSource"
+               || key == "claudeWebOrganization" || key == "claudeCredentialConsent") {
+        if (m_quota) {
+            if (key == "codexUsageDataSource") m_quota->setCodexSource(value.toString());
+            else if (key == "codexOpenAICookieMode") m_quota->setCookieMode(value.toString());
+            else if (key == "claudeProviderSource") m_quota->setClaudeSource(value.toString());
+            else if (key == "claudeWebOrganization") m_quota->setClaudeOrganization(value.toString());
+            else m_quota->setClaudeConsent(value.toBool());
+        }
+        rebuildQuota();
+    } else if (key == "claudeUIStatusMonitoring") {
+        if (!value.toBool()) m_claudeUiState.clear();
+        pollPresence();
+        rebuildQuota();
     } else if (key == "codexDataDir") {
         if (m_runtime && m_codexDirOverride.isEmpty()) m_runtime->setRoots(codexRoots(value.toString()), true);
         if (m_usage && m_codexDirOverride.isEmpty()) m_usage->setCodexRoots(usageCodexRoots());

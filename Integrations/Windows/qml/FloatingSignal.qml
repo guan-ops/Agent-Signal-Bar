@@ -49,7 +49,11 @@ Window {
     // earlier visible one moves to the first free corner.
     readonly property var corners: ["top-left", "top-right", "bottom-left"]
     readonly property bool infoVisible: App.prefs.badgeRunning && infoSessions.length > 0
-    readonly property bool quotaVisible: App.prefs.badgeQuota && !App.liveData
+    // floatingQuotaContent: the lamp's agent's quota when live (Codex once read; Claude always,
+    // showing "—" and the reason in its panel until a fresh snapshot), else the demo quota.
+    readonly property var quotaData: App.liveData && App.quota[win.tokenProvider] !== undefined ? App.quota[win.tokenProvider] : null
+    readonly property bool quotaVisible: App.prefs.badgeQuota && !App.paused
+        && (!App.liveData || (win.quotaData !== null && (win.quotaData.ready || win.tokenProvider === "claude")))
     readonly property bool tokenVisible: App.prefs.badgeToken && !App.paused && win.tokenUsage !== null
     // The token badge counts the lamp's agent (isClaudeFloatingUsage): the local scan when live.
     readonly property string tokenProvider: App.liveData ? (App.usage.floatingProvider || "codex") : "codex"
@@ -262,8 +266,8 @@ Window {
     Badge {
         visible: win.quotaVisible
         kind: "quota"
-        text: "76%"
-        textColor: Theme.toneForeground("positive")
+        text: win.quotaData ? win.quotaData.badgeText : "76%"
+        textColor: Theme.toneForeground(win.quotaData ? win.quotaData.badgeTone : "positive")
         onClicked: win.togglePanel("quota", corner)
     }
     Badge {
@@ -467,19 +471,77 @@ Window {
                     signalState: App.displayState
                 }
 
-                // Quota windows (demo data until the usage layer is ported).
-                Repeater {
-                    model: panel.mode === "quota" ? Demo.account(Theme.t).quotas : []
-                    QuotaLine {
-                        required property var modelData
+                // Quota (FloatingSignalQuotaPopoverView): the limit and its windows; clicking a
+                // window makes it the badge's.
+                RowLayout {
+                    visible: panel.mode === "quota" && win.quotaData !== null
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 9
+                    Layout.rightMargin: 9
+                    Layout.topMargin: 3
+                    AsbText {
+                        text: win.quotaData ? (win.tokenProvider === "claude" ? "Claude" : win.quotaData.limitTitle) : ""
+                        strong: true
+                        elide: Text.ElideRight
                         Layout.fillWidth: true
-                        Layout.leftMargin: 9
-                        Layout.rightMargin: 9
-                        compact: true
-                        title: modelData.title
-                        valueText: modelData.remaining + "%"
-                        remainingPercent: modelData.remaining
-                        detail: modelData.reset
+                    }
+                    AsbText { text: win.quotaData ? win.quotaData.updated : ""; caption: true; secondary: true }
+                }
+                AsbText {
+                    visible: panel.mode === "quota" && text.length > 0
+                    text: win.quotaData ? (win.quotaData.status || "") : ""
+                    caption: true
+                    color: Theme.toneForeground("caution")
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 9
+                    Layout.rightMargin: 9
+                }
+                Repeater {
+                    model: panel.mode !== "quota" ? []
+                        : win.quotaData ? win.quotaData.windows
+                        : Demo.account(Theme.t).quotas.map(q => ({ title: q.title, remaining: q.remaining, reset: q.reset,
+                                                                   valueText: q.remaining + "%", selected: false, key: "", id: "" }))
+                    Rectangle {
+                        id: quotaRow
+                        required property var modelData
+                        readonly property bool selectable: win.quotaData !== null
+                            && (win.tokenProvider === "claude" || (modelData.key || "").length > 0)
+                        Layout.fillWidth: true
+                        implicitHeight: quotaLine.implicitHeight + 8
+                        radius: Theme.radiusControl
+                        color: quotaArea.containsMouse && selectable ? Theme.hoverFill : "transparent"
+                        QuotaLine {
+                            id: quotaLine
+                            x: 9
+                            y: 4
+                            width: parent.width - 18 - (quotaRow.modelData.selected ? 18 : 0)
+                            compact: true
+                            title: quotaRow.modelData.title
+                            valueText: quotaRow.modelData.valueText
+                            remainingPercent: quotaRow.modelData.remaining
+                            detail: quotaRow.modelData.reset
+                        }
+                        Icon {
+                            visible: quotaRow.modelData.selected === true
+                            anchors.right: parent.right
+                            anchors.rightMargin: 9
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: "check"
+                            size: 13
+                            color: Theme.accent
+                        }
+                        MouseArea {
+                            id: quotaArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            enabled: quotaRow.selectable
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                if (win.tokenProvider === "claude") App.prefs.claudeFloatingQuotaWindow = quotaRow.modelData.id
+                                else App.prefs.floatingSignalQuotaBadgeWindow = quotaRow.modelData.key
+                            }
+                        }
                     }
                 }
 

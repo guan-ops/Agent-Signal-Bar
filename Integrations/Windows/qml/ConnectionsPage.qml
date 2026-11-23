@@ -199,11 +199,12 @@ SettingsPage {
 
     AsbSection {
         title: Theme.t("Claude 桌面回复状态（可选）", "Claude Desktop reply state (optional)")
-        footer: Theme.t("macOS 版通过辅助功能读取；Windows 版需要改用 UI Automation，尚未实现。",
-                        "macOS reads this through Accessibility; Windows needs UI Automation, which is not implemented yet.")
+        footer: Theme.t("只读检查当前 Claude 窗口的回复按钮，不保存聊天内容；不判断后台任务完成。",
+                        "Read-only checks of response controls in Claude windows; no chat content is saved and background completion is not inferred.")
         AsbRow {
             title: Theme.t("读取 Claude 桌面回复状态", "Read Claude Desktop reply state")
-            StatusPill { text: Theme.t("暂不支持", "Not available"); tone: "neutral" }
+            subtitle: App.claudeUi.message || ""
+            PrefSwitch { key: "claudeUIStatusMonitoring" }
         }
     }
 }

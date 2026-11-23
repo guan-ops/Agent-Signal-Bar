@@ -21,14 +21,19 @@ ColumnLayout {
 
     PlatformSwitcher {}
 
-    // Account and quota data are not ported yet; say so next to a live lamp.
+    // Without this PC's account data (demo and fixture runs) the account part is demo data.
     StatusPill {
-        visible: App.liveData && !root.claude
+        visible: App.liveData && !root.claude && root.live === null
         text: Theme.t("账号与额度为演示数据", "Account & quota: demo data")
         tone: "caution"
     }
 
-    // Account and quota.
+    // Account and quota: App.quota when live, else the demo account (Codex only).
+    readonly property var live: App.liveData && App.quota[root.claude ? "claude" : "codex"] !== undefined
+        ? App.quota[root.claude ? "claude" : "codex"] : null
+    readonly property var quotaRows: root.live ? root.live.windows
+        : root.claude ? [] : root.account.quotas.map(q => ({ title: q.title, remaining: q.remaining, reset: q.reset,
+                                                            valueText: Theme.t("剩余 ", "") + q.remaining + "%" + Theme.t("", " left") }))
     AsbGroup {
         spacing: 10
         RowLayout {
@@ -43,13 +48,16 @@ ColumnLayout {
             ColumnLayout {
                 spacing: 3
                 AsbText {
-                    text: root.claude ? Theme.t("尚未读取账号", "Account not read") : root.account.email
+                    text: root.live
+                        ? (root.live.email || (root.claude ? (root.live.ready ? "Claude" : Theme.t("尚未读取账号", "Account not read"))
+                                                           : (root.live.signedIn ? Theme.t("已登录", "Signed in") : Theme.t("未登录", "Not signed in"))))
+                        : root.claude ? Theme.t("尚未读取账号", "Account not read") : root.account.email
                     caption: true
                     strong: true
                 }
                 AsbText {
-                    visible: !root.claude
-                    text: root.account.plan
+                    visible: text.length > 0
+                    text: root.live ? (root.live.plan || "") : root.claude ? "" : root.account.plan
                     caption: true
                     secondary: true
                 }
@@ -62,34 +70,43 @@ ColumnLayout {
             }
         }
         AsbText {
-            visible: root.claude
-            text: Theme.t("暂无已验证配额", "No verified quota")
+            visible: text.length > 0
+            text: root.live ? (root.live.status || (root.quotaRows.length === 0 ? Theme.t("暂无已验证配额", "No verified quota") : ""))
+                            : root.claude ? Theme.t("暂无已验证配额", "No verified quota") : ""
             caption: true
-            secondary: true
+            color: root.live && root.live.status ? Theme.toneForeground("caution") : Theme.secondary
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
         }
         RowLayout {
-            visible: !root.claude
+            visible: root.live ? root.live.ready : !root.claude
             Layout.fillWidth: true
-            AsbText { text: root.account.source; caption: true; secondary: true; Layout.fillWidth: true }
-            AsbText { text: root.account.updated; caption: true; secondary: true }
+            AsbText { text: root.live ? root.live.source : root.account.source; caption: true; secondary: true; Layout.fillWidth: true }
+            AsbText { text: root.live ? root.live.updated : root.account.updated; caption: true; secondary: true }
         }
         Repeater {
-            model: root.claude ? [] : root.account.quotas
+            model: root.quotaRows
             QuotaLine {
                 required property var modelData
                 compact: true
                 title: modelData.title
-                valueText: Theme.t("剩余 ", "") + modelData.remaining + "%" + Theme.t("", " left")
+                valueText: modelData.valueText
                 remainingPercent: modelData.remaining
                 detail: modelData.reset
             }
         }
         RowLayout {
-            visible: !root.claude
+            visible: !root.claude && (root.live ? root.live.resetCredits.title !== undefined : true)
             Layout.fillWidth: true
-            AsbText { text: root.account.resetCredits; caption: true; secondary: true; Layout.fillWidth: true }
+            AsbText {
+                text: root.live ? (root.live.resetCredits.title ? Theme.t("限额重置额度 · ", "Limit resets · ") + root.live.resetCredits.title : "")
+                                : root.account.resetCredits
+                caption: true
+                secondary: true
+                Layout.fillWidth: true
+            }
             Icon { name: "clock"; size: 11; color: Theme.secondary }
-            AsbText { text: root.account.resetCreditsDetail; caption: true; secondary: true }
+            AsbText { text: root.live ? (root.live.resetCredits.detail || "") : root.account.resetCreditsDetail; caption: true; secondary: true }
         }
     }
 

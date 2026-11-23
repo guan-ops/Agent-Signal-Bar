@@ -19,6 +19,7 @@ class QScreen;
 class QWindow;
 class SignalRuntime;
 class UsageService;
+class QuotaService;
 namespace asb::usage { struct Report; }
 
 // The bridge between QML and the platform: preferences, the shared animation tick,
@@ -65,6 +66,10 @@ class AppController : public QObject {
     // ready, scanning, status, scan, today/month {tokens, tokensText, costText, costLine},
     // days (30, for TokenChart), topModel, projects, badgeText, empty; plus rateNote.
     Q_PROPERTY(QVariantMap usage READ usage NOTIFY usageChanged)
+    // Account quota: {codex, claude} with accounts, windows, reset credits, badge text and status
+    // (AppController::rebuildQuota); claudeUi is the Claude desktop reply-state check.
+    Q_PROPERTY(QVariantMap quota READ quota NOTIFY quotaChanged)
+    Q_PROPERTY(QVariantMap claudeUi READ claudeUi NOTIFY quotaChanged)
     // Which agent the lamp shows (signalLightFollowingText): "自动跟随 · Codex 终端", "暂时显示
     // Claude 桌面版", or the manual selection; empty without live data.
     Q_PROPERTY(QString lightFollowingText READ lightFollowingText NOTIFY activityChanged)
@@ -113,6 +118,8 @@ public:
     QVariantMap cli() const { return m_cli; }
     QString debugLogPath() const;
     QVariantMap usage() const { return m_usageMap; }
+    QVariantMap quota() const { return m_quotaMap; }
+    QVariantMap claudeUi() const { return m_claudeUi; }
 
     asb::EffectCustomization effectCustomization() const;
     void setTrayGeometry(const QRect &rect) { m_trayGeometry = rect; }
@@ -164,6 +171,15 @@ public:
     Q_INVOKABLE void installCli();
     Q_INVOKABLE void uninstallCli();
     Q_INVOKABLE void refreshUsage();
+    Q_INVOKABLE void refreshQuota(const QString &provider);
+    Q_INVOKABLE void saveCodexAccount();
+    Q_INVOKABLE void switchCodexAccount(const QString &id);
+    Q_INVOKABLE void removeCodexAccount(const QString &id);
+    Q_INVOKABLE void addCodexAccount();
+    Q_INVOKABLE void cancelAddCodexAccount();
+    // Pasted secrets: "" clears; false when the text holds no usable cookie.
+    Q_INVOKABLE bool setCodexCookie(const QString &pasted);
+    Q_INVOKABLE bool setClaudeSession(const QString &pasted);
     // Local path from a FolderDialog URL, so QML can store it in prefs.codexDataDir.
     Q_INVOKABLE QString localPath(const QUrl &url) const;
     Q_INVOKABLE void quit();
@@ -177,6 +193,7 @@ signals:
     void diagnosticsChanged();
     void cliChanged();
     void usageChanged();
+    void quotaChanged();
     void languageChanged();
     void themeChanged();
     void settingsRequested(const QString &page);
@@ -215,6 +232,9 @@ private:
     void refreshCli(const QString &message = QString(), const QString &tone = QStringLiteral("neutral"));
     void setDiagnostics(const QVariantMap &state);
     void rebuildUsage();
+    void rebuildQuota();
+    QString quotaResetText(std::optional<qint64> resetsAtMs, bool withDate) const;
+    QString quotaWindowTitle(std::optional<int> minutes) const;
     QVariantMap usageSide(const asb::usage::Report &report, bool claude) const;
     QString costText(std::optional<double> usd, bool partial) const;
     QString compactTokens(qint64 count) const;
@@ -241,6 +261,10 @@ private:
     QVariantMap m_cli;
     UsageService *m_usage = nullptr;
     QVariantMap m_usageMap;
+    QuotaService *m_quota = nullptr;
+    QVariantMap m_quotaMap;
+    QVariantMap m_claudeUi;
+    QString m_claudeUiState; // ClaudeUiMonitor state key, "" when the check is off
     std::unique_ptr<QSettings> m_settings;
     QString m_captureDir;
     QTimer m_timer;

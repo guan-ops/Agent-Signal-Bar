@@ -16,6 +16,10 @@
 #include "../src/UsagePricing.h"
 #include "../src/UsageScanner.h"
 #include "../src/I18n.h"
+#include "../src/ClaudeUiMonitor.h"
+#include "../src/CodexAccounts.h"
+#include "../src/QuotaFetcher.h"
+#include "../src/Secrets.h"
 
 #include <QLockFile>
 
@@ -1013,6 +1017,277 @@ private slots:
         QCOMPARE(i18n::text("通用", "General"), QString::fromUtf8("通用"));
         i18n::setLanguage("en"); // the other tests expect English activity text
         QCOMPARE(i18n::text("通用", "General"), QString("General"));
+    }
+
+    // CodexUsageResponse / usageStatus and the reset-credit list.
+    void codexQuotaResponseParsesLikeMacOS() {
+        const auto usage = quota::parseCodexUsage(R"({"plan_type":"pro",
+            "rate_limit":{"limit_name":"Codex","primary_window":{"used_percent":24,"reset_at":1800000000,"limit_window_seconds":18000},
+                          "secondary_window":{"used_percent":138,"reset_at":1800500000,"limit_window_seconds":604800}},
+            "credits":{"balance":"12.5"},
+            "spend_control":{"individual_limit":{"limit":100,"remaining_percent":40,"resets_at":1801000000}}})");
+        QVERIFY(usage.has_value());
+        QCOMPARE(usage->plan, QString("pro"));
+        QCOMPARE(usage->limitName, QString("Codex"));
+        QCOMPARE(usage->primary->usedPercent, 24.0);
+        QCOMPARE(*usage->primary->minutes, 300);
+        QCOMPARE(*usage->primary->resetsAtMs, 1'800'000'000'000LL);
+        QCOMPARE(usage->secondary->usedPercent, 100.0); // clamped
+        QCOMPARE(usage->credits->title, QString("Monthly credit limit"));
+        QCOMPARE(*usage->credits->used, 60.0);
+        QCOMPARE(*usage->credits->balance, 12.5);
+        // A secondary window alone becomes the primary; nothing at all is no quota.
+        QCOMPARE(*quota::parseCodexUsage(R"({"rate_limit":{"secondary_window":{"used_percent":5,"reset_at":1,"limit_window_seconds":604800}}})")
+                      ->primary->minutes, 10080);
+        QVERIFY(!quota::parseCodexUsage(R"({"plan_type":"free"})"));
+
+        const auto reset = quota::parseResetCredits(R"({"available_count":2,"credits":[
+            {"status":"available","granted_at":"2026-11-01T00:00:00Z","expires_at":"2026-12-01T00:00:00Z"},
+            {"status":"redeemed","granted_at":"2026-11-01T00:00:00Z"},
+            {"status":"available","granted_at":"2026-11-01T00:00:00Z","expires_at":"2026-11-25T00:00:00Z"},
+            {"status":"available","granted_at":"2026-11-01T00:00:00Z","expires_at":"2026-11-02T00:00:00Z"}]})");
+        QVERIFY(reset.has_value());
+        const qint64 now = QDateTime(QDate(2026, 11, 20), QTime(0, 0), QTimeZone::UTC).toMSecsSinceEpoch();
+        const auto available = quota::availableResetCredits(*reset, now);
+        QCOMPARE(available.size(), 2); // redeemed and expired ones drop out
+        QVERIFY(*available[0].expiresAtMs < *available[1].expiresAtMs);
+
+        QCOMPARE(quota::sanitizeCookieHeader("curl 'https://chatgpt.com/x' -H 'Cookie: a=1; b=2' -H 'x: y'"), QString("a=1; b=2"));
+        QCOMPARE(quota::sanitizeCookieHeader("Cookie: a=1"), QString("a=1"));
+        QCOMPARE(quota::sanitizeCookieHeader("no cookie here"), QString());
+        QCOMPARE(quota::sanitizeClaudeSessionKey("Cookie: other=1; sessionKey=sk-ant-sid01-AbC; x=2"), QString("sessionKey=sk-ant-sid01-AbC"));
+        QCOMPARE(quota::sanitizeClaudeSessionKey("sk-ant-sid01-AbC"), QString("sessionKey=sk-ant-sid01-AbC"));
+        QCOMPARE(quota::sanitizeClaudeSessionKey("bad value\nx"), QString());
+    }
+
+    // CodexRateLimitFetcher with a fake transport: headers, the 8-day refresh written back only
+    // over unchanged bytes, the retry after a 401, and the cookie route's identity check.
+    void codexQuotaFetchRefreshesAndWritesBackSafely() {
+        QTemporaryDir dir;
+        const QString authPath = dir.path() + "/auth.json";
+        const QByteArray payload = QByteArray(R"({"email":"me@example.com"})").toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals);
+        const auto authJson = [&](const QString &access, const QString &lastRefresh) {
+            return QJsonDocument(QJsonObject{{"tokens", QJsonObject{{"access_token", access}, {"refresh_token", "r1"},
+                                                                    {"id_token", "h." + QString::fromLatin1(payload) + ".s"},
+                                                                    {"account_id", "acct-1"}}},
+                                             {"last_refresh", lastRefresh}}).toJson();
+        };
+        const qint64 now = QDateTime(QDate(2026, 11, 20), QTime(12, 0), QTimeZone::UTC).toMSecsSinceEpoch();
+        const QByteArray usageBody = R"({"rate_limit":{"primary_window":{"used_percent":30,"reset_at":1800000000,"limit_window_seconds":18000}}})";
+        QStringList calls;
+        QString persistedFrom;
+        quota::CodexOptions options;
+        options.authPath = authPath;
+        options.configPath = dir.path() + "/config.toml";
+        options.persistRefreshed = [&](const QString &oldFp, const QByteArray &) { persistedFrom = oldFp; };
+        QString expectBearer = "Bearer a1";
+        int usageStatus = 200;
+        const quota::Http http = [&](const quota::HttpRequest &r) {
+            const QString url = r.url.toString();
+            calls.append(QString::fromLatin1(r.method) + ' ' + url);
+            QHash<QByteArray, QByteArray> headers;
+            for (const auto &[k, v] : r.headers) headers.insert(k.toLower(), v);
+            quota::HttpResponse response;
+            if (url == "https://auth.openai.com/oauth/token") {
+                response.status = 200;
+                response.body = R"({"access_token":"a2","refresh_token":"r2"})";
+            } else if (url.endsWith("/wham/usage")) {
+                if (headers.contains("cookie")) {
+                    response.status = 200;
+                    response.body = usageBody;
+                } else {
+                    response.status = headers.value("authorization") == expectBearer.toUtf8() ? usageStatus : 401;
+                    response.body = usageBody;
+                }
+                if (!headers.contains("cookie")) {
+                    if (headers.value("chatgpt-account-id") != "acct-1") response.status = 400;
+                }
+            } else if (url.endsWith("/wham/rate-limit-reset-credits")) {
+                response.status = headers.value("openai-beta") == "codex-1" ? 200 : 400;
+                response.body = R"({"available_count":1,"credits":[{"status":"available","granted_at":"2026-11-01T00:00:00Z"}]})";
+            } else if (url == "https://chatgpt.com/backend-api/me") {
+                response.status = 200;
+                response.body = headers.value("cookie") == "good=1" ? R"({"user":{"email":"ME@example.com"}})" : R"({"email":"other@x.com"})";
+            }
+            return response;
+        };
+
+        // Fresh login: no refresh, Bearer + account id, then reset credits.
+        writeText(authPath, authJson("a1", "2026-11-19T00:00:00Z"));
+        quota::CodexResult result = quota::fetchCodex(options, http, now);
+        QVERIFY2(result.ok, qPrintable(result.error));
+        QCOMPARE(result.source, QString("OAuth"));
+        QCOMPARE(result.usage.primary->usedPercent, 30.0);
+        QCOMPARE(result.resetCredits->availableCount, 1);
+        QVERIFY(!calls.join('\n').contains("oauth/token"));
+
+        // Older than 8 days: refresh first, written back over the unchanged file.
+        writeText(authPath, authJson("a1", "2026-11-01T00:00:00Z"));
+        const QString before = codexauth::fingerprint(authJson("a1", "2026-11-01T00:00:00Z"));
+        expectBearer = "Bearer a2";
+        calls.clear();
+        result = quota::fetchCodex(options, http, now);
+        QVERIFY2(result.ok, qPrintable(result.error));
+        QVERIFY(calls.first().contains("oauth/token"));
+        QCOMPARE(persistedFrom, before);
+        const auto saved = codexauth::parseCredentials(readJson(authPath).isEmpty() ? QByteArray() : [&] {
+            QFile f(authPath);
+            f.open(QIODevice::ReadOnly);
+            return f.readAll();
+        }());
+        QCOMPARE(saved->accessToken, QString("a2"));
+        QCOMPARE(saved->refreshToken, QString("r2"));
+        QVERIFY(saved->lastRefreshMs.has_value());
+
+        // A 401 triggers one refresh and one retry.
+        writeText(authPath, authJson("a1", "2026-11-19T00:00:00Z"));
+        calls.clear();
+        result = quota::fetchCodex(options, http, now);
+        QVERIFY2(result.ok, qPrintable(result.error));
+        QCOMPARE(calls.size(), 4); // usage 401, refresh, usage, reset credits
+
+        // The cookie route needs the same email; a stranger's cookie falls back to OAuth.
+        writeText(authPath, authJson("a2", "2026-11-19T00:00:00Z"));
+        options.cookieHeader = "good=1";
+        result = quota::fetchCodex(options, http, now);
+        QCOMPARE(result.source, QString("Cookie"));
+        options.cookieHeader = "bad=1";
+        result = quota::fetchCodex(options, http, now);
+        QCOMPARE(result.source, QString("OAuth"));
+        options.cookieHeader.clear();
+
+        // A rejected refresh token, and no login at all.
+        const quota::Http rejecting = [&](const quota::HttpRequest &r) {
+            quota::HttpResponse response;
+            response.status = r.url.toString().contains("oauth/token") ? 400 : 401;
+            return response;
+        };
+        QCOMPARE(quota::fetchCodex(options, rejecting, now).error, QString("refreshRejected"));
+        QFile::remove(authPath);
+        QCOMPARE(quota::fetchCodex(options, http, now).error, QString("noCredentials"));
+    }
+
+    // CodexAccountManager: save, switch (never over a file that changed), remove, refreshed copies.
+    void codexAccountsSaveSwitchAndRemove() {
+        QTemporaryDir dir;
+        const QString authPath = dir.path() + "/codex/auth.json";
+        const auto login = [](const QString &email, const QString &account) {
+            const QByteArray payload = QJsonDocument(QJsonObject{{"email", email},
+                {"https://api.openai.com/auth", QJsonObject{{"chatgpt_plan_type", "plus"}}}}).toJson(QJsonDocument::Compact)
+                .toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals);
+            return QJsonDocument(QJsonObject{{"tokens", QJsonObject{{"access_token", "t-" + account},
+                {"id_token", "h." + QString::fromLatin1(payload) + ".s"}, {"account_id", account}}}}).toJson();
+        };
+        QVERIFY(QDir().mkpath(dir.path() + "/codex"));
+        writeText(authPath, login("a@example.com", "acct-a"));
+        codexauth::AccountStore store(dir.path() + "/data", authPath);
+        QVERIFY(store.currentNeedsSaving());
+        QString error;
+        const auto idA = store.saveCurrent(&error);
+        QVERIFY2(idA.has_value(), qPrintable(error));
+        QCOMPARE(store.accounts().first().plan, QString("plus"));
+        QVERIFY(!store.currentNeedsSaving());
+
+        // A second login (codex login into a temporary home) is added and becomes active.
+        writeText(dir.path() + "/new-auth.json", login("b@example.com", "acct-b"));
+        const auto idB = store.addFromFile(dir.path() + "/new-auth.json", &error);
+        QVERIFY2(idB.has_value(), qPrintable(error));
+        QCOMPARE(store.active()->email, QString("b@example.com"));
+        QCOMPARE(store.accounts().size(), 2);
+        // The secret copies are encrypted on disk.
+        {
+            QFile raw(dir.path() + "/data/codex-accounts/" + *idA + ".bin");
+            QVERIFY(raw.open(QIODevice::ReadOnly));
+            QVERIFY(!raw.readAll().contains("acct-a"));
+        }
+
+        QVERIFY2(store.switchTo(*idA, &error), qPrintable(error));
+        QCOMPARE(store.active()->id, *idA);
+        // A refreshed token for A keeps A's saved copy current.
+        const QByteArray refreshed = login("a@example.com", "acct-a") + " ";
+        store.persistRefreshed(codexauth::fingerprint(login("a@example.com", "acct-a")), refreshed);
+        QCOMPARE(*store.secret(*idA), refreshed);
+
+        // Never overwrite a file that changed since it was read.
+        QVERIFY(!codexauth::replaceIfUnchanged(authPath, "0000", "x", &error));
+
+        QVERIFY2(store.remove(*idA, &error), qPrintable(error)); // active: B takes over
+        QCOMPARE(store.active()->id, *idB);
+        QVERIFY2(store.remove(*idB, &error), qPrintable(error)); // the last one: signed out
+        QVERIFY(!QFile::exists(authPath));
+        QVERIFY(store.accounts().isEmpty());
+    }
+
+    // ClaudeUsageService / ClaudeWebUsageService with a fake transport.
+    void claudeQuotaFetchesLikeMacOS() {
+        const auto usage = quota::parseClaudeUsage(R"({"five_hour":{"utilization":12,"resets_at":"2026-11-20T15:00:00Z"},
+            "seven_day":{"utilization":40.5,"resets_at":"2026-11-25T00:00:00Z"}, "seven_day_opus":{"utilization":true},
+            "limits":[{"kind":"weekly_scoped","group":"weekly","percent":7,"scope":{"model":{"display_name":"Fable","id":"fable-5"}}},
+                      {"kind":"weekly_scoped","group":"weekly","percent":9,"scope":{"model":{"display_name":"All models"}}}],
+            "extra_usage":{"is_enabled":true,"used_credits":1234,"monthly_limit":5000,"currency":"usd"}})");
+        QVERIFY(usage.has_value());
+        QCOMPARE(usage->windows.size(), 3); // five_hour, seven_day, scoped Fable (a boolean is not a number)
+        QCOMPARE(usage->windows[2].id, QString("scoped-fable-5"));
+        QCOMPARE(*usage->extraUsed, 12.34);
+        QCOMPARE(usage->extraCurrency, QString("USD"));
+
+        quota::ClaudeCredentials credentials{"tok", std::nullopt, "max", "id"};
+        QStringList agents;
+        const quota::Http oauth = [&](const quota::HttpRequest &r) {
+            quota::HttpResponse response;
+            for (const auto &[k, v] : r.headers) if (k == "User-Agent") agents.append(QString::fromLatin1(v));
+            const QString url = r.url.toString();
+            if (url.endsWith("?cedar_ember=1")) response.status = 404; // retried without the query
+            else if (url.endsWith("/usage")) { response.status = 200; response.body = R"({"five_hour":{"utilization":50}})"; }
+            else if (url.endsWith("/profile")) { response.status = 200; response.body = R"({"account":{"email_address":"me@x.com"}})"; }
+            return response;
+        };
+        const quota::ClaudeResult ok = quota::fetchClaudeOAuth(credentials, "2.3.4", oauth, 0);
+        QVERIFY2(ok.ok, qPrintable(ok.error));
+        QCOMPARE(ok.usage.email, QString("me@x.com"));
+        QCOMPARE(ok.usage.plan, QString("max"));
+        QCOMPARE(agents.value(0), QString("claude-cli/2.3.4 (external, cli)"));
+        QCOMPARE(agents.value(1), QString("claude-code/2.3.4"));
+
+        const quota::Http limited = [](const quota::HttpRequest &) {
+            quota::HttpResponse response;
+            response.status = 429;
+            response.headers.insert("retry-after", "5");
+            return response;
+        };
+        const quota::ClaudeResult rate = quota::fetchClaudeOAuth(credentials, "", limited, 1000);
+        QCOMPARE(rate.error, QString("rateLimited"));
+        QCOMPARE(rate.retryAfterMs, 1000 + 60'000); // clamped to at least 60 s
+        credentials.expiresAtMs = 10;
+        QCOMPARE(quota::fetchClaudeOAuth(credentials, "", oauth, 20).error, QString("loginRequired"));
+
+        const quota::Http web = [](const quota::HttpRequest &r) {
+            quota::HttpResponse response;
+            const QString url = r.url.toString();
+            response.status = 200;
+            if (url.endsWith("/organizations")) response.body = R"([{"uuid":"o1","name":"Mine"},{"uuid":"o2","name":"Work"}])";
+            else if (url.contains("/usage")) response.body = R"({"seven_day":{"utilization":10}})";
+            else if (url.endsWith("/prepaid/credits")) response.body = R"({"amount":2500,"currency":"eur"})";
+            else response.body = "{}";
+            return response;
+        };
+        const quota::ClaudeResult choose = quota::fetchClaudeWeb("sessionKey=x", "", web);
+        QCOMPARE(choose.error, QString("chooseOrganization"));
+        QCOMPARE(choose.organizations.size(), 2);
+        const quota::ClaudeResult chosen = quota::fetchClaudeWeb("sessionKey=x", "o2", web);
+        QVERIFY2(chosen.ok, qPrintable(chosen.error));
+        QCOMPARE(chosen.usage.organization, QString("Work"));
+        QCOMPARE(*chosen.usage.prepaidBalance, 25.0);
+        QCOMPARE(chosen.usage.prepaidCurrency, QString("EUR"));
+
+        // The reply-state labels: exact stop buttons only.
+        QVERIFY(claudeui::isStopLabel(" Stop Response "));
+        QVERIFY(claudeui::isStopLabel(QString::fromUtf8("停止回复")));
+        QVERIFY(!claudeui::isStopLabel("Stop"));
+        QVERIFY(!claudeui::isStopLabel(QString::fromUtf8("任务运行中")));
+        QVERIFY(claudeui::isMessagesGroup("Conversation messages"));
+        const auto roundTrip = secrets::unprotect(*secrets::protect("secret"));
+        QCOMPARE(*roundTrip, QByteArray("secret"));
     }
 
     // Install CLI edits the user PATH as a string; the registry calls are not exercised here.

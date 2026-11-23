@@ -23,6 +23,7 @@
 #include "SignalStateFile.h"
 #include "TrayIconRenderer.h"
 #include "UsageScanner.h"
+#include "ClaudeUiMonitor.h"
 
 #include <QApplication>
 #include <QCommandLineParser>
@@ -171,6 +172,9 @@ int runProbe(QApplication &app, int seconds, const QString &dataDir) {
                                 .scan(now, 30, catalog ? &*catalog : nullptr));
         out << "Prices: bundled tables" << (catalog ? " + cached models.dev" : " only (models.dev not cached yet)") << "\n";
     }
+    // The optional Claude desktop reply-state check (UI Automation, read-only).
+    out << "Claude desktop reply state: " << asb::claudeui::stateKey(asb::claudeui::observe()) << "\n";
+    out.flush();
     QTemporaryDir scratch;
     const QString probeState = scratch.path() + "/status.json";
     QFile::copy(realState, probeState);

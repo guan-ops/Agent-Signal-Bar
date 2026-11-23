@@ -20,6 +20,7 @@ Windows 版沿用 CodexBar `Integrations/Linux` 的分层方式：C++ 控制器 
 | `src/LightScope.*`、`src/PresenceMonitor.*`、`src/SoundFile.*` | 灯效 Agent 的跟随与借用、桌面应用在线检测、提示音音量 |
 | `src/DebugLog.*`、`src/Diagnostics.*`、`src/CliPath.*` | 文件日志、导出诊断、把 CLI 加入 PATH |
 | `src/UsageScanner.*`、`src/UsagePricing.*`、`src/UsageService.*` | `AgentSignalCostUsage` 的移植：本机 Codex/Claude 日志的 Token 与费用统计、价格表与 models.dev、后台扫描与汇率 |
+| `src/CodexAccounts.*`、`src/QuotaFetcher.*`、`src/QuotaService.*`、`src/Secrets.*`、`src/ClaudeUiMonitor.*` | 账号与额度：Codex 多账号与 auth.json、Codex/Claude 额度接口、后台刷新、DPAPI 加密存储、Claude 桌面回复状态（UI Automation） |
 | `src/ActivityDisplay.*`、`src/ActivityText.*` | `ActivityPresentation.swift` 与 `MenuBarStatusModel` 显示规则的移植：哪些会话显示、按来源去重、灯显示什么，以及会话和事件的中英文文案 |
 | `src/SignalRuntime.*` | 后台线程每 2 秒（低功耗 6 秒）轮询一次，每 5 秒（15 秒）刷新显示，让完成和中断的会话按时消失 |
 | `qml/Theme.qml` | `DesignSystem.swift`（ASB）的移植，包括字号、间距、圆角、色调和灯色 |
@@ -100,10 +101,10 @@ Integrations/Windows/dev-macos.sh capture
 | 桌面应用在线检测（Codex/Claude 桌面版已打开） | `PresenceMonitor`（按可执行文件路径识别，每 20 秒、低功耗 60 秒） | ✅ 识别 Codex 桌面版、Codex CLI、VS Code/JetBrains 里的 Codex 和 Claude 桌面版；桌面版要求有可见、未最小化的窗口（与 macOS 一致）。没有正在运行的会话时，“运行”页和托盘面板列出已打开的应用。已在实机上识别出 Claude 桌面版 |
 | Xcode、JetBrains 的 Codex 会话目录 | — | ⚠️ macOS 开发版会读取；Windows 上的 JetBrains 目录未知，暂不读取 |
 | Token/费用扫描（`CostUsageScanner`、`CodexUsageDetails`） | `UsageScanner` + `UsagePricing` + `UsageService` | ✅ 近 30 天本机 Codex（sessions、archived_sessions 等活动目录）和 Claude Code（`~/.claude/projects`、`%APPDATA%\Claude` 下的桌面会话）日志：Codex 按累计用量的增长逐事件计入当前模型，分叉会话扣除继承的父会话用量，同一会话的副本只算一次、内容冲突的副本排除并提示；Claude 按消息 id + 请求 id 去重（流式取最后一块，父/子 Agent 重复只算一次），不完整请求单独标注。逐请求计价（长上下文阶梯价），内置价格表与 macOS 相同，缺的模型用 models.dev 价格（每天最多取一次，缓存到 `%LOCALAPPDATA%\AgentSignalBar\Cache`）；选择非美元货币时按 open.er-api.com 汇率折算。用量页（Codex/Claude）、托盘卡片、悬浮灯 Token 角标与浮层（今日/近 30 天）都显示真实数据；工作时每 60 秒、空闲时每 5 分钟重扫。单元测试覆盖计价规则、Codex 增长/分叉/副本、Claude 去重。⚠️ 未移植：Codex 优先级（fast）计价（要读 Codex 的 `logs_2.sqlite`）、增量追加解析与磁盘缓存（未变文件在内存中复用）、分页历史恢复、Pi 会话。账号和额度部分仍是演示数据（页面标注“账号与额度为演示数据”） |
-| Codex 多账号、额度、限额重置 | — | ❌ 未移植；Keychain 改用 Windows 凭据管理器或 DPAPI |
-| Claude 额度 | — | ❌ 未移植 |
-| 浏览器 Cookie 导入（SweetCookieKit） | — | ❌ 不打算直接移植；Windows 上的 Chrome Cookie 使用 App-Bound Encryption，要另行评估 |
-| Claude 桌面回复状态（辅助功能） | UI Automation | ❌ 未实现 |
+| Codex 多账号、额度、限额重置 | `CodexAccounts` + `QuotaFetcher` + `QuotaService`；Keychain 改为 DPAPI 加密文件 | ✅ 与 macOS 相同：读 `~/.codex/auth.json` 的 OAuth 令牌查询 `chatgpt.com/backend-api/wham/usage`（5 小时/每周窗口、额度、`plan_type`）和限额重置额度；令牌超过 8 天或遇到 401 时在 auth.openai.com 刷新并写回 auth.json——只在文件内容没变时写入，已保存账号的副本同步更新。多账号：账号列表在 `%APPDATA%\AgentSignalBar\codex-accounts.json`（不含密钥），每个账号的 auth.json 副本用 DPAPI 加密保存；可保存当前账号、切换（写回 auth.json 前同样检查文件未变）、移除（移除当前账号时切到下一个，没有账号了就登出）、“添加账号”（用临时 CODEX_HOME 运行 `codex login` 并打开它给出的登录页，需要能找到 Codex CLI）。用量页、托盘卡片、悬浮灯额度角标和浮层都显示真实数据，浮层里点窗口可切换角标显示的窗口。已在本机实测读到真实额度和限额重置额度 |
+| Claude 额度 | `QuotaFetcher` + `QuotaService` | ✅ 先在用量页“允许读取 Claude Code 凭据”，才会只读 `~/.claude/.credentials.json`（或 `CLAUDE_CONFIG_DIR`），用它查询 `api.anthropic.com/api/oauth/usage` 和 profile：5 小时/7 天/按模型窗口、额外用量、云端额度、限额重置次数；不刷新也不改写凭据。也可改用 claude.ai 网页会话（粘贴 sessionKey）：额度、额外用量上限、预充值余额、续费日期，多个组织时可选择。429 时按 Retry-After 暂停（60 秒到 24 小时）。⚠️ 未移植：`/usage` 命令行探测和 cswap 切换账号（cswap 没有 Windows 版）；本机还没开启授权实测 |
+| 浏览器 Cookie 导入（SweetCookieKit） | 手动粘贴 | ⚠️ Windows 上 Chrome/Edge 的 Cookie 使用 App-Bound Encryption，不做自动导入。改为在用量页粘贴：chatgpt.com 的 Cookie 请求头（也可粘贴 curl 命令）和 claude.ai 的 sessionKey，DPAPI 加密保存，默认关闭。OpenAI Cookie 只在其邮箱与 Codex 登录一致时用于 chatgpt.com 的用量接口，任何失败都回退到 OAuth |
+| Claude 桌面回复状态（辅助功能） | `ClaudeUiMonitor`（UI Automation） | ✅ “连接”页开关，默认关闭。每 20 秒只读遍历 Claude 桌面版窗口（最多 1500 个元素、24 层、1 秒），只在 claude.ai 页面里找到可用的“停止回复”按钮时显示为工作中；不读文字、输入框和消息内容。已在本机确认能找到 claude.ai 页面（约 150 毫秒）；第一次查询时 Chromium 才开启无障碍树，所以首次结果是“暂时无法读取”。依赖 Claude 的界面，Claude 更新后可能失效 |
 | Sparkle 自动更新 | GitHub Releases 检查，或 WinSparkle | ❌ 未实现 |
 | `agent-signal` CLI | `agent-signal.exe` | ✅ 与 `AgentSignalCLIMain` 相同的命令：`list`、`status [--json]`、`reset`、`set`/`<signal>`、`session`、`codex-hook`、`claude-hook`、`agent-hook`、`install-hooks [--target all\|codex\|claude] [--install\|--dry-run] [--remove]`。差别：Hook 命令出错也返回 0、只写 stderr，不会阻塞 Agent；`install-hooks` 注册的是 `agent-signal.exe` 本身，所以没有 `--resources` |
 | 安装 CLI（`/usr/local/bin`） | 把安装目录加入用户 PATH（`HKCU\Environment\Path`） | ✅ “通用”页的“安装”/“从 PATH 移除”；只增删自己的那一项，其他条目保持原样（有单元测试）。新开的终端生效。⚠️ 实机上还没点过（会改动用户 PATH） |
