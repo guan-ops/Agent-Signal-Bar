@@ -115,3 +115,56 @@ jobs:
             dist/AgentSignalBar-macos-universal-appcast.xml
             dist/AgentSignalBar-release-manifest.json
             dist/AgentSignalBar-SHA256SUMS.txt
+
+  # The Windows build (Integrations/Windows), added to the release the macOS job published. Its
+  # appcast is signed with the same SPARKLE_PRIVATE_KEY; WINDOWS_CERTIFICATE_PFX (base64 .pfx) and
+  # WINDOWS_CERTIFICATE_PASSWORD are optional and add Authenticode signatures.
+  windows:
+    name: Build Windows release artifacts
+    needs: release
+    runs-on: windows-2022
+    environment: release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco upgrade innosetup --no-progress -y
+
+      - name: Package
+        shell: pwsh
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: ./Integrations/Windows/package.ps1 -QtDir $env:QT_ROOT_DIR -OutDir dist
+
+      - name: Verify checksums
+        shell: pwsh
+        run: |
+          Get-Content dist/AgentSignalBar-windows-SHA256SUMS.txt | ForEach-Object {
+            $hash, $name = $_ -split '\s+', 2
+            if ((Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower() -ne $hash) { throw "Checksum mismatch: $name" }
+          }
+
+      - name: Upload to the GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload $env:GITHUB_REF_NAME (Get-ChildItem dist -File).FullName --clobber

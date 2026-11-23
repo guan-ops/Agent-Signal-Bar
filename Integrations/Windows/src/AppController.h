@@ -20,6 +20,7 @@ class QWindow;
 class SignalRuntime;
 class UsageService;
 class QuotaService;
+class UpdateService;
 namespace asb::usage { struct Report; }
 
 // The bridge between QML and the platform: preferences, the shared animation tick,
@@ -70,6 +71,8 @@ class AppController : public QObject {
     // (AppController::rebuildQuota); claudeUi is the Claude desktop reply-state check.
     Q_PROPERTY(QVariantMap quota READ quota NOTIFY quotaChanged)
     Q_PROPERTY(QVariantMap claudeUi READ claudeUi NOTIFY quotaChanged)
+    // Updates (Sparkle on macOS): configured, stage, current, latest, notes, progress, message, ...
+    Q_PROPERTY(QVariantMap update READ update NOTIFY updateChanged)
     // Which agent the lamp shows (signalLightFollowingText): "自动跟随 · Codex 终端", "暂时显示
     // Claude 桌面版", or the manual selection; empty without live data.
     Q_PROPERTY(QString lightFollowingText READ lightFollowingText NOTIFY activityChanged)
@@ -120,6 +123,7 @@ public:
     QVariantMap usage() const { return m_usageMap; }
     QVariantMap quota() const { return m_quotaMap; }
     QVariantMap claudeUi() const { return m_claudeUi; }
+    QVariantMap update() const { return m_updateMap; }
 
     asb::EffectCustomization effectCustomization() const;
     void setTrayGeometry(const QRect &rect) { m_trayGeometry = rect; }
@@ -182,6 +186,18 @@ public:
     Q_INVOKABLE bool setClaudeSession(const QString &pasted);
     // Local path from a FolderDialog URL, so QML can store it in prefs.codexDataDir.
     Q_INVOKABLE QString localPath(const QUrl &url) const;
+    // Updates: a user-initiated check shows its result in the update window.
+    Q_INVOKABLE void checkForUpdates();
+    Q_INVOKABLE void downloadUpdate();
+    Q_INVOKABLE void installUpdate();          // install and relaunch
+    Q_INVOKABLE void skipUpdate();             // SUSkippedVersion
+    Q_INVOKABLE void remindUpdateLater();
+    Q_INVOKABLE void cancelUpdate();
+    Q_INVOKABLE void showUpdate();             // the menu item or a notification click
+    // The answer to "Check for updates automatically?" (asked on the second launch, as Sparkle does).
+    Q_INVOKABLE void answerUpdatePermission(bool automaticChecks, bool automaticInstall);
+    // Capture runs only: shows the update window in a fixed stage ("" for the normal state).
+    Q_INVOKABLE void setDemoUpdate(const QString &stage);
     Q_INVOKABLE void quit();
 
 signals:
@@ -194,6 +210,11 @@ signals:
     void cliChanged();
     void usageChanged();
     void quotaChanged();
+    void updateChanged();
+    void updateWindowRequested();
+    void updatePermissionRequested();
+    // A tray notification; clicking it calls showUpdate().
+    void notificationRequested(const QString &title, const QString &body);
     void languageChanged();
     void themeChanged();
     void settingsRequested(const QString &page);
@@ -233,6 +254,9 @@ private:
     void setDiagnostics(const QVariantMap &state);
     void rebuildUsage();
     void rebuildQuota();
+    void rebuildUpdate();
+    void scheduledUpdateCheck();
+    void onUpdateCheckFinished(bool userInitiated);
     QString quotaResetText(std::optional<qint64> resetsAtMs, bool withDate) const;
     QString quotaWindowTitle(std::optional<int> minutes) const;
     QVariantMap usageSide(const asb::usage::Report &report, bool claude) const;
@@ -265,6 +289,10 @@ private:
     QVariantMap m_quotaMap;
     QVariantMap m_claudeUi;
     QString m_claudeUiState; // ClaudeUiMonitor state key, "" when the check is off
+    UpdateService *m_updater = nullptr;
+    QVariantMap m_updateMap;
+    QTimer m_updateTimer;
+    bool m_backgroundDownload = false; // an automatic download: no window, a notification when ready
     std::unique_ptr<QSettings> m_settings;
     QString m_captureDir;
     QTimer m_timer;

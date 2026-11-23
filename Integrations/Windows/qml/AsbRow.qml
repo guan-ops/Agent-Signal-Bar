@@ -29,10 +29,10 @@ RowLayout {
             Layout.fillWidth: true
         }
     }
-    Item {
+    // A Row, so several trailing controls (Show + Export…) sit side by side instead of on top of each other.
+    Row {
         id: trailingSlot
         Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
-        implicitWidth: childrenRect.width
-        implicitHeight: childrenRect.height
+        spacing: Theme.s
     }
 }

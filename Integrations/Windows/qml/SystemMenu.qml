@@ -73,6 +73,20 @@ PopupWindow {
         onClicked: App.prefs.soundEnabled = !App.prefs.soundEnabled
     }
     Rectangle { Layout.fillWidth: true; height: 1; color: Theme.separator }
+    // CodexBar's menu: "Check for Updates…", or "Update ready, restart now?" once one is downloaded.
+    MenuRow {
+        readonly property string stage: App.update.stage || "idle"
+        icon: stage === "ready" || stage === "available" ? "download" : "refresh"
+        title: stage === "ready" ? Theme.t("更新已就绪，立即重启？", "Update ready, restart now?")
+            : stage === "available" ? Theme.t("有新版本 ", "Update available: ") + (App.update.latest || "") + "…"
+            : stage === "downloading" || stage === "verifying" ? Theme.t("正在下载更新…", "Downloading update…")
+            : Theme.t("检查更新…", "Check for Updates…")
+        onClicked: {
+            menu.hide()
+            if (stage === "idle" || stage === "upToDate" || stage === "failed") App.checkForUpdates()
+            else App.showUpdate()
+        }
+    }
     MenuRow {
         icon: "gear"
         title: Theme.t("设置", "Settings")

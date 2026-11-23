@@ -41,6 +41,7 @@
         <file>qml/GeneralPage.qml</file>
         <file>qml/DebugPage.qml</file>
         <file>qml/AboutPage.qml</file>
+        <file>qml/UpdateWindow.qml</file>
         <file alias="sounds/completion-signal-nz.wav">resources/sounds/completion-signal-nz.wav</file>
         <file alias="sounds/waiting-signal-nz.wav">resources/sounds/waiting-signal-nz.wav</file>
         <file alias="sounds/completion-ai-aurora.wav">../../Sources/AgentSignalLight/Resources/completion-ai-aurora.wav</file>

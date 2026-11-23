@@ -21,6 +21,8 @@ Windows 版沿用 CodexBar `Integrations/Linux` 的分层方式：C++ 控制器 
 | `src/DebugLog.*`、`src/Diagnostics.*`、`src/CliPath.*` | 文件日志、导出诊断、把 CLI 加入 PATH |
 | `src/UsageScanner.*`、`src/UsagePricing.*`、`src/UsageService.*` | `AgentSignalCostUsage` 的移植：本机 Codex/Claude 日志的 Token 与费用统计、价格表与 models.dev、后台扫描与汇率 |
 | `src/CodexAccounts.*`、`src/QuotaFetcher.*`、`src/QuotaService.*`、`src/Secrets.*`、`src/ClaudeUiMonitor.*` | 账号与额度：Codex 多账号与 auth.json、Codex/Claude 额度接口、后台刷新、DPAPI 加密存储、Claude 桌面回复状态（UI Automation） |
+| `src/UpdateService.*`、`src/Appcast.*`、`src/Ed25519.*` | 应用内更新（Sparkle 的移植）：读取 appcast、下载安装程序、校验 EdDSA 签名、静默安装并重新启动 |
+| `installer/`、`package.ps1`、`tools/sign_update/` | 发布：Inno Setup 安装包、便携 zip、给安装程序签名并生成 appcast、可选的 Authenticode 代码签名 |
 | `src/ActivityDisplay.*`、`src/ActivityText.*` | `ActivityPresentation.swift` 与 `MenuBarStatusModel` 显示规则的移植：哪些会话显示、按来源去重、灯显示什么，以及会话和事件的中英文文案 |
 | `src/SignalRuntime.*` | 后台线程每 2 秒（低功耗 6 秒）轮询一次，每 5 秒（15 秒）刷新显示，让完成和中断的会话按时消失 |
 | `qml/Theme.qml` | `DesignSystem.swift`（ASB）的移植，包括字号、间距、圆角、色调和灯色 |
@@ -47,6 +49,32 @@ powershell -ExecutionPolicy Bypass -File Integrations\Windows\build.ps1 -QtDir C
 安装目录自带 Qt 和 MSVC 运行库（`vcruntime140.dll` 等，从 `VCToolsRedistDir` 复制），没装 Visual C++ 运行库的电脑也能直接运行。不在 VS 命令提示符里运行时找不到这些 DLL，脚本会给出警告，这时目录里只有 `vc_redist.x64.exe` 安装包。
 
 程序每个用户只运行一个实例：已经在运行时再次启动，会打开正在运行的那个的设置窗口，然后退出。`--signal`、`--settings`、`--capture` 和 `--probe` 不受这个限制，可以和正常运行的程序同时使用。
+
+`build.ps1` 编出的是开发版：没有更新源，“关于”页的自动更新是关的（和 macOS 上没有 `SUFeedURL` 的构建一样）。
+
+### 打包发布与应用内更新
+
+需要 [Inno Setup](https://jrsoftware.org/isinfo.php)（`winget install JRSoftware.InnoSetup`）。同样在 VS 命令提示符里运行：
+
+```bat
+set SPARKLE_PRIVATE_KEY=<Sparkle generate_keys -x 导出的私钥>
+powershell -ExecutionPolicy Bypass -File Integrations\Windows\package.ps1 -QtDir C:\Qt\6.8.3\msvc2022_64
+```
+
+版本号和 build 号读仓库根目录的 `VERSION`，输出到 `dist\`：
+
+| 文件 | 内容 |
+| --- | --- |
+| `AgentSignalBar-v<版本>-windows-x64-setup.exe` | 安装包：按用户安装到 `%LOCALAPPDATA%\Programs\AgentSignalBar`，不需要管理员权限；开始菜单快捷方式；9 种界面语言。卸载时会问是否同时移除 Claude Code/Codex 里的 Hook，并清掉开机启动项和 PATH 里的安装目录；设置和数据保留 |
+| `AgentSignalBar-v<版本>-windows-x64.zip` | 同一个程序目录，免安装 |
+| `AgentSignalBar-windows-x64-appcast.xml` | 给应用内更新读的 Sparkle appcast：`sparkle:version` 是 build 号，`sparkle:os="windows"`，更新说明取 `docs/releases/v<版本>.md`（Markdown） |
+| `AgentSignalBar-windows-SHA256SUMS.txt` | 以上文件的 SHA-256 |
+
+应用内更新和 macOS 版的 Sparkle 一样，所以同一个 `SPARKLE_PRIVATE_KEY` 同时给两个平台签名（公钥 `lEr2AUplk4vAvH+IwB4DygGqobWmBkbyy1YYr1nRy70=`）。`tools/sign_update` 接受 Sparkle 导出的两种私钥格式（32 字节种子，或旧版 96 字节），而且只在私钥和内置公钥配对时才签名。GitHub Actions 的 `release.yml` 在 macOS 任务发布后由 `windows` 任务构建这些文件，并上传到同一个 Release。
+
+代码签名需要你自己的证书，没有证书时产物不签名（能用，但 SmartScreen 会提示“未知发布者”）。有证书时设置 `WINDOWS_CERTIFICATE_PFX`（.pfx 文件的 base64）和 `WINDOWS_CERTIFICATE_PASSWORD`，或者用 `-CertificateThumbprint` 指定当前用户证书库里的证书。脚本会用 `signtool` 给两个 exe、安装包和卸载程序签名，时间戳服务器是 `-TimestampUrl`（默认 DigiCert）。在 CI 里把这两个值存成 `release` 环境的 secrets。
+
+本地测试更新流程时，用 `sign_update --generate-keys` 生成测试密钥，再用 `-EdKeyFile`、`-UpdatePublicKey`、`-UpdateFeed` 和 `-DownloadUrlPrefix` 指向本地文件夹（支持 `file:///` 地址）。
 
 ### 检查 Codex 数据目录
 
@@ -89,7 +117,7 @@ Integrations/Windows/dev-macos.sh capture
 | 卡片面板 / 系统菜单 | 托盘上方的无边框弹窗 | ✅ 按 1.7.0 的 `MenuBarPanelView` 和 `StatusBarController` 结构实现；点击其他位置时关闭 |
 | 悬浮信号灯 | 置顶工具窗口 | ✅ 拖动、缩放预设、自定义缩放、角标、右键菜单、浮层；位置会保存，显示器拔掉后会移回主屏 |
 | 灯语、灯效与节奏 | `SignalModel` | ✅ 与 Swift 实现逐帧比对（1998 组 golden 数据），节奏表另有单元测试 |
-| 设置窗口 7 个页面 | QML 页面 | ⚠️ 运行、灯效、连接、通用、调试页和用量页的本机 Token 部分都接上了真实数据，加载中、空状态和错误文案随功能一起补齐。仍缺的 macOS 文案主要属于未移植的功能：账号与额度、Claude 用量设置、额度获取策略和 OpenAI Cookie 调试（第 3 组），以及更新检查（第 5 组）。运行 `python3 -I Integrations/Windows/tests/parity_strings.py <仓库根目录> <输出目录>` 可列出缺失项 |
+| 设置窗口 7 个页面 | QML 页面 | ⚠️ 运行、灯效、连接、通用、调试页和用量页的本机 Token 部分都接上了真实数据，加载中、空状态和错误文案随功能一起补齐。仍缺的 macOS 文案主要属于没有移植的功能：Claude CLI `/usage` 探测、cswap 账号切换和 Pi 会话。运行 `python3 -I Integrations/Windows/tests/parity_strings.py <仓库根目录> <输出目录>` 可列出缺失项 |
 | 液态玻璃 | Mica（标准）/ Mica Alt（增强），只用于设置窗口 | ⚠️ 已写 DWM 调用；低于 Windows 11 22H2 时自动保持不透明。需要实机验收 |
 | 开机自启动（SMAppService） | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | ⚠️ 已实现，需要实机验收 |
 | 提示音（AVFoundation，可调音量） | `PlaySound` 从内存播放按音量缩放后的 WAV（`SoundFile`；新西兰录音已转成 WAV） | ✅ 按 `FloatingSignalWindowController` 自动播放：灯变为“已完成”时一声完成提示音，Agent 工作时绿灯每亮一次一声闪烁音；轻柔/标准/响亮三档音量（0.28/0.55/0.88）。已在实机上确认触发时机 |
@@ -105,13 +133,13 @@ Integrations/Windows/dev-macos.sh capture
 | Claude 额度 | `QuotaFetcher` + `QuotaService` | ✅ 先在用量页“允许读取 Claude Code 凭据”，才会只读 `~/.claude/.credentials.json`（或 `CLAUDE_CONFIG_DIR`），用它查询 `api.anthropic.com/api/oauth/usage` 和 profile：5 小时/7 天/按模型窗口、额外用量、云端额度、限额重置次数；不刷新也不改写凭据。也可改用 claude.ai 网页会话（粘贴 sessionKey）：额度、额外用量上限、预充值余额、续费日期，多个组织时可选择。429 时按 Retry-After 暂停（60 秒到 24 小时）。⚠️ 未移植：`/usage` 命令行探测和 cswap 切换账号（cswap 没有 Windows 版）；本机还没开启授权实测 |
 | 浏览器 Cookie 导入（SweetCookieKit） | 手动粘贴 | ⚠️ Windows 上 Chrome/Edge 的 Cookie 使用 App-Bound Encryption，不做自动导入。改为在用量页粘贴：chatgpt.com 的 Cookie 请求头（也可粘贴 curl 命令）和 claude.ai 的 sessionKey，DPAPI 加密保存，默认关闭。OpenAI Cookie 只在其邮箱与 Codex 登录一致时用于 chatgpt.com 的用量接口，任何失败都回退到 OAuth |
 | Claude 桌面回复状态（辅助功能） | `ClaudeUiMonitor`（UI Automation） | ✅ “连接”页开关，默认关闭。每 20 秒只读遍历 Claude 桌面版窗口（最多 1500 个元素、24 层、1 秒），只在 claude.ai 页面里找到可用的“停止回复”按钮时显示为工作中；不读文字、输入框和消息内容。已在本机确认能找到 claude.ai 页面（约 150 毫秒）；第一次查询时 Chromium 才开启无障碍树，所以首次结果是“暂时无法读取”。依赖 Claude 的界面，Claude 更新后可能失效 |
-| Sparkle 自动更新 | GitHub Releases 检查，或 WinSparkle | ❌ 未实现 |
+| Sparkle 自动更新 | `UpdateService` + `Appcast` + `Ed25519`（Sparkle 流程的移植，参考 CodexBar 的菜单项和两个开关） | ✅ 读取 GitHub Releases 上的 `AgentSignalBar-windows-x64-appcast.xml`（Sparkle 格式，只认 `sparkle:os="windows"` 且带 EdDSA 签名的条目；按 `sparkle:version`/build 号比较；支持 `minimumSystemVersion`、`criticalUpdate`、`informationalUpdate`、`channel`）。更新窗口与 Sparkle 相同：新版本和 Markdown 更新说明、“跳过这个版本 / 以后提醒我 / 安装更新”、下载进度、“安装并重新启动 / 退出时安装”。下载后核对长度和 EdDSA 签名（与 macOS 共用公钥）；当前程序有 Authenticode 签名时，安装程序也必须是同一发布者签的。安装时以 `/VERYSILENT /UPDATE=1` 运行 Inno Setup 安装包，它会等应用退出、覆盖安装再重新启动。“关于”页：自动检查更新（每天一次）、自动下载并安装（退出时安装）、检查更新、打开下载页面；第二次启动时和 Sparkle 一样询问是否自动检查。托盘菜单显示“检查更新…”，下载好后变成“更新已就绪，立即重启？”。开发版（没有更新源和公钥）关闭更新，“检查更新”改为打开下载页面。单元测试覆盖 Ed25519（OpenSSL 与 RFC 8032 向量）、appcast 解析与选择、经 `file://` 的检查→下载→验签→拒绝伪造/截断。已在本机用测试密钥和本地 appcast 实测：装好的 1.7.0（build 24）定时检查发现 1.7.1，下载并验签，静默安装后自动以 1.7.1（25）重新启动。⚠️ 还没有用正式 Release 和带证书签名的版本实测 |
 | `agent-signal` CLI | `agent-signal.exe` | ✅ 与 `AgentSignalCLIMain` 相同的命令：`list`、`status [--json]`、`reset`、`set`/`<signal>`、`session`、`codex-hook`、`claude-hook`、`agent-hook`、`install-hooks [--target all\|codex\|claude] [--install\|--dry-run] [--remove]`。差别：Hook 命令出错也返回 0、只写 stderr，不会阻塞 Agent；`install-hooks` 注册的是 `agent-signal.exe` 本身，所以没有 `--resources` |
 | 安装 CLI（`/usr/local/bin`） | 把安装目录加入用户 PATH（`HKCU\Environment\Path`） | ✅ “通用”页的“安装”/“从 PATH 移除”；只增删自己的那一项，其他条目保持原样（有单元测试）。新开的终端生效。⚠️ 实机上还没点过（会改动用户 PATH） |
 | Codex Hook | `agent-signal.exe codex-hook <event>` + `ClaudeHookInstaller`（Codex 目标） | ✅ 写入 `<Codex 目录>\hooks.json` 的 6 个事件（matcher `*`，8.3 短路径免引号）；“连接”页可检查、安装、卸载。适配器与 macOS 测试用例一致，安装器有单元测试，安装后的命令已在本机执行过。⚠️ 还没在真实 Codex 会话里验证 |
 | 导出诊断 | `Diagnostics`（zip 用系统自带 `tar.exe`） | ✅ “连接”页导出到 `%LOCALAPPDATA%\AgentSignalBar\Diagnostics`：系统信息、`agent-signal status`（文本和 JSON）、`install-hooks --dry-run`、`status.json`、`debug.log`、设置和 `manifest.json`，完成后在资源管理器中选中 zip。和 macOS 一样不复制 Hook 配置文件、不导出环境变量 |
 | 文件日志 | `DebugLog`（`%LOCALAPPDATA%\AgentSignalBar\debug.log`，超过 2 MiB 轮换） | ✅ “调试”页开关和 Error/Info/Verbose 三档；记录启动、灯语变化、Hook 检查与安装、灯光调试、诊断导出，以及对应级别的 Qt 日志；可打开或复制日志 |
-| DMG 打包 | windeployqt 打包目录 | ⚠️ 安装包（Inno Setup 或 MSIX）与代码签名未做 |
+| DMG 打包、发布流程 | `package.ps1`：Inno Setup 安装包 + 便携 zip + appcast + SHA-256；`release.yml` 的 `windows` 任务 | ✅ 见“打包发布与应用内更新”。安装包的静默安装、覆盖更新和卸载（含移除 Hook、保留其他设置）已在本机实测；`release.yml` 的 `windows` 任务还没在 GitHub Actions 上跑过。代码签名已接好 `signtool`（exe、安装包、卸载程序），需要你提供证书（`WINDOWS_CERTIFICATE_PFX`/`WINDOWS_CERTIFICATE_PASSWORD` 或 `-CertificateThumbprint`），没有证书时不签名 |
 
 ## Windows 实机验收清单
 
@@ -133,6 +161,8 @@ Integrations/Windows/dev-macos.sh capture
 14. 设置 → 连接 → Claude Code Hook：点“安装”后显示“已配置”，`settings.json` 旁边多一份 `.bak-*` 备份，原有设置还在；再点“检查”仍是“已配置”。
 15. 新开一个 Claude Code 会话发任务：灯变绿，“运行”页出现“Claude · 终端运行中”（VS Code 里会显示“claude-vscode · VS Code 运行中”：macOS 版源码的 `friendlyAgentName` 也没有把 `claude-vscode` 映射成 Claude，这里照搬，未在 macOS 版上实际核对）；需要授权时变红；完成后显示“已完成”。同时运行 `agent-signal.exe status` 能看到这个会话。如果灯没反应，请把 Claude Code 版本号（`claude --version`）、是否装了 Git for Windows，以及 `settings.json` 里任意一条 agent-signal 条目告诉我。
 16. 点“卸载”：只删掉 agent-signal 的条目，其他 Hook 和设置保持不变。
+17. 安装包：双击 `AgentSignalBar-v<版本>-windows-x64-setup.exe`，不弹 UAC，装到 `%LOCALAPPDATA%\Programs\AgentSignalBar`，开始菜单有“Agent Signal Bar”；应用在运行时安装会提示先退出。“设置 → 应用”里卸载时会询问是否移除 Hook。
+18. 应用内更新（正式发布后）：设置 → 关于 → 检查更新，有新版本时窗口显示版本和更新说明；“安装更新”后显示下载进度，然后“安装并重新启动”，应用退出、静默安装并以新版本重新打开（“关于”页的版本号随之变化）。
 
 ## 素材
 

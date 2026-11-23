@@ -16,6 +16,11 @@ param(
     [string]$BuildDir = "$env:TEMP\asb-windows-build",
     [string]$InstallDir = "$env:LOCALAPPDATA\Programs\AgentSignalBar",
     [string]$Version = "0.1.0",
+    # Release builds (package.ps1): the build number compared with the appcast (sparkle:version), and
+    # the appcast URL and EdDSA public key. Without a feed and key the in-app updater is off.
+    [string]$Build = "0",
+    [string]$UpdateFeed = "",
+    [string]$UpdatePublicKey = "",
     [switch]$SkipTests
 )
 $ErrorActionPreference = "Stop"
@@ -25,6 +30,9 @@ $deploy = Join-Path $QtDir "bin\windeployqt.exe"
 if (-not (Test-Path $qmake)) { throw "qmake not found: $qmake" }
 $make = if (Get-Command jom -ErrorAction SilentlyContinue) { "jom" } else { "nmake" }
 $env:ASB_WINDOWS_VERSION = $Version
+$env:ASB_WINDOWS_BUILD = $Build
+$env:ASB_WINDOWS_UPDATE_FEED = $UpdateFeed
+$env:ASB_WINDOWS_UPDATE_PUBLIC_KEY = $UpdatePublicKey
 $env:PATH = "$(Join-Path $QtDir 'bin');$env:PATH"
 
 # Native tool output goes to the host: a PowerShell function returns everything written to
@@ -52,7 +60,12 @@ function Run-Tests([string]$Dir, [string]$Exe, [string]$What) {
 }
 
 # Refuse before deleting anything: a running copy, or a folder that is not an install.
-if (Get-Process -Name "AgentSignalBar" -ErrorAction SilentlyContinue) { throw "Quit Agent Signal Bar first" }
+# Only a copy running from the install folder matters (package.ps1 stages to another folder).
+$installFull = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\') + '\'
+if (Get-Process -Name "AgentSignalBar" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and $_.Path.StartsWith($installFull, [StringComparison]::OrdinalIgnoreCase) }) {
+    throw "Quit Agent Signal Bar first"
+}
 if ((Test-Path $InstallDir) -and (Get-ChildItem $InstallDir -Force | Select-Object -First 1) `
         -and -not (Test-Path (Join-Path $InstallDir "AgentSignalBar.exe"))) {
     throw "$InstallDir is not empty and holds no AgentSignalBar.exe; choose another -InstallDir"

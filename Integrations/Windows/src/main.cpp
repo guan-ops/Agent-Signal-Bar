@@ -294,6 +294,11 @@ int main(int argc, char *argv[]) {
             notifyRunningInstance(name);
             return 0;
         }
+#ifdef Q_OS_WIN
+        // The installer (installer/AgentSignalBar.iss, CheckForMutexes) waits for this to go away
+        // before it replaces or removes files.
+        CreateMutexW(nullptr, FALSE, L"AgentSignalBarRunning");
+#endif
         instanceServer = std::make_unique<QLocalServer>();
         instanceServer->setSocketOptions(QLocalServer::UserAccessOption);
         QLocalServer::removeServer(name); // a crashed instance can leave its socket file (not on Windows)
@@ -333,6 +338,11 @@ int main(int argc, char *argv[]) {
             controller.openSettings();
         }
     });
+    QObject::connect(&controller, &AppController::notificationRequested, &tray,
+                     [&](const QString &title, const QString &body) {
+                         if (tray.isVisible()) tray.showMessage(title, body, QSystemTrayIcon::Information, 10000);
+                     });
+    QObject::connect(&tray, &QSystemTrayIcon::messageClicked, &controller, &AppController::showUpdate);
     if (captureDir.isEmpty()) refreshTray();
     if (instanceServer) {
         QObject::connect(instanceServer.get(), &QLocalServer::newConnection, &controller, [&] {

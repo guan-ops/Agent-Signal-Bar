@@ -20,8 +20,15 @@
 #include "../src/CodexAccounts.h"
 #include "../src/QuotaFetcher.h"
 #include "../src/Secrets.h"
+#include "../src/Ed25519.h"
+#include "../src/Appcast.h"
+#include "../src/UpdateService.h"
 
 #include <QLockFile>
+#include <QBuffer>
+#include <QCryptographicHash>
+#include <QOperatingSystemVersion>
+#include <QSignalSpy>
 
 #include <QDateTime>
 #include <QFile>
@@ -1348,6 +1355,220 @@ private slots:
         QCOMPARE(display::runtimeKind("codex-desktop", "codex-desktop:d", ""), display::RuntimeKind::Desktop);
         QCOMPARE(display::activitySourceKey("codex-vscode", "codex-vscode:c", ""), QString("codex:ide:vs-code"));
     }
+
+    // Sparkle's EdDSA: vectors from OpenSSL 3.5 (pkeyutl -rawin) and RFC 8032 test 1.
+    void ed25519MatchesOpenSslAndRfc8032() {
+        const QByteArray rfcSeed = QByteArray::fromHex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60");
+        const QByteArray rfcPublic = QByteArray::fromHex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+        QCOMPARE(ed25519::publicKey(rfcSeed).toHex(), rfcPublic.toHex());
+        const QByteArray emptySignature = QByteArray::fromHex(
+            "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b");
+        QCOMPARE(ed25519::sign(QByteArray(), rfcSeed).toHex(), emptySignature.toHex());
+        QVERIFY(ed25519::verify(QByteArray(), emptySignature, rfcPublic));
+        const QByteArray rSignature = QByteArray::fromHex(
+            "1b79abc415a34efe5915b4c1b53d2435e731b3c92d0ba440de29cab2999fa885bd0eb3c71dfd8df6fbecf8c0ef403e8902dec8e2abd00ab9b04b1df027929609");
+        QCOMPARE(ed25519::sign("r", rfcSeed).toHex(), rSignature.toHex());
+        QVERIFY(ed25519::verify("r", rSignature, rfcPublic));
+        QVERIFY(!ed25519::verify("s", rSignature, rfcPublic));
+
+        const QByteArray seed = QByteArray::fromBase64("LjBSnw6WkxxE86oHWPBBZ1/TQ8D6qyCHYjetD2Z+UmA=");
+        const QByteArray publicKey = QByteArray::fromBase64("ILEdNWHg3lNJxG2un3MRxhJzZZIrePh0xiGUhBBHJ4g=");
+        const QByteArray message = "Agent Signal Bar update test payload.\n";
+        const QByteArray signature = QByteArray::fromBase64(
+            "UmDUPA+GGe32jOAKu2bY5hnl5mZUGe1T8aMGm90v2SnL/lrpqG5ocibQNEO3yoqEbr9nkn3HjmHl17/BAXzWCQ==");
+        QCOMPARE(ed25519::publicKey(seed).toBase64(), publicKey.toBase64());
+        QCOMPARE(ed25519::sign(message, seed).toBase64(), signature.toBase64());
+        QBuffer device;
+        device.setData(message);
+        QVERIFY(device.open(QIODevice::ReadOnly));
+        QVERIFY(ed25519::verify(&device, signature, publicKey));
+
+        // Sparkle's other exports: the expanded key, and the legacy expanded key + public key.
+        QByteArray expanded = QCryptographicHash::hash(seed, QCryptographicHash::Sha512);
+        expanded[0] = char(quint8(expanded[0]) & 248);
+        expanded[31] = char((quint8(expanded[31]) & 127) | 64);
+        QCOMPARE(ed25519::sign(message, expanded).toBase64(), signature.toBase64());
+        QCOMPARE(ed25519::sign(message, expanded + publicKey).toBase64(), signature.toBase64());
+        QVERIFY(ed25519::sign(message, expanded + rfcPublic).isEmpty()); // a mixed-up legacy key
+        QVERIFY(ed25519::sign(message, seed.left(31)).isEmpty());
+
+        // Tampering, and a second encoding of S (S + L) that RFC 8032 rejects.
+        QByteArray flipped = signature;
+        flipped[10] = char(flipped[10] ^ 1);
+        QVERIFY(!ed25519::verify(message, flipped, publicKey));
+        QVERIFY(!ed25519::verify(message + "x", signature, publicKey));
+        QVERIFY(!ed25519::verify(message, signature, rfcPublic));
+        QByteArray malleable = signature;
+        const QByteArray order = QByteArray::fromHex("edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010");
+        int carry = 0;
+        for (int i = 0; i < 32; ++i) {
+            const int sum = quint8(malleable[32 + i]) + quint8(order[i]) + carry;
+            malleable[32 + i] = char(sum & 0xff);
+            carry = sum >> 8;
+        }
+        QVERIFY(!ed25519::verify(message, malleable, publicKey));
+        QVERIFY(!ed25519::verify(message, signature.left(63), publicKey));
+    }
+
+    void appcastParsesSparkleFeedsAndPicksTheNewestWindowsItem() {
+        using appcast::compareVersions;
+        QCOMPARE(compareVersions("1.0", "1.0.0"), 0);
+        QVERIFY(compareVersions("1.0b1", "1.0") < 0);
+        QVERIFY(compareVersions("1.0a", "1.0b") < 0);
+        QVERIFY(compareVersions("1.10", "1.9") > 0);
+        QVERIFY(compareVersions("1.0.1", "1.0") > 0);
+        QVERIFY(compareVersions("25", "24") > 0);
+        QVERIFY(compareVersions("2", "10") < 0);
+        QVERIFY(compareVersions("10.0.26100", "10.0.17763") > 0);
+
+        const QByteArray sig = QByteArray(64, char(83)).toBase64();
+        const auto enclosure = [&sig](const QByteArray &url, const QByteArray &attributes) {
+            return QByteArray("<enclosure url='") + url + "' type='application/octet-stream' " + attributes
+                + " sparkle:edSignature='" + sig + "'/>";
+        };
+        // Single-quoted attributes: moc loses track of the class in a multi-line raw string.
+        const QByteArray feed = QByteArray("<?xml version='1.0' standalone='yes'?>\n"
+            "<rss xmlns:sparkle='http://www.andymatuschak.org/xml-namespaces/sparkle' version='2.0'><channel>\n"
+            "<title>Agent Signal Bar</title>\n"
+            "<item><title>1.9.0</title><sparkle:version>30</sparkle:version>"
+            "<sparkle:shortVersionString>1.9.0</sparkle:shortVersionString>")
+            + enclosure("https://example.invalid/AgentSignalBar.dmg", "length='10'") + "</item>\n"
+            "<item><title>1.8.0</title><pubDate>Mon, 23 Nov 2026 10:00:00 +0000</pubDate>"
+            "<sparkle:version>25</sparkle:version><sparkle:shortVersionString>1.8.0</sparkle:shortVersionString>"
+            "<sparkle:minimumSystemVersion>10.0.17763</sparkle:minimumSystemVersion>"
+            "<sparkle:fullReleaseNotesLink>https://github.com/guan-ops/Agent-Signal-Bar/releases/tag/v1.8.0</sparkle:fullReleaseNotesLink>"
+            "<description sparkle:format='markdown'><![CDATA[## Highlights\n- In-app updates]]></description>"
+            + enclosure("https://example.invalid/AgentSignalBar-v1.8.0-windows-x64-setup.exe", "length='1234' sparkle:os='windows'")
+            + "</item>\n"
+            "<item><title>1.8.2</title><sparkle:version>26</sparkle:version>"
+            "<sparkle:minimumSystemVersion>99.0</sparkle:minimumSystemVersion>"
+            + enclosure("https://example.invalid/a.exe", "length='1' sparkle:os='windows'") + "</item>\n"
+            "<item><title>1.9.0 beta</title><sparkle:version>27</sparkle:version><sparkle:channel>beta</sparkle:channel>"
+            + enclosure("https://example.invalid/b.exe", "length='1' sparkle:os='windows'") + "</item>\n"
+            "<item><title>unsigned</title><sparkle:version>28</sparkle:version>"
+            "<enclosure url='https://example.invalid/c.exe' length='1' sparkle:os='windows'/></item>\n"
+            "</channel></rss>";
+        QString error;
+        const QList<appcast::Item> items = appcast::parse(feed, &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(items.size(), 5);
+        const appcast::Item &windows = items.at(1);
+        QCOMPARE(windows.version, QString("25"));
+        QCOMPARE(windows.displayVersion(), QString("1.8.0"));
+        QCOMPARE(windows.os, QString("windows"));
+        QCOMPARE(windows.length, qint64(1234));
+        QCOMPARE(windows.edSignature.size(), 64);
+        QCOMPARE(windows.notesFormat, QString("markdown"));
+        QVERIFY(windows.notes.startsWith("## Highlights"));
+        QCOMPARE(windows.fullReleaseNotesLink.toString(), QString("https://github.com/guan-ops/Agent-Signal-Bar/releases/tag/v1.8.0"));
+        QVERIFY(!appcast::isWindowsItem(items.at(0)));
+
+        appcast::Criteria criteria;
+        criteria.currentVersion = "24";
+        criteria.osVersion = "10.0.26100";
+        // The macOS disk image (30), the one needing a newer system (26), the beta (27) and the
+        // unsigned one (28) never count on the stable channel.
+        auto best = appcast::bestUpdate(items, criteria);
+        QVERIFY(best);
+        QCOMPARE(best->version, QString("25"));
+        criteria.channels = {QString(), QStringLiteral("beta")};
+        QCOMPARE(appcast::bestUpdate(items, criteria)->version, QString("27"));
+        criteria.channels = {QString()};
+        criteria.currentVersion = "25";
+        QVERIFY(!appcast::bestUpdate(items, criteria));
+        criteria.currentVersion = "24";
+        criteria.skippedVersion = "25";
+        QVERIFY(!appcast::bestUpdate(items, criteria)); // skipped: scheduled checks stay quiet
+        criteria.userInitiated = true;
+        QCOMPARE(appcast::bestUpdate(items, criteria)->version, QString("25"));
+
+        QVERIFY(appcast::parse("<rss><channel><item><title>x</item></rss>", &error).isEmpty());
+        QVERIFY(!error.isEmpty());
+        QVERIFY(UpdateService::osVersion().startsWith(QString::number(QOperatingSystemVersion::current().majorVersion()) + "."));
+    }
+
+    // The whole updater short of running the installer, over file:// (QNetworkAccessManager reads it
+    // like a download): check, download, EdDSA verification, and the refusals.
+    void updateServiceDownloadsAndVerifiesLikeSparkle() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QByteArray seed = QByteArray::fromBase64("LjBSnw6WkxxE86oHWPBBZ1/TQ8D6qyCHYjetD2Z+UmA=");
+        QByteArray installer;
+        for (int i = 0; i < 200000; ++i) installer.append(char(i * 31 % 251));
+        const QString installerPath = dir.filePath("AgentSignalBar-v1.8.0-windows-x64-setup.exe");
+        {
+            QFile file(installerPath);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(installer);
+        }
+        const auto writeFeed = [&](const QString &name, const QByteArray &signedBytes, qint64 length) {
+            const QByteArray xml = "<?xml version=\"1.0\"?><rss xmlns:sparkle=\"http://www.andymatuschak.org/xml-namespaces/sparkle\" version=\"2.0\"><channel><item>"
+                "<title>1.8.0</title><sparkle:version>25</sparkle:version><sparkle:shortVersionString>1.8.0</sparkle:shortVersionString>"
+                "<enclosure url=\"" + QUrl::fromLocalFile(installerPath).toEncoded() + "\" length=\"" + QByteArray::number(length)
+                + "\" type=\"application/octet-stream\" sparkle:os=\"windows\" sparkle:edSignature=\""
+                + ed25519::sign(signedBytes, seed).toBase64() + "\"/></item></channel></rss>";
+            QFile file(dir.filePath(name));
+            if (!file.open(QIODevice::WriteOnly)) return QUrl();
+            file.write(xml);
+            return QUrl::fromLocalFile(file.fileName());
+        };
+        const auto run = [&](const QUrl &feed) {
+            UpdateService::Config config;
+            config.feedUrl = feed;
+            config.publicKey = ed25519::publicKey(seed);
+            config.version = "1.7.0";
+            config.build = "24";
+            config.cacheDir = dir.filePath("cache");
+            config.appDir = dir.path();
+            auto service = std::make_unique<UpdateService>(config);
+            QSignalSpy checked(service.get(), &UpdateService::checkFinished);
+            appcast::Criteria criteria;
+            criteria.userInitiated = true;
+            service->check(criteria);
+            if (!checked.wait(5000) || service->stage() != UpdateService::Stage::Available) return service;
+            QSignalSpy changed(service.get(), &UpdateService::changed);
+            service->download();
+            for (int i = 0; i < 50 && service->stage() != UpdateService::Stage::Ready
+                            && service->stage() != UpdateService::Stage::Failed;
+                 ++i)
+                changed.wait(200);
+            return service;
+        };
+
+        auto good = run(writeFeed("good.xml", installer, installer.size()));
+        QCOMPARE(good->stage(), UpdateService::Stage::Ready);
+        QCOMPARE(good->item()->displayVersion(), QString("1.8.0"));
+        QVERIFY(good->installerPath().startsWith(dir.filePath("cache/25/")));
+        QFile staged(good->installerPath());
+        QVERIFY(staged.open(QIODevice::ReadOnly));
+        QCOMPARE(staged.readAll(), installer);
+        staged.close();
+
+        auto forged = run(writeFeed("forged.xml", installer + "tampered", installer.size()));
+        QCOMPARE(forged->stage(), UpdateService::Stage::Failed);
+        QVERIFY(forged->error().contains("EdDSA"));
+        QVERIFY(!QFile::exists(dir.filePath("cache/25/AgentSignalBar-v1.8.0-windows-x64-setup.exe")));
+
+        auto truncated = run(writeFeed("short.xml", installer, installer.size() - 1));
+        QCOMPARE(truncated->stage(), UpdateService::Stage::Failed);
+
+        // Nothing newer than the running build: up to date.
+        UpdateService::Config config;
+        config.feedUrl = writeFeed("same.xml", installer, installer.size());
+        config.publicKey = ed25519::publicKey(seed);
+        config.version = "1.8.0";
+        config.build = "25";
+        config.cacheDir = dir.filePath("cache");
+        UpdateService current(config);
+        QSignalSpy checked(&current, &UpdateService::checkFinished);
+        current.check({});
+        QVERIFY(checked.wait(5000));
+        QCOMPARE(current.stage(), UpdateService::Stage::UpToDate);
+        // A build without a feed or key is not a release build: no updater, as Sparkle without SUFeedURL.
+        config.publicKey.clear();
+        QVERIFY(!UpdateService(config).configured());
+    }
+
 };
 
 QTEST_GUILESS_MAIN(CodexTest)

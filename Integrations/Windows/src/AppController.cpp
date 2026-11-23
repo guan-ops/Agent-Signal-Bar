@@ -16,6 +16,7 @@
 #include "UsageScanner.h"
 #include "UsageService.h"
 #include "QuotaService.h"
+#include "UpdateService.h"
 
 #include <QClipboard>
 #include <QDateTime>
@@ -41,6 +42,18 @@
 
 #include <algorithm>
 #include <cmath>
+
+// Release builds get these from package.ps1 (build.ps1 -Build -UpdateFeed -UpdatePublicKey). Without
+// them the updater is off, as Sparkle is in builds without SUFeedURL and SUPublicEDKey.
+#ifndef ASB_WINDOWS_BUILD
+#define ASB_WINDOWS_BUILD "0"
+#endif
+#ifndef ASB_UPDATE_FEED_URL
+#define ASB_UPDATE_FEED_URL ""
+#endif
+#ifndef ASB_UPDATE_PUBLIC_KEY
+#define ASB_UPDATE_PUBLIC_KEY ""
+#endif
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -90,7 +103,11 @@ const QVariantMap &defaultPrefs() {
         {"blockedEffect", "fast_flash"}, {"doneEffect", "green_steady"},
         {"newZealandMode", false}, {"soundEnabled", true}, {"completionSound", "new_zealand"},
         {"waitingSound", "new_zealand"}, {"soundLevel", "standard"},
-        {"autoUpdateCheck", true}, {"lightAgentMode", "following"}, {"showOtherAgentsWhenIdle", true},
+        // Sparkle's own defaults keys. Automatic checks stay off until the user answers the prompt on
+        // the second launch (or turns them on in About).
+        {"SUEnableAutomaticChecks", false}, {"SUAutomaticallyUpdate", false}, {"SUSkippedVersion", ""},
+        {"SULastCheckTime", qint64(0)}, {"SUHasLaunchedBefore", false}, {"SUUpdatePermissionAsked", false},
+        {"lightAgentMode", "following"}, {"showOtherAgentsWhenIdle", true},
         {"usagePlatform", "codex"}, {"fileLogging", false}, {"logLevel", "verbose"},
         {"codexDataDir", ""}};
     return defaults;
@@ -203,9 +220,50 @@ AppController::AppController(const QString &settingsFile, const QString &capture
             m_quota->start(true);
         }
     }
+    // Updates (Sparkle on macOS): the real app instance only, never capture or demo runs.
+    if (m_captureDir.isEmpty() && live) {
+        UpdateService::Config config;
+        config.feedUrl = QUrl(QStringLiteral(ASB_UPDATE_FEED_URL));
+        config.publicKey = QByteArray::fromBase64(QByteArrayLiteral(ASB_UPDATE_PUBLIC_KEY));
+        config.version = version();
+        config.build = QStringLiteral(ASB_WINDOWS_BUILD);
+        const QString localData = qEnvironmentVariable("LOCALAPPDATA");
+        config.cacheDir = (localData.isEmpty() ? QDir::tempPath() : localData) + "/AgentSignalBar/Updates";
+        config.appDir = QCoreApplication::applicationDirPath();
+        m_updater = new UpdateService(config, this);
+        connect(m_updater, &UpdateService::changed, this, &AppController::rebuildUpdate);
+        connect(m_updater, &UpdateService::checkFinished, this, &AppController::onUpdateCheckFinished);
+        connect(m_updater, &UpdateService::readyToInstall, this, [this] {
+            if (!m_backgroundDownload) return; // the update window shows it
+            m_backgroundDownload = false;
+            const auto &item = m_updater->item();
+            emit notificationRequested(
+                "Agent Signal Bar",
+                text("版本 %1 已下载，退出时自动安装；也可以从菜单立即重启安装。",
+                     "Version %1 is downloaded and installs when you quit, or restart now from the menu.")
+                    .arg(item ? item->displayVersion() : QString()));
+        });
+        connect(this, &AppController::languageChanged, this, &AppController::rebuildUpdate);
+        if (m_updater->configured()) {
+            m_updateTimer.setInterval(60 * 60 * 1000); // checks are due every 24 h; look once an hour
+            connect(&m_updateTimer, &QTimer::timeout, this, &AppController::scheduledUpdateCheck);
+            m_updateTimer.start();
+            QTimer::singleShot(15000, this, [this] {
+                // Like Sparkle: the first launch only notes itself, the second asks about automatic checks.
+                if (!m_prefs->value("SUHasLaunchedBefore").toBool()) {
+                    m_prefs->insert("SUHasLaunchedBefore", true);
+                    m_settings->setValue("SUHasLaunchedBefore", true);
+                } else if (!m_prefs->value("SUUpdatePermissionAsked").toBool()) {
+                    emit updatePermissionRequested();
+                }
+                scheduledUpdateCheck();
+            });
+        }
+    }
     rebuildActivity();
     rebuildUsage();
     rebuildQuota();
+    rebuildUpdate();
     refreshCli();
     // Capture runs never look at the real agent settings.
     if (m_captureDir.isEmpty()) {
@@ -1507,7 +1565,11 @@ void AppController::applyBackdrop(QWindow *window, const QString &kind) const {
 
 QString AppController::settingsFilePath() const { return m_settings->fileName(); }
 
-void AppController::quit() { QCoreApplication::quit(); }
+void AppController::quit() {
+    // A downloaded update installs on quit, without relaunching (Sparkle's install-on-quit).
+    if (m_updater && m_updater->stage() == UpdateService::Stage::Ready) m_updater->install(false);
+    QCoreApplication::quit();
+}
 
 void AppController::onPrefChanged(const QString &key, const QVariant &value) {
     m_settings->setValue(key, value);
@@ -1551,6 +1613,13 @@ void AppController::onPrefChanged(const QString &key, const QVariant &value) {
         configureLogging();
         if (key == "fileLogging" && value.toBool()) asb::debuglog::append("file logging enabled");
         if (key == "logLevel") asb::debuglog::append("log level set to " + value.toString());
+    } else if (key.startsWith(QLatin1String("SU"))) {
+        if (key == "SUEnableAutomaticChecks") {
+            m_prefs->insert("SUUpdatePermissionAsked", true);
+            m_settings->setValue("SUUpdatePermissionAsked", true);
+            if (value.toBool()) QTimer::singleShot(0, this, &AppController::scheduledUpdateCheck);
+        }
+        rebuildUpdate();
     } else if (key == "launchAtLogin") {
         applyLaunchAtLogin(value.toBool());
     } else if (key == "lightAgentMode" || key == "showOtherAgentsWhenIdle") {
@@ -1588,4 +1657,191 @@ void AppController::applyLaunchAtLogin(bool enabled) const {
 #else
     Q_UNUSED(enabled);
 #endif
+}
+
+// ---- Updates (SparkleUpdaterService / SPUStandardUpdaterController) ----
+
+namespace {
+const char *const kReleasesPage = "https://github.com/guan-ops/Agent-Signal-Bar/releases/latest";
+
+QString sizeText(qint64 bytes) {
+    return asb::i18n::locale().toString(double(bytes) / (1024.0 * 1024.0), 'f', 1) + " MB";
+}
+} // namespace
+
+void AppController::checkForUpdates() {
+    if (!m_updater || !m_updater->configured()) {
+        openUrl(kReleasesPage); // as SparkleUpdaterService does without a feed
+        return;
+    }
+    m_backgroundDownload = false;
+    asb::appcast::Criteria criteria;
+    criteria.userInitiated = true;
+    m_updater->check(criteria);
+    emit updateWindowRequested(); // "Checking for updates…", then the result
+}
+
+void AppController::scheduledUpdateCheck() {
+    if (!m_updater || !m_updater->configured() || !m_prefs->value("SUEnableAutomaticChecks").toBool()) return;
+    const qint64 last = m_prefs->value("SULastCheckTime").toLongLong();
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (last > 0 && last <= now && now - last < 24LL * 60 * 60 * 1000) return; // SUScheduledCheckInterval
+    asb::appcast::Criteria criteria;
+    criteria.skippedVersion = m_prefs->value("SUSkippedVersion").toString();
+    m_updater->check(criteria);
+}
+
+void AppController::onUpdateCheckFinished(bool userInitiated) {
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    m_prefs->insert("SULastCheckTime", now);
+    m_settings->setValue("SULastCheckTime", now);
+    rebuildUpdate();
+    // A user-initiated check already shows its window; scheduled ones stay quiet unless they find something.
+    if (userInitiated || m_updater->stage() != UpdateService::Stage::Available || !m_updater->item()) return;
+    if (m_prefs->value("SUAutomaticallyUpdate").toBool() && !m_updater->item()->informational) {
+        m_backgroundDownload = true; // SUAutomaticallyUpdate: download now, install on quit
+        m_updater->download();
+        return;
+    }
+    emit updateWindowRequested();
+}
+
+void AppController::downloadUpdate() {
+    if (!m_updater) return;
+    m_backgroundDownload = false;
+    m_updater->download();
+}
+
+void AppController::installUpdate() {
+    if (m_updater && m_updater->install(true)) QTimer::singleShot(300, qApp, &QCoreApplication::quit);
+}
+
+void AppController::skipUpdate() {
+    if (!m_updater || !m_updater->item()) return;
+    const QString skipped = m_updater->item()->version;
+    m_prefs->insert("SUSkippedVersion", skipped);
+    m_settings->setValue("SUSkippedVersion", skipped);
+    m_updater->dismiss();
+}
+
+void AppController::remindUpdateLater() {
+    if (m_updater) m_updater->dismiss();
+}
+
+void AppController::cancelUpdate() {
+    if (m_updater) m_updater->cancel();
+}
+
+void AppController::showUpdate() { emit updateWindowRequested(); }
+
+void AppController::answerUpdatePermission(bool automaticChecks, bool automaticInstall) {
+    const QList<QPair<QString, QVariant>> answers = {{"SUUpdatePermissionAsked", true},
+                                                     {"SUAutomaticallyUpdate", automaticChecks && automaticInstall},
+                                                     {"SUEnableAutomaticChecks", automaticChecks}};
+    for (const auto &[key, value] : answers) {
+        m_prefs->insert(key, value);
+        onPrefChanged(key, value);
+    }
+}
+
+void AppController::rebuildUpdate() {
+    QVariantMap map;
+    const QString build = QStringLiteral(ASB_WINDOWS_BUILD);
+    map["current"] = build == QLatin1String("0") ? version() : version() + " (" + build + ")";
+    map["releasesPage"] = QString::fromLatin1(kReleasesPage);
+    const qint64 last = m_prefs->value("SULastCheckTime").toLongLong();
+    map["lastCheck"] = last > 0 ? text("上次检查：", "Last checked: ")
+            + asb::i18n::locale().toString(QDateTime::fromMSecsSinceEpoch(last), QLocale::ShortFormat)
+                                : QString();
+    // Capture runs show a release build with nothing new; other runs without an updater have no feed.
+    const bool configured = m_updater ? m_updater->configured() : !m_captureDir.isEmpty();
+    map["configured"] = configured;
+    map["stage"] = QStringLiteral("idle");
+    map["tone"] = QStringLiteral("neutral");
+    if (!configured || !m_updater) {
+        map["message"] = configured ? QString()
+                                    : text("此构建没有更新源；从 GitHub Releases 下载的安装版会检查更新。",
+                                           "This build has no update feed. Installers from GitHub Releases check for updates.");
+        m_updateMap = map;
+        emit updateChanged();
+        return;
+    }
+    const UpdateService::Stage stage = m_updater->stage();
+    map["stage"] = UpdateService::stageKey(stage);
+    map["userInitiated"] = m_updater->userInitiated();
+    QString latest;
+    if (const auto &item = m_updater->item()) {
+        latest = item->displayVersion();
+        map["latest"] = latest;
+        map["latestBuild"] = item->version;
+        map["notes"] = item->notes;
+        map["notesFormat"] = item->notesFormat;
+        map["critical"] = item->critical;
+        map["informational"] = item->informational;
+        const QUrl notesLink = item->fullReleaseNotesLink.isValid() ? item->fullReleaseNotesLink : item->releaseNotesLink;
+        map["notesLink"] = notesLink.toString();
+        map["link"] = item->link.isValid() ? item->link.toString() : QString::fromLatin1(kReleasesPage);
+    }
+    const qint64 received = m_updater->received();
+    const qint64 total = m_updater->total();
+    map["progress"] = total > 0 ? qBound(0.0, double(received) / double(total), 1.0) : -1.0;
+    map["progressText"] = total > 0 ? sizeText(received) + " / " + sizeText(total) : sizeText(received);
+    QString message;
+    QString tone = QStringLiteral("neutral");
+    switch (stage) {
+    case UpdateService::Stage::Idle:
+        message = map.value("lastCheck").toString();
+        break;
+    case UpdateService::Stage::Checking:
+        message = text("正在检查更新…", "Checking for updates…");
+        break;
+    case UpdateService::Stage::UpToDate:
+        message = text("Agent Signal Bar %1 已是最新版本。", "Agent Signal Bar %1 is the newest version available.").arg(version());
+        tone = "positive";
+        break;
+    case UpdateService::Stage::Available:
+        message = text("发现新版本 %1（当前 %2）。", "Version %1 is available. Current version: %2.").arg(latest, version());
+        tone = "positive";
+        break;
+    case UpdateService::Stage::Downloading:
+        message = text("正在下载更新… %1", "Downloading update… %1").arg(map.value("progressText").toString());
+        break;
+    case UpdateService::Stage::Verifying:
+        message = text("正在验证更新…", "Verifying the update…");
+        break;
+    case UpdateService::Stage::Ready:
+        message = text("版本 %1 已准备好安装。", "Version %1 is ready to install.").arg(latest);
+        tone = "positive";
+        break;
+    case UpdateService::Stage::Installing:
+        message = text("正在安装更新…", "Installing the update…");
+        break;
+    case UpdateService::Stage::Failed:
+        message = m_updater->error();
+        tone = "critical";
+        break;
+    }
+    map["message"] = message;
+    map["tone"] = tone;
+    map["error"] = m_updater->error();
+    m_updateMap = map;
+    emit updateChanged();
+}
+
+void AppController::setDemoUpdate(const QString &stage) {
+    if (m_captureDir.isEmpty()) return;
+    rebuildUpdate();
+    if (stage.isEmpty()) return;
+    QVariantMap map = m_updateMap;
+    map["stage"] = stage;
+    map["latest"] = QStringLiteral("1.8.0");
+    map["latestBuild"] = QStringLiteral("25");
+    map["notesFormat"] = QStringLiteral("markdown");
+    map["notes"] = text("## 亮点\n\n- Windows 版支持应用内更新：检查、下载、验证签名并重新启动安装。\n- 悬浮灯额度角标可以选择显示的窗口。\n\n## 修复\n\n- 刷新 Codex 令牌后写回不再被误判为“文件已变化”。",
+                        "## Highlights\n\n- Windows updates in the app: check, download, verify the signature and relaunch to install.\n- Pick which window the floating quota badge shows.\n\n## Fixes\n\n- Writing back a refreshed Codex token is no longer refused as \"credentials changed\".");
+    map["notesLink"] = QStringLiteral("https://github.com/guan-ops/Agent-Signal-Bar/releases/tag/v1.8.0");
+    map["progress"] = 0.42;
+    map["progressText"] = QStringLiteral("19.2 MB / 45.7 MB");
+    m_updateMap = map;
+    emit updateChanged();
 }

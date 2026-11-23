@@ -9,6 +9,7 @@ QtObject {
     property SettingsWindow settings: SettingsWindow {}
     property TrayPanel panel: TrayPanel {}
     property SystemMenu systemMenu: SystemMenu {}
+    property UpdateWindow updateWindow: UpdateWindow {}
     property FloatingSignal floating: FloatingSignal {
         visible: App.captureDir.length === 0 && App.prefs.floatingEnabled
     }
@@ -16,6 +17,8 @@ QtObject {
     property Connections router: Connections {
         target: App
         function onSettingsRequested(page) { root.settings.open(page) }
+        function onUpdateWindowRequested() { root.updateWindow.present(false) }
+        function onUpdatePermissionRequested() { root.updateWindow.present(true) }
         // A click on the icon while a popup is open closes it: by the time the click arrives the
         // taskbar took focus and the popup already hid itself, so do not open it again.
         function onPanelRequested() {
@@ -67,6 +70,16 @@ QtObject {
             steps.push(() => { App.prefs.floatingLayout = "horizontal" })
             steps = steps.concat(grabStep(floating, "floating-horizontal-" + variant.tag))
             steps.push(() => { App.prefs.floatingLayout = "vertical"; floating.hide() })
+        }
+        // The update window: the permission prompt, a new version with Markdown notes, a download, ready.
+        for (const variant of [{ lang: "zh-Hans", theme: "dark", tag: "zh-CN-dark" }, { lang: "en", theme: "light", tag: "en-light" }]) {
+            steps.push(() => { App.prefs.language = variant.lang; App.prefs.theme = variant.theme; updateWindow.present(true) })
+            steps = steps.concat(grabStep(updateWindow, "update-permission-" + variant.tag))
+            for (const stage of ["available", "downloading", "ready"]) {
+                steps.push(() => { App.setDemoUpdate(stage); updateWindow.present(false) })
+                steps = steps.concat(grabStep(updateWindow, "update-" + stage + "-" + variant.tag))
+            }
+            steps.push(() => { updateWindow.hide(); App.setDemoUpdate("") })
         }
         // Interaction states: lit red lamp, popover, all three lamps on a done-all-steady frame.
         steps.push(() => { App.prefs.language = "zh-Hans"; App.prefs.theme = "dark"; App.setDemoSignal("permission"); floating.show(); floating.raise() })
