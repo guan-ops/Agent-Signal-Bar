@@ -1,5 +1,6 @@
 #include "LightScope.h"
 
+#include "I18n.h"
 #include "SignalModel.h"
 
 #include <QHash>
@@ -167,7 +168,7 @@ QStringList scopesForPreference(const QString &preference) {
 }
 
 QString displayName(const QString &scope, bool zh) {
-    const auto t = [zh](const char *c, const char *e) { return QString::fromUtf8(zh ? c : e); };
+    const auto t = [zh](const char *c, const char *e) { return zh ? QString::fromUtf8(c) : i18n::translate(QString::fromUtf8(e)); };
     if (scope == "codex") return QStringLiteral("Codex");
     if (scope == "claude") return QStringLiteral("Claude");
     if (scope == "codex-desktop") return t("Codex 桌面版", "Codex Desktop");
@@ -185,8 +186,8 @@ QString displayName(const QStringList &scopes, bool zh) {
     QStringList normalized;
     for (const QString &s : scopes)
         if (selectableCases().contains(s) && !normalized.contains(s)) normalized.append(s);
-    if (normalized.isEmpty()) return zh ? QStringLiteral("选择 Agent") : QStringLiteral("Select Agent");
-    if (sameSet(normalized, selectableCases())) return zh ? QStringLiteral("全部 Agent") : QStringLiteral("All Agents");
+    if (normalized.isEmpty()) return zh ? QStringLiteral("选择 Agent") : i18n::translate(QStringLiteral("Select Agent"));
+    if (sameSet(normalized, selectableCases())) return zh ? QStringLiteral("全部 Agent") : i18n::translate(QStringLiteral("All Agents"));
     if (sameSet(normalized, codexCases())) return QStringLiteral("Codex");
     if (sameSet(normalized, claudeCases())) return QStringLiteral("Claude");
     if (normalized.size() == 1) return displayName(normalized.first(), zh);
@@ -257,7 +258,7 @@ Selection Selector::select(const display::DisplaySnapshot &display, bool followi
 QString followingText(const Selection &selection, bool following, bool zh) {
     if (selection.borrowed) return (zh ? QStringLiteral("暂时显示 ") : QStringLiteral("Showing ")) + displayName(*selection.borrowed, zh);
     if (following) {
-        if (selection.scopes.isEmpty()) return zh ? QStringLiteral("自动跟随") : QStringLiteral("Auto Follow");
+        if (selection.scopes.isEmpty()) return zh ? QStringLiteral("自动跟随") : i18n::translate(QStringLiteral("Auto Follow"));
         return (zh ? QStringLiteral("自动跟随 · ") : QStringLiteral("Following ")) + displayName(selection.scopes, zh);
     }
     return selection.scopes.isEmpty() ? QString() : displayName(selection.scopes, zh);

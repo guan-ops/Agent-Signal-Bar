@@ -26,7 +26,7 @@ Windows 版沿用 CodexBar `Integrations/Linux` 的分层方式：C++ 控制器 
 | `qml/*Page.qml`、`SettingsWindow.qml` | 设置窗口：运行、用量、灯效、连接、通用、调试、关于 |
 | `qml/TrayPanel.qml`、`SystemMenu.qml` | 托盘的两种展示方式：卡片面板和系统菜单 |
 | `qml/FloatingSignal.qml` | 桌面悬浮灯：置顶、拖动、右下角自由缩放、三个角标、右键菜单、点击弹出浮层 |
-| `tests/` | `tst_signalmodel`（灯效）与 `tst_codex`（解析、状态存储、监控、显示规则），golden 数据由 Swift 源码生成（`tests/golden/generate.sh`）；`make_live_fixture.py` 生成合成 rollout 文件；`parity_strings.py` 用来对比 Swift 与 QML 的界面文案 |
+| `tests/` | `tst_signalmodel`（灯效）与 `tst_codex`（解析、状态存储、监控、显示规则），golden 数据由 Swift 源码生成（`tests/golden/generate.sh`）；`make_live_fixture.py` 生成合成 rollout 文件；`parity_strings.py` 用来对比 Swift 与 QML 的界面文案；`extract_translations.ps1` 从 `AppLanguage.swift` 重新生成 `translations.json` |
 
 ## 在 Windows 上构建
 
@@ -88,11 +88,11 @@ Integrations/Windows/dev-macos.sh capture
 | 卡片面板 / 系统菜单 | 托盘上方的无边框弹窗 | ✅ 按 1.7.0 的 `MenuBarPanelView` 和 `StatusBarController` 结构实现；点击其他位置时关闭 |
 | 悬浮信号灯 | 置顶工具窗口 | ✅ 拖动、缩放预设、自定义缩放、角标、右键菜单、浮层；位置会保存，显示器拔掉后会移回主屏 |
 | 灯语、灯效与节奏 | `SignalModel` | ✅ 与 Swift 实现逐帧比对（1998 组 golden 数据），节奏表另有单元测试 |
-| 设置窗口 7 个页面 | QML 页面 | ⚠️ 页面结构与主要控件已完成（演示数据）。macOS 版 376 条界面文案中约 2/3 尚未出现，主要是加载中、错误、空状态等需要数据层的文案，以及 Claude 用量设置、探测日志、获取策略调试、OpenAI Cookie 等调试分区。运行 `python3 -I Integrations/Windows/tests/parity_strings.py <仓库根目录> <输出目录>` 可列出缺失项 |
+| 设置窗口 7 个页面 | QML 页面 | ⚠️ 运行、灯效、连接、通用、调试页和用量页的本机 Token 部分都接上了真实数据，加载中、空状态和错误文案随功能一起补齐。仍缺的 macOS 文案主要属于未移植的功能：账号与额度、Claude 用量设置、额度获取策略和 OpenAI Cookie 调试（第 3 组），以及更新检查（第 5 组）。运行 `python3 -I Integrations/Windows/tests/parity_strings.py <仓库根目录> <输出目录>` 可列出缺失项 |
 | 液态玻璃 | Mica（标准）/ Mica Alt（增强），只用于设置窗口 | ⚠️ 已写 DWM 调用；低于 Windows 11 22H2 时自动保持不透明。需要实机验收 |
 | 开机自启动（SMAppService） | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | ⚠️ 已实现，需要实机验收 |
 | 提示音（AVFoundation，可调音量） | `PlaySound` 从内存播放按音量缩放后的 WAV（`SoundFile`；新西兰录音已转成 WAV） | ✅ 按 `FloatingSignalWindowController` 自动播放：灯变为“已完成”时一声完成提示音，Agent 工作时绿灯每亮一次一声闪烁音；轻柔/标准/响亮三档音量（0.28/0.55/0.88）。已在实机上确认触发时机 |
-| 多语言（10 种） | 目前只有简体中文和英文 | ❌ 其他语言暂时显示英文；需要移植 `AppLanguage.swift` 的翻译表 |
+| 多语言（10 种） | `I18n` + `translations.json`（由 `tests/extract_translations.ps1` 从 `AppLanguage.swift` 生成） | ✅ 与 macOS 相同的方式：简体中文和英文每条都有；繁体中文、日语、韩语、西班牙语、法语、德语、葡萄牙语用 macOS 的翻译表（260 条），表里没有的文案显示英文。“跟随系统”按 macOS 的规则识别语言；数字（万/亿）、日期和字体随语言切换（微软雅黑 / 微软正黑体 / Yu Gothic UI / Malgun Gothic / Segoe UI）。对齐了 21 条英文写法以便命中翻译表。截图回归多了一组日语界面 |
 | Codex 日志监控（灯语） | `CodexActivityMonitor` + `SignalStore` + `ActivityDisplay` | ✅ 解析器（57 行样例 × 2 种默认来源）和状态存储（11 组事件序列）与 Swift 实现逐条比对；监控和显示规则有单元测试。已在 macOS 上对真实 `~/.codex` 只读运行过，但没有和 macOS 版逐项对比（当时 macOS 版关闭了 Codex 自动监控）。Windows 上的目录位置需要用 `--probe` 实机确认 |
 | 状态文件 `status.json`（与 CLI、Hook 共享） | `SignalStateFile`（`%LOCALAPPDATA%\Agent Signal Bar\SignalState\status.json`） | ✅ 键名与 macOS 版相同，能读 Swift 写出的文件（有测试）；加锁读写，读不到时不覆盖，内容损坏时按 macOS 版视为“状态不可信”。重启后状态保留，所以启动时和 macOS 版一样只记下日志位置、不回放历史 |
 | Claude Code Hook | `agent-signal.exe claude-hook` + `ClaudeHookInstaller` | ✅ Hook 解析与 Swift 实现逐条比对（46 组样例）；安装器有单元测试（保留其他设置、幂等、只删自己的条目、备份、拒绝损坏和符号链接的文件）。已在 Windows 实机上确认：Claude Code 按 exec 形式启动 `agent-signal.exe`，会话和事件实时进入灯语 |

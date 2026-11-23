@@ -87,10 +87,10 @@ SettingsPage {
     }
 
     AsbSection {
-        title: Theme.t("诊断与版本", "Diagnostics & Version")
-        footer: Theme.t("导出诊断包、查看状态文件和版本", "Export a diagnostics bundle, see the state file and the version")
+        title: Theme.t("诊断与版本", "Diagnostics")
+        footer: Theme.t("导出诊断包、查看状态文件和版本", "Export diagnostics, state file, and version")
         AsbRow {
-            title: Theme.t("导出诊断", "Export diagnostics")
+            title: Theme.t("导出诊断", "Export Diagnostics")
             subtitle: Theme.t("状态、Hook 检查、日志和设置打包为 zip，不含聊天内容", "State, hook check, log and settings in a zip, no chat content")
             AsbButton {
                 visible: (App.diagnostics.archive || App.diagnostics.folder || "").length > 0
@@ -114,7 +114,7 @@ SettingsPage {
             Layout.fillWidth: true
         }
         AsbRow {
-            title: Theme.t("状态文件", "State file")
+            title: Theme.t("状态文件", "State File")
             subtitle: stateFile.length > 0 ? stateFile : Theme.t("演示模式不写状态文件", "Demo mode writes no state file")
             AsbButton {
                 visible: stateFile.length > 0
@@ -128,7 +128,7 @@ SettingsPage {
             subtitle: "Agent Signal Bar for Windows " + App.version
             AsbButton {
                 icon: "copy"
-                text: Theme.t("复制版本信息", "Copy Version Info")
+                text: Theme.t("复制版本信息", "Copy release info")
                 onClicked: App.copyText("Agent Signal Bar for Windows " + App.version + " (" + App.platform + ")")
             }
         }
@@ -178,7 +178,7 @@ SettingsPage {
             }
             StatusPill {
                 visible: App.liveData && !App.paused
-                text: Theme.t("自动监控", "Auto monitoring")
+                text: Theme.t("自动监控", "Auto monitor")
                 tone: "positive"
             }
         }
@@ -186,8 +186,8 @@ SettingsPage {
 
     HookSection {
         codex: true
-        title: Theme.t("Codex Hook（可选）", "Codex Hook (optional)")
-        footer: Theme.t("可选增强：用于权限请求、低延迟和兼容旧版本", "Optional: permission requests, lower latency and older versions")
+        title: Theme.t("Codex Hook（可选）", "Codex Hook (Optional)")
+        footer: Theme.t("可选增强：用于权限请求、低延迟和兼容旧版本", "Optional enhancement for permission requests, lower latency, and compatibility")
         fallbackPath: "%USERPROFILE%\\.codex\\hooks.json"
     }
 

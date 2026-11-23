@@ -67,13 +67,13 @@ SettingsPage {
     AsbSection {
         title: Theme.t("启动与运行", "Startup")
         AsbRow {
-            title: Theme.t("开机自启动", "Launch at login")
+            title: Theme.t("开机自启动", "Start at login")
             subtitle: Theme.t("登录 Windows 后自动打开 Agent Signal Bar", "Open Agent Signal Bar when you sign in to Windows")
             PrefSwitch { key: "launchAtLogin" }
         }
         AsbRow {
             title: Theme.t("低功耗模式", "Low power mode")
-            subtitle: Theme.t("降低后台轮询和动画刷新频率，适合长时间常驻。", "Poll and animate less often for long sessions.")
+            subtitle: Theme.t("降低后台轮询和动画刷新频率，适合长时间常驻。", "Reduce background polling and animation refresh while the app stays running.")
             PrefSwitch { key: "lowPowerMode" }
         }
         AsbRow {

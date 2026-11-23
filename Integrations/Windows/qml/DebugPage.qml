@@ -9,7 +9,7 @@ SettingsPage {
         { signal: "thinking", label: Theme.t("思考", "Thinking") },
         { signal: "working", label: Theme.t("工作中", "Working") },
         { signal: "done", label: Theme.t("已完成", "Done") },
-        { signal: "attention", label: Theme.t("需要查看", "Needs review") },
+        { signal: "attention", label: Theme.t("需要查看", "Needs Review") },
         { signal: "permission_request", label: Theme.t("等待授权", "Permission") },
         { signal: "blocked", label: Theme.t("阻塞", "Blocked") },
         { signal: "stale", label: Theme.t("状态不可信", "Stale") },

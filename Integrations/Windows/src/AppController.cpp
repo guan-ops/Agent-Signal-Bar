@@ -4,6 +4,7 @@
 #include "ClaudeHookInstaller.h"
 #include "CliPath.h"
 #include "DebugLog.h"
+#include "I18n.h"
 #include "Diagnostics.h"
 #include "HookAdapters.h"
 #include "SignalRuntime.h"
@@ -130,6 +131,7 @@ AppController::AppController(const QString &settingsFile, const QString &capture
         m_prefs->insert(it.key(), value);
     }
     connect(m_prefs, &QQmlPropertyMap::valueChanged, this, &AppController::onPrefChanged);
+    asb::i18n::setLanguage(language());
     configureLogging();
     if (asb::debuglog::enabled()) asb::debuglog::append("app started " + version());
     connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, &AppController::themeChanged);
@@ -326,7 +328,7 @@ void AppController::rebuildActivity() {
     rebuildHook(m_claudeHook); // its message names the latest Claude event
     rebuildHook(m_codexHook);  // and both say when monitoring is paused
     if (!m_runtime) return;
-    const bool zh = language() == "zh";
+    const bool zh = language() == "zh-Hans"; // other languages: English through the translation table
     const auto sessionRow = [zh](const asb::SessionStatus &s) {
         return QVariantMap{{"id", s.sessionID}, {"title", asb::text::sessionTitle(s, zh)},
                            {"agent", asb::text::friendlyAgentName(s.agent, zh)},
@@ -456,12 +458,9 @@ QString AppController::displayStateTitle() const {
     return {};
 }
 
-QString AppController::language() const {
-    const QString pref = m_prefs->value("language").toString();
-    if (pref == "zh-Hans" || pref == "zh-Hant") return "zh";
-    if (pref == "system") return QLocale::system().language() == QLocale::Chinese ? "zh" : "en";
-    return "en";
-}
+QString AppController::language() const { return asb::i18n::resolve(m_prefs->value("language").toString()); }
+
+QVariantMap AppController::translations() const { return asb::i18n::table(language()); }
 
 bool AppController::dark() const {
     const QString theme = m_prefs->value("theme").toString();
@@ -502,7 +501,13 @@ QString AppController::version() const { return QStringLiteral(ASB_WINDOWS_VERSI
 
 QString AppController::uiFont() const {
 #ifdef Q_OS_WIN
-    return language() == "zh" ? "Microsoft YaHei UI" : "Segoe UI Variable Text";
+    // The Windows UI face for each script; Segoe UI for the Latin-script languages.
+    const QString lang = language();
+    if (lang == "zh-Hans") return "Microsoft YaHei UI";
+    if (lang == "zh-Hant") return "Microsoft JhengHei UI";
+    if (lang == "ja") return "Yu Gothic UI";
+    if (lang == "ko") return "Malgun Gothic";
+    return "Segoe UI Variable Text";
 #else
     return QGuiApplication::font().family();
 #endif
@@ -529,7 +534,7 @@ asb::EffectCustomization AppController::effectCustomization() const {
 }
 
 QString AppController::text(const QString &zhHans, const QString &english) const {
-    return language() == "zh" ? zhHans : english;
+    return asb::i18n::text(zhHans, english);
 }
 
 double AppController::lampIntensity(const QString &color, const QString &signal, int tick, bool allLightsOn) const {
@@ -823,11 +828,11 @@ void AppController::refreshUsage() {
 // AppLanguage.compactTokenCountText: 万/亿 in Chinese, K/M/B in English, two decimals.
 QString AppController::compactTokens(qint64 count) const {
     const double value = double(std::max<qint64>(0, count));
-    const QLocale locale = language() == "zh" ? QLocale(QLocale::Chinese, QLocale::China) : QLocale(QLocale::English);
+    const QLocale locale = asb::i18n::locale();
     const auto scaled = [&](double divisor, const char *suffix) {
         return locale.toString(value / divisor, 'f', 2) + QString::fromUtf8(suffix);
     };
-    if (language() == "zh") {
+    if (asb::i18n::usesChineseNumbers()) {
         if (value >= 1e8) return scaled(1e8, "亿");
         if (value >= 1e4) return scaled(1e4, "万");
     } else {
@@ -845,15 +850,15 @@ QString AppController::costText(std::optional<double> usd, bool partial) const {
                                       : std::pair<double, QString>{1.0, QStringLiteral("USD")};
     const double value = std::max(0.0, *usd) * rate;
     const int decimals = code == "JPY" || code == "KRW" ? 0 : 2;
-    const QLocale locale = language() == "zh" ? QLocale(QLocale::Chinese, QLocale::China) : QLocale(QLocale::English);
+    const QLocale locale = asb::i18n::locale();
     return (partial ? QStringLiteral("≥ ") : QString()) + code + ' ' + locale.toString(value, 'f', decimals);
 }
 
 QVariantMap AppController::usageSide(const asb::usage::Report &report, bool claude) const {
-    const bool zh = language() == "zh";
+    // Token counts read "token" in Chinese and "tokens" elsewhere, as on macOS.
     const bool ready = m_usage && m_usage->hasResult();
     const bool scanning = m_usage && m_usage->scanning();
-    const QString tokenSuffix = zh ? QStringLiteral(" token") : QStringLiteral(" tokens");
+    const QString tokenSuffix = text(QStringLiteral(" token"), QStringLiteral(" tokens"));
     const QDate today = QDate::currentDate();
     QHash<QString, const asb::usage::Day *> byKey;
     for (const asb::usage::Day &day : report.days) byKey.insert(day.key, &day);
@@ -904,9 +909,15 @@ QVariantMap AppController::usageSide(const asb::usage::Report &report, bool clau
         }
         const qint64 total = day ? day->totalTokens : 0;
         const std::optional<double> cost = day ? day->cost : (ready ? std::optional<double>(0) : std::nullopt);
+        // Month and day in the interface language (tokenActivityShortDateText).
+        const QString lang = language();
+        const QString shortDate = lang == "zh-Hans" || lang == "zh-Hant" || lang == "ja"
+            ? QStringLiteral("%1月%2日").arg(date.month()).arg(date.day())
+            : lang == "ko" ? QStringLiteral("%1월 %2일").arg(date.month()).arg(date.day())
+            : lang == "en" ? QLocale(QLocale::English).toString(date, "MMM d")
+            : asb::i18n::locale().toString(date, "d MMM");
         days.append(QVariantMap{
-            {"label", zh ? QStringLiteral("%1月%2日").arg(date.month()).arg(date.day())
-                         : QLocale(QLocale::English).toString(date, "MMM d")},
+            {"label", shortDate},
             {"total", double(total) / 1e6},
             {"tokensText", compactTokens(total) + tokenSuffix},
             {"costText", costText(cost, day && day->partial && cost.has_value())},
@@ -1175,6 +1186,7 @@ void AppController::quit() { QCoreApplication::quit(); }
 void AppController::onPrefChanged(const QString &key, const QVariant &value) {
     m_settings->setValue(key, value);
     if (key == "language") {
+        asb::i18n::setLanguage(language());
         emit languageChanged();
     } else if (key == "theme") {
         emit themeChanged();

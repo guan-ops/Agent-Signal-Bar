@@ -80,8 +80,8 @@ SettingsPage {
                 key: "statusStyle"
                 segmentWidth: 72
                 options: [
-                    { value: "trafficLight", label: Theme.t("经典灯牌", "Classic") },
-                    { value: "macOS", label: Theme.t("极简圆点", "Dots") },
+                    { value: "trafficLight", label: Theme.t("经典灯牌", "Classic Lamp") },
+                    { value: "macOS", label: Theme.t("极简圆点", "Minimal Dots") },
                     { value: "singleLamp", label: Theme.t("单灯", "Single") }
                 ]
             }
@@ -96,14 +96,14 @@ SettingsPage {
     AsbSection {
         title: Theme.t("悬浮灯", "Floating Signal")
         footer: Theme.t("尺寸预设同时适用于横向和竖向；拖动灯牌右下角箭头可自由微调。",
-                        "Presets apply to both layouts; drag the arrow at the lamp's bottom-right corner to fine-tune.")
+                        "Size presets apply to both horizontal and vertical layouts; drag the bottom-right handle for custom sizing.")
         AsbRow {
-            title: Theme.t("悬浮灯方向", "Floating layout")
+            title: Theme.t("悬浮灯方向", "Floating signal direction")
             Segmented { key: "floatingLayout"; options: layouts }
         }
         AsbRow {
-            title: Theme.t("悬浮灯大小", "Floating size")
-            subtitle: Theme.t("选择横向和竖向共用的尺寸预设。", "One preset for both layouts.")
+            title: Theme.t("悬浮灯大小", "Floating signal size")
+            subtitle: Theme.t("选择横向和竖向共用的尺寸预设。", "Choose a size preset shared by horizontal and vertical layouts.")
             Segmented {
                 key: "floatingSize"
                 segmentWidth: 52
@@ -137,7 +137,7 @@ SettingsPage {
 
     AsbSection {
         title: Theme.t("灯效", "Effects")
-        AsbText { text: Theme.t("灯效自定义", "Customize effects"); caption: true; strong: true; secondary: true }
+        AsbText { text: Theme.t("灯效自定义", "Effect Customization"); caption: true; strong: true; secondary: true }
         AsbRow { title: Theme.t("思考灯效", "Thinking"); Dropdown { key: "thinkingEffect"; options: activeEffects; pickerWidth: 150 } }
         AsbRow { title: Theme.t("工作灯效", "Working"); Dropdown { key: "workingEffect"; options: activeEffects; pickerWidth: 150 } }
         AsbRow { title: Theme.t("需确认灯效", "Needs review"); Dropdown { key: "needsReviewEffect"; options: alertEffects("黄灯", "Yellow"); pickerWidth: 150 } }

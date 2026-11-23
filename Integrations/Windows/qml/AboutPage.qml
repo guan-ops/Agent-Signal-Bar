@@ -12,7 +12,7 @@ SettingsPage {
         }
         // Neither the switch nor the button did anything: update checks are not ported yet.
         AsbRow {
-            title: Theme.t("检查更新", "Check for updates")
+            title: Theme.t("检查更新", "Check for Updates")
             subtitle: Theme.t("Windows 版更新检查尚未接入 GitHub Releases，请用下面的下载页面获取新版本。",
                               "Windows update checks are not wired to GitHub Releases yet; get new versions from the download page below.")
             StatusPill { text: Theme.t("尚未移植", "Not ported"); tone: "neutral" }

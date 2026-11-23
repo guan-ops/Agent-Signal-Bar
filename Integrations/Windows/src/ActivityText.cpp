@@ -1,6 +1,7 @@
 #include "ActivityText.h"
 
 #include "ActivityDisplay.h"
+#include "I18n.h"
 #include "SignalModel.h"
 
 #include <QHash>
@@ -12,7 +13,7 @@ namespace {
 
 using Names = QHash<QString, QPair<QString, QString>>; // key -> (zh, en)
 
-QString pick(const QPair<QString, QString> &names, bool zh) { return zh ? names.first : names.second; }
+QString pick(const QPair<QString, QString> &names, bool zh) { return zh ? names.first : i18n::translate(names.second); }
 
 QString normalized(const QString &value) {
     QString n = value.trimmed().toLower();
@@ -54,7 +55,7 @@ QString friendlyAgentName(const QString &agent, bool zh) {
     static const QSet<QString> claude = {"claude", "claude-code", "claude-desktop", "claude-cli", "claude-terminal",
                                          "terminal-claude", "claude-ide", "idea-claude", "intellij-claude", "jetbrains-claude"};
     if (claude.contains(normalized(agent))) return QStringLiteral("Claude");
-    if (normalized(agent) == "manual") return zh ? QStringLiteral("手动") : QStringLiteral("Manual");
+    if (normalized(agent) == "manual") return zh ? QStringLiteral("手动") : i18n::translate(QStringLiteral("Manual"));
     return agent;
 }
 
@@ -95,7 +96,7 @@ QString friendlyEventName(const QString &raw, bool zh) {
 
 QString runtimeLabel(const SessionStatus &s, bool zh) {
     const bool presenceOnly = isPresenceOnly(s);
-    auto t = [zh](const QString &c, const QString &e) { return zh ? c : e; };
+    auto t = [zh](const QString &c, const QString &e) { return zh ? c : i18n::translate(e); };
     switch (display::runtimeKind(s.agent, s.sessionID, s.lastEvent)) {
     case display::RuntimeKind::Desktop:
         return presenceOnly ? t("桌面版已开启", "Desktop app open") : t("桌面版运行中", "Desktop running");

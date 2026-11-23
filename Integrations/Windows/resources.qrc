@@ -1,6 +1,7 @@
 <!DOCTYPE RCC>
 <RCC version="1.0">
     <qresource prefix="/">
+        <file>translations.json</file>
         <file>qml/qmldir</file>
         <file>qml/Theme.qml</file>
         <file>qml/DemoData.js</file>

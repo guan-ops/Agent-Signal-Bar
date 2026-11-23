@@ -15,6 +15,7 @@
 #include "../src/CliPath.h"
 #include "../src/UsagePricing.h"
 #include "../src/UsageScanner.h"
+#include "../src/I18n.h"
 
 #include <QLockFile>
 
@@ -983,6 +984,35 @@ private slots:
         const QStringList roots = usage::ClaudeScanner::defaultRoots("C:/Users/me", "", "");
         QCOMPARE(roots, (QStringList{"C:/Users/me/.config/claude/projects", "C:/Users/me/.claude/projects"}));
         QCOMPARE(usage::ClaudeScanner::defaultRoots("C:/Users/me", "D:/profile", ""), QStringList{"D:/profile/projects"});
+    }
+
+    // AppLanguage.systemPreferredLanguage and AppLocalization.text over the extracted table.
+    void languagesResolveAndFallBackToEnglishLikeMacOS() {
+        QCOMPARE(i18n::systemLanguage({"zh-Hant-TW"}), QString("zh-Hant"));
+        QCOMPARE(i18n::systemLanguage({"zh_HK"}), QString("zh-Hant"));
+        QCOMPARE(i18n::systemLanguage({"zh-CN"}), QString("zh-Hans"));
+        QCOMPARE(i18n::systemLanguage({"it-IT", "de-DE"}), QString("de"));
+        QCOMPARE(i18n::systemLanguage({"it-IT"}), QString("en"));
+        QCOMPARE(i18n::resolve("ja", {"en-US"}), QString("ja"));
+        QCOMPARE(i18n::resolve("system", {"ko-KR"}), QString("ko"));
+        QCOMPARE(i18n::resolve("xx", {"ko-KR"}), QString("en"));
+
+        i18n::loadTable(TRANSLATIONS_PATH);
+        i18n::setLanguage("ja");
+        QCOMPARE(i18n::text("通用", "General"), QString::fromUtf8("一般"));
+        QCOMPARE(i18n::text("没有这条", "Not in the table"), QString("Not in the table")); // English fallback
+        i18n::setLanguage("zh-Hant");
+        QCOMPARE(i18n::text("空闲", "Idle"), QString::fromUtf8("空閒"));
+        QVERIFY(i18n::usesChineseNumbers());
+        i18n::setLanguage("de");
+        QCOMPARE(i18n::translate("Refresh"), QString("Aktualisieren"));
+        QVERIFY(!i18n::usesChineseNumbers());
+        QVERIFY(i18n::table("fr").size() > 200);
+        QVERIFY(i18n::table("en").isEmpty());
+        i18n::setLanguage("zh-Hans");
+        QCOMPARE(i18n::text("通用", "General"), QString::fromUtf8("通用"));
+        i18n::setLanguage("en"); // the other tests expect English activity text
+        QCOMPARE(i18n::text("通用", "General"), QString("General"));
     }
 
     // Install CLI edits the user PATH as a string; the registry calls are not exercised here.

@@ -14,8 +14,16 @@ QtObject {
     readonly property color textOnAccent: 0.2126 * accent.r + 0.7152 * accent.g + 0.0722 * accent.b > 0.55
         ? Qt.rgba(0, 0, 0, 0.9) : "white"
 
-    // Localisation: binding-safe (reads App.language, so text updates on language change).
-    function t(zhHans, english) { return App.language === "zh" ? zhHans : english }
+    // Localisation (AppLocalization.text): Simplified Chinese and English are written inline; the
+    // other languages look the English up in the macOS table and fall back to English. Binding-safe:
+    // reads App.language and `translations`, so text updates on language change.
+    readonly property bool chinese: App.language === "zh-Hans"
+    readonly property var translations: App.translations
+    function t(zhHans, english) {
+        if (chinese) return zhHans
+        const translated = translations[english]
+        return translated === undefined ? english : translated
+    }
 
     // Typeface sizes (px == pt at 100 %).
     readonly property int valueSize: 22
@@ -133,12 +141,12 @@ QtObject {
     function stateSummary(state) {
         switch (state) {
         case "ready": return t("Agent 空闲。", "Agent is idle.")
-        case "active": return t("Agent 正在读写文件、跑工具或测试。", "Agent is reading, editing, running tools or tests.")
-        case "completed": return t("任务完成。", "Task finished.")
-        case "needs_review": return t("Agent 明确需要你看一眼或继续。", "Agent needs you to look or continue.")
-        case "permission": return t("Agent 正在等待用户授权。", "Agent is waiting for your approval.")
-        case "blocked": return t("Agent 遇到失败、阻塞或无法继续。", "Agent hit a failure or cannot continue.")
-        case "stale": return t("状态文件过期、损坏，或当前状态不可信。", "The state file is stale, damaged or untrusted.")
+        case "active": return t("Agent 正在读写文件、跑工具或测试。", "Agent is reading files, running tools, or testing.")
+        case "completed": return t("任务完成。", "Task is complete.")
+        case "needs_review": return t("Agent 明确需要你看一眼或继续。", "Agent needs you to review or continue.")
+        case "permission": return t("Agent 正在等待用户授权。", "Agent is waiting for user authorization.")
+        case "blocked": return t("Agent 遇到失败、阻塞或无法继续。", "Agent hit a failure, blocker, or cannot continue.")
+        case "stale": return t("状态文件过期、损坏，或当前状态不可信。", "The status file is stale, corrupt, or unreliable.")
         default: return t("监控已暂停。", "Monitoring is paused.")
         }
     }

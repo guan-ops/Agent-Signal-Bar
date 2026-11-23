@@ -52,7 +52,9 @@ QtObject {
         let steps = []
         for (const variant of [{ lang: "zh-Hans", theme: "dark", tag: "zh-CN-dark" },
                                { lang: "en", theme: "dark", tag: "en-dark" },
-                               { lang: "zh-Hans", theme: "light", tag: "zh-CN-light" }]) {
+                               { lang: "zh-Hans", theme: "light", tag: "zh-CN-light" },
+                               // A table language: macOS translations, English where it has none.
+                               { lang: "ja", theme: "light", tag: "ja-light" }]) {
             steps.push(() => { App.prefs.language = variant.lang; App.prefs.theme = variant.theme; App.prefs.showDebugSettings = true })
             for (const page of ["activity", "usage", "light", "connections", "general", "debug", "about"])
                 steps = steps.concat(settingsStep(page, "settings-" + page + "-" + variant.tag))

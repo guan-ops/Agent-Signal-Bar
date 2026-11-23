@@ -31,7 +31,10 @@ class AppController : public QObject {
     Q_PROPERTY(QString displayState READ displayState NOTIFY signalNameChanged)
     Q_PROPERTY(bool paused READ paused NOTIFY signalNameChanged)
     Q_PROPERTY(bool lightDebugActive READ lightDebugActive NOTIFY signalNameChanged)
+    // Resolved interface language: zh-Hans, zh-Hant, en, ja, ko, es, fr, de or pt.
     Q_PROPERTY(QString language READ language NOTIFY languageChanged)
+    // The macOS translation table for that language ({English: text}); empty for zh-Hans and en.
+    Q_PROPERTY(QVariantMap translations READ translations NOTIFY languageChanged)
     Q_PROPERTY(bool dark READ dark NOTIFY themeChanged)
     Q_PROPERTY(QColor accent READ accent NOTIFY themeChanged)
     Q_PROPERTY(QQmlPropertyMap *prefs READ prefs CONSTANT)
@@ -88,6 +91,7 @@ public:
     bool paused() const { return m_paused; }
     bool lightDebugActive() const { return !m_debugSignal.isEmpty(); }
     QString language() const;
+    QVariantMap translations() const;
     bool dark() const;
     QColor accent() const;
     QQmlPropertyMap *prefs() const { return m_prefs; }
