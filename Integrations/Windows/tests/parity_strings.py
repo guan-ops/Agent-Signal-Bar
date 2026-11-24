@@ -1,10 +1,20 @@
+"""List macOS UI strings that the QML pages do not have yet.
+
+    python3 -I Integrations/Windows/tests/parity_strings.py
+
+Reads the Swift sources and QML of this checkout and writes parity-missing.txt and
+parity-qml-only.txt to <temp>/asb-parity.
+"""
 import glob
 import os
 import re
-import sys
+import tempfile
 from collections import Counter
 
-root, out = sys.argv[1], sys.argv[2]
+# Paths come from this file's location, never from the command line.
+root = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+out = os.path.join(tempfile.gettempdir(), "asb-parity")
+os.makedirs(out, exist_ok=True)
 pat = re.compile(r'text\(\s*"([^"\\]*)"\s*,\s*"')
 swift_files = [
     "Views/DebugWindowView.swift", "Views/MenuBarPanelView.swift", "Views/MenuUsageSummaryView.swift",
@@ -29,3 +39,4 @@ with open(os.path.join(out, "parity-missing.txt"), "w", encoding="utf-8") as fh:
         fh.write(f"{k}\t{','.join(sorted(v))}\n")
 with open(os.path.join(out, "parity-qml-only.txt"), "w", encoding="utf-8") as fh:
     fh.write("\n".join(extra))
+print("written to", out)

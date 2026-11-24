@@ -5,14 +5,24 @@
 
 Three sessions: a CLI turn running a tool, a VS Code turn waiting for escalated
 permission, and a Desktop turn that just finished. All content is made up.
+
+<codex-home> must be inside the temp folder (or /tmp): its sessions folder is
+deleted first, so a real Codex home must never be passed.
 """
 import json
 import os
 import shutil
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 
-home = sys.argv[1]
+if len(sys.argv) != 2:
+    sys.exit("usage: make_live_fixture.py <codex-home inside the temp folder>")
+# Only a throwaway folder: the sessions folder below is deleted before it is rewritten.
+allowed = tuple(os.path.realpath(base) + os.sep for base in (tempfile.gettempdir(), "/tmp"))
+home = os.path.realpath(sys.argv[1])
+if not home.startswith(allowed):
+    sys.exit("refusing to write outside the temp folder: " + home)
 sessions = os.path.join(home, "sessions")
 shutil.rmtree(sessions, ignore_errors=True)
 now = datetime.now(timezone.utc)

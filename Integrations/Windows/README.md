@@ -117,7 +117,7 @@ Integrations/Windows/dev-macos.sh capture
 | 卡片面板 / 系统菜单 | 托盘上方的无边框弹窗 | ✅ 按 1.7.0 的 `MenuBarPanelView` 和 `StatusBarController` 结构实现；点击其他位置时关闭 |
 | 悬浮信号灯 | 置顶工具窗口 | ✅ 拖动、缩放预设、自定义缩放、角标、右键菜单、浮层；位置会保存，显示器拔掉后会移回主屏 |
 | 灯语、灯效与节奏 | `SignalModel` | ✅ 与 Swift 实现逐帧比对（1998 组 golden 数据），节奏表另有单元测试 |
-| 设置窗口 7 个页面 | QML 页面 | ⚠️ 运行、灯效、连接、通用、调试页和用量页的本机 Token 部分都接上了真实数据，加载中、空状态和错误文案随功能一起补齐。仍缺的 macOS 文案主要属于没有移植的功能：Claude CLI `/usage` 探测、cswap 账号切换和 Pi 会话。运行 `python3 -I Integrations/Windows/tests/parity_strings.py <仓库根目录> <输出目录>` 可列出缺失项 |
+| 设置窗口 7 个页面 | QML 页面 | ⚠️ 运行、灯效、连接、通用、调试页和用量页的本机 Token 部分都接上了真实数据，加载中、空状态和错误文案随功能一起补齐。仍缺的 macOS 文案主要属于没有移植的功能：Claude CLI `/usage` 探测、cswap 账号切换和 Pi 会话。运行 `python3 -I Integrations/Windows/tests/parity_strings.py` 可列出缺失项（结果写到临时目录下的 `asb-parity`） |
 | 液态玻璃 | Mica（标准）/ Mica Alt（增强），只用于设置窗口 | ⚠️ 已写 DWM 调用；低于 Windows 11 22H2 时自动保持不透明。需要实机验收 |
 | 开机自启动（SMAppService） | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | ⚠️ 已实现，需要实机验收 |
 | 提示音（AVFoundation，可调音量） | `PlaySound` 从内存播放按音量缩放后的 WAV（`SoundFile`；新西兰录音已转成 WAV） | ✅ 按 `FloatingSignalWindowController` 自动播放：灯变为“已完成”时一声完成提示音，Agent 工作时绿灯每亮一次一声闪烁音；轻柔/标准/响亮三档音量（0.28/0.55/0.88）。已在实机上确认触发时机 |
