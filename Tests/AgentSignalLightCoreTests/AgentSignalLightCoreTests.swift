@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import XCTest
 #if canImport(SQLite3)
@@ -15109,6 +15110,14 @@ final class AgentSignalLightCoreTests: XCTestCase {
             codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
             codexAccountManager: FailingCodexAccountManager(.missingCodexBinary)
         )
+        // lastError is the model's latest-status line: the Codex activity poll started with the
+        // model may replace it right after the failure (seen on CI), so record what it showed
+        // instead of reading its final value.
+        var reportedErrors: [String] = []
+        let errorSubscription: AnyCancellable = model.$lastError.sink { (value: String?) in
+            if let value { reportedErrors.append(value) }
+        }
+        defer { errorSubscription.cancel() }
 
         model.addCodexAccount()
 
@@ -15123,7 +15132,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         let message = try XCTUnwrap(model.codexAccountMessage)
         XCTAssertTrue(message.localizedCaseInsensitiveContains("codex"))
         XCTAssertTrue(message.contains("Save Current") || message.contains("保存当前"))
-        XCTAssertEqual(model.lastError, message)
+        XCTAssertTrue(reportedErrors.contains(message), "lastError never showed the add failure: \(reportedErrors)")
         XCTAssertTrue(model.isCodexAccountMessageError)
     }
 

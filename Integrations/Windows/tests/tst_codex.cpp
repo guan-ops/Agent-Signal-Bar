@@ -38,6 +38,7 @@
 #include <QJsonObject>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <thread>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
@@ -1346,6 +1347,57 @@ private slots:
         QVERIFY2(store.remove(*idB, &error), qPrintable(error)); // the last one: signed out
         QVERIFY(!QFile::exists(authPath));
         QVERIFY(store.accounts().isEmpty());
+    }
+
+    // A token refresh writing back from a worker thread while the UI removes and re-adds an
+    // account: every saved-account transaction is serialized, so neither loses the other's update
+    // (without the lock the refresh could bring back a removed entry whose secret is gone).
+    void codexAccountsSerializeRefreshWithChanges() {
+        QTemporaryDir dir;
+        const QString authPath = dir.path() + "/codex/auth.json";
+        const auto login = [](const QString &email, const QString &account) {
+            const QByteArray payload = QJsonDocument(QJsonObject{{"email", email}}).toJson(QJsonDocument::Compact)
+                .toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals);
+            return QJsonDocument(QJsonObject{{"tokens", QJsonObject{{"access_token", "t-" + account},
+                {"id_token", "h." + QString::fromLatin1(payload) + ".s"}, {"account_id", account}}}}).toJson();
+        };
+        QVERIFY(QDir().mkpath(dir.path() + "/codex"));
+        const QByteArray a1 = login("a@example.com", "acct-a"), a2 = a1 + "  ";
+        writeText(authPath, a1);
+        codexauth::AccountStore store(dir.path() + "/data", authPath);
+        QString error;
+        const auto idA = store.saveCurrent(&error);
+        QVERIFY2(idA.has_value(), qPrintable(error));
+        const QString bFile = dir.path() + "/b-auth.json";
+        writeText(bFile, login("b@example.com", "acct-b"));
+        auto idB = store.addFromFile(bFile, &error); // B is active, A is only saved
+        QVERIFY2(idB.has_value(), qPrintable(error));
+
+        std::thread refresher([&] {
+            codexauth::AccountStore worker(dir.path() + "/data", authPath);
+            for (int i = 0; i < 40; ++i) {
+                worker.persistRefreshed(codexauth::fingerprint(a1), a2);
+                worker.persistRefreshed(codexauth::fingerprint(a2), a1);
+            }
+        });
+        QString cycleError;
+        bool cycled = true;
+        for (int i = 0; i < 20 && cycled; ++i) {
+            cycled = store.remove(*idB, &cycleError); // A takes over auth.json
+            if (cycled) {
+                idB = store.addFromFile(bFile, &cycleError); // and B again
+                cycled = idB.has_value();
+            }
+        }
+        refresher.join();
+        QVERIFY2(cycled, qPrintable(cycleError));
+
+        const QList<codexauth::Account> accounts = store.accounts();
+        QCOMPARE(accounts.size(), 2);
+        for (const codexauth::Account &account : accounts) QVERIFY(store.secret(account.id).has_value());
+        QCOMPARE(store.active()->id, *idB);
+        const QByteArray savedA = *store.secret(*idA);
+        QVERIFY(savedA == a1 || savedA == a2);
     }
 
     // ClaudeUsageService / ClaudeWebUsageService with a fake transport.

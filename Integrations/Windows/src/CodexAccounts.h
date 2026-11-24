@@ -81,6 +81,7 @@ public:
     // Adds the auth.json a `codex login` wrote into a temporary CODEX_HOME, then switches to it.
     std::optional<QString> addFromFile(const QString &authPath, QString *error);
     // A token refresh rewrote the copy that had `oldFingerprint`: keep the saved copy current.
+    // Called from a worker thread; every method that changes the saved accounts shares one lock.
     void persistRefreshed(const QString &oldFingerprint, const QByteArray &data);
 
 private:

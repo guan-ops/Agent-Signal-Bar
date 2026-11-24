@@ -10,6 +10,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutexLocker>
+#include <QRecursiveMutex>
 #include <QSaveFile>
 #include <QTimeZone>
 #include <QUuid>
@@ -20,6 +22,15 @@
 
 namespace asb::codexauth {
 namespace {
+
+// Every load-modify-save of codex-accounts.json and the secret copies: a token refresh writes
+// back from a worker thread while the account buttons change the list on the UI thread, and
+// QSaveFile makes each write atomic but cannot stop one from overwriting the other's update.
+// Recursive: switchTo and addFromFile call store.
+QRecursiveMutex &accountsLock() {
+    static QRecursiveMutex lock;
+    return lock;
+}
 
 QString firstString(std::initializer_list<QJsonValue> values) {
     for (const QJsonValue &value : values) {
@@ -223,6 +234,7 @@ bool AccountStore::currentNeedsSaving() const {
 std::optional<QByteArray> AccountStore::secret(const QString &id) const { return secrets::readProtected(secretPath(id)); }
 
 std::optional<QString> AccountStore::store(const QByteArray &data, QString *error) {
+    const QMutexLocker locker(&accountsLock());
     const auto identity = parseIdentity(data);
     if (!identity) {
         if (error) *error = QStringLiteral("auth.json is not valid JSON");
@@ -257,6 +269,7 @@ std::optional<QString> AccountStore::store(const QByteArray &data, QString *erro
 }
 
 std::optional<QString> AccountStore::saveCurrent(QString *error) {
+    const QMutexLocker locker(&accountsLock());
     const QByteArray data = readAll(m_authPath);
     if (data.isEmpty()) {
         if (error) *error = QStringLiteral("no Codex login (auth.json) to save");
@@ -266,12 +279,14 @@ std::optional<QString> AccountStore::saveCurrent(QString *error) {
 }
 
 bool AccountStore::keepCurrentLogin(QByteArray *current, bool *exists, QString *error) {
+    const QMutexLocker locker(&accountsLock());
     *current = readAll(m_authPath, exists);
     if (!*exists || current->isEmpty() || !parseIdentity(*current) || !currentNeedsSaving()) return true;
     return store(*current, error).has_value();
 }
 
 bool AccountStore::switchTo(const QString &id, QString *error) {
+    const QMutexLocker locker(&accountsLock());
     const QList<Account> accounts = load();
     const auto target = std::find_if(accounts.cbegin(), accounts.cend(), [&](const Account &a) { return a.id == id; });
     if (target == accounts.cend()) {
@@ -290,6 +305,7 @@ bool AccountStore::switchTo(const QString &id, QString *error) {
 }
 
 bool AccountStore::remove(const QString &id, QString *error) {
+    const QMutexLocker locker(&accountsLock());
     QList<Account> accounts = load();
     const auto it = std::find_if(accounts.begin(), accounts.end(), [&](const Account &a) { return a.id == id; });
     if (it == accounts.end()) return true;
@@ -317,6 +333,7 @@ bool AccountStore::remove(const QString &id, QString *error) {
 }
 
 std::optional<QString> AccountStore::addFromFile(const QString &authPath, QString *error) {
+    const QMutexLocker locker(&accountsLock());
     const QByteArray data = readAll(authPath);
     if (data.isEmpty()) {
         if (error) *error = QStringLiteral("codex login wrote no auth.json");
@@ -334,6 +351,7 @@ std::optional<QString> AccountStore::addFromFile(const QString &authPath, QStrin
 }
 
 void AccountStore::persistRefreshed(const QString &oldFingerprint, const QByteArray &data) {
+    const QMutexLocker locker(&accountsLock());
     QList<Account> accounts = load();
     for (Account &account : accounts) {
         if (account.fingerprint != oldFingerprint) continue;
