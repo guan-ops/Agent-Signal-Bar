@@ -2112,12 +2112,12 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
                 : anchorView.bounds
             let anchorInWindow = anchorView.convert(anchorBounds, to: nil)
             let anchorOnScreen = anchorWindow.convertToScreen(anchorInWindow)
-            let desiredOrigin = NSPoint(
-                x: anchorOnScreen.maxX - size.width + 4,
-                y: anchorOnScreen.maxY - 2
-            )
-
-            panel.setFrame(NSRect(origin: clamped(desiredOrigin, size: size), size: size), display: true, animate: false)
+            let visibleFrame = anchorWindow.screen?.visibleFrame
+                ?? NSScreen.main?.visibleFrame
+                ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            let frame = FloatingPopoverPlacement.frame(
+                size: size, anchor: anchorOnScreen, avoiding: anchorWindow.frame, visibleFrame: visibleFrame)
+            panel.setFrame(frame, display: true, animate: false)
         }
 
         private func clamped(_ origin: NSPoint, size: NSSize) -> NSPoint {
@@ -2176,6 +2176,36 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
             guard let view, event.window === view.window else { return false }
             return view.bounds.contains(view.convert(event.locationInWindow, from: nil))
         }
+    }
+}
+
+/// Where a floating detail panel opens: beside the floating light's window, never over the
+/// light, its badges or its controls. The side the badge is on is tried first; the panel is
+/// vertically level with the badge and kept on screen.
+enum FloatingPopoverPlacement {
+    static let gap: CGFloat = 8
+    static let screenMargin: CGFloat = 8
+
+    static func frame(size: NSSize, anchor: NSRect, avoiding window: NSRect, visibleFrame: NSRect) -> NSRect {
+        let leftX = window.minX - gap - size.width
+        let rightX = window.maxX + gap
+        let fitsLeft = leftX >= visibleFrame.minX + screenMargin
+        let fitsRight = rightX + size.width <= visibleFrame.maxX - screenMargin
+        let prefersLeft = anchor.midX <= window.midX
+        let x: CGFloat
+        if prefersLeft ? fitsLeft : (!fitsRight && fitsLeft) {
+            x = leftX
+        } else if fitsRight {
+            x = rightX
+        } else {
+            // No room on either side: keep the old placement above the badge.
+            x = anchor.maxX - size.width + 4
+        }
+        let besideWindow = fitsLeft || fitsRight
+        let y = besideWindow ? anchor.midY - size.height / 2 : anchor.maxY - 2
+        let clampedX = min(max(x, visibleFrame.minX + screenMargin), visibleFrame.maxX - size.width - screenMargin)
+        let clampedY = min(max(y, visibleFrame.minY + screenMargin), visibleFrame.maxY - size.height - screenMargin)
+        return NSRect(origin: NSPoint(x: clampedX, y: clampedY), size: size)
     }
 }
 
@@ -2311,12 +2341,12 @@ private struct FloatingSignalQuotaPanelAnchor: NSViewRepresentable {
                 : anchorView.bounds
             let anchorInWindow = anchorView.convert(anchorBounds, to: nil)
             let anchorOnScreen = anchorWindow.convertToScreen(anchorInWindow)
-            let desiredOrigin = NSPoint(
-                x: anchorOnScreen.maxX - size.width + 4,
-                y: anchorOnScreen.maxY - 2
-            )
-
-            panel.setFrame(NSRect(origin: clamped(desiredOrigin, size: size), size: size), display: true, animate: false)
+            let visibleFrame = anchorWindow.screen?.visibleFrame
+                ?? NSScreen.main?.visibleFrame
+                ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            let frame = FloatingPopoverPlacement.frame(
+                size: size, anchor: anchorOnScreen, avoiding: anchorWindow.frame, visibleFrame: visibleFrame)
+            panel.setFrame(frame, display: true, animate: false)
         }
 
         private func clamped(_ origin: NSPoint, size: NSSize) -> NSPoint {
@@ -2503,12 +2533,12 @@ private struct FloatingSignalTokenPanelAnchor: NSViewRepresentable {
                 : anchorView.bounds
             let anchorInWindow = anchorView.convert(anchorBounds, to: nil)
             let anchorOnScreen = anchorWindow.convertToScreen(anchorInWindow)
-            let desiredOrigin = NSPoint(
-                x: anchorOnScreen.maxX - size.width + 4,
-                y: anchorOnScreen.maxY - 2
-            )
-
-            panel.setFrame(NSRect(origin: clamped(desiredOrigin, size: size), size: size), display: true, animate: false)
+            let visibleFrame = anchorWindow.screen?.visibleFrame
+                ?? NSScreen.main?.visibleFrame
+                ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            let frame = FloatingPopoverPlacement.frame(
+                size: size, anchor: anchorOnScreen, avoiding: anchorWindow.frame, visibleFrame: visibleFrame)
+            panel.setFrame(frame, display: true, animate: false)
         }
 
         private func clamped(_ origin: NSPoint, size: NSSize) -> NSPoint {

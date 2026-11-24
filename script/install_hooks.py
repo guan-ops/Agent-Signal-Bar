@@ -970,7 +970,9 @@ def command_exists(command: str) -> bool:
 def resolve_claude_cli(home: Path) -> str | None:
     custom = os.environ.get("AGENT_SIGNAL_CLAUDE_EXECUTABLE")
     if custom:
-        return custom if Path(custom).is_file() and os.access(custom, os.X_OK) else None
+        # Only an absolute path to an executable file is accepted. Given a path with a
+        # directory part, shutil.which checks that file alone and never searches PATH.
+        return shutil.which(custom) if os.path.isabs(custom) else None
     discovered = shutil.which("claude")
     if discovered:
         return discovered
