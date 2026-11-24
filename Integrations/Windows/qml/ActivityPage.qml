@@ -71,15 +71,16 @@ SettingsPage {
             Dropdown {
                 key: "lightAgentMode"
                 pickerWidth: 150
-                // macOS's menu (SignalLightAgentScope.visibleCases): each Codex source and Claude,
-                // not the whole Codex group or Local Script. Xcode does not run on Windows.
+                // Each Codex source, not the whole Codex group: on macOS "Codex" is only the
+                // heading over its sources. Xcode does not run on Windows.
                 options: [
                     { value: "following", label: Theme.t("自动", "Automatic") },
                     { value: "codexDesktop", label: Theme.t("Codex 桌面版", "Codex Desktop") },
                     { value: "codexCLI", label: Theme.t("Codex 终端", "Codex CLI") },
                     { value: "codexVSCode", label: "Codex VS Code" },
                     { value: "codexIDEA", label: "Codex IDEA" },
-                    { value: "claude", label: Theme.t("Claude 桌面版", "Claude Desktop") } // as macOS names claude-code
+                    { value: "claude", label: "Claude" },
+                    { value: "localScript", label: Theme.t("本地脚本", "Local Script") }
                 ]
             }
         }

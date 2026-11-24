@@ -154,10 +154,9 @@ AppController::AppController(const QString &settingsFile, const QString &capture
         value.convert(it.value().metaType());
         m_prefs->insert(it.key(), value);
     }
-    // Follow choices the menu no longer offers (the whole Codex group, Local Script): the picker
-    // would show "Automatic" while the light still followed them, so make that true.
-    const QString lightAgentMode = m_prefs->value("lightAgentMode").toString();
-    if (lightAgentMode == "codex" || lightAgentMode == "localScript") {
+    // The Follow menu no longer offers the whole Codex group: the picker would show "Automatic"
+    // while the light still followed every Codex source, so make that true.
+    if (m_prefs->value("lightAgentMode").toString() == "codex") {
         m_prefs->insert("lightAgentMode", "following");
         m_settings->setValue("lightAgentMode", "following");
     }
