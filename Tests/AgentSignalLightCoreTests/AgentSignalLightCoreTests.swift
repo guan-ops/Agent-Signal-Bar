@@ -15308,15 +15308,13 @@ final class AgentSignalLightCoreTests: XCTestCase {
         }
         defer { CodexRateLimitFetcherURLProtocol.handler = nil }
 
-        let defaults = UserDefaults.standard
-        let originalSource = defaults.object(forKey: "codexUsageDataSource")
-        defer {
-            if let originalSource {
-                defaults.set(originalSource, forKey: "codexUsageDataSource")
-            } else {
-                defaults.removeObject(forKey: "codexUsageDataSource")
-            }
-        }
+        // Isolated defaults with monitoring off at launch, so the model's startup poll does
+        // not add an OAuth request; the test turns monitoring on itself below. Shared
+        // UserDefaults.standard made the request count depend on what earlier tests left.
+        let suite = "usage-source-change-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: "isCodexDesktopMonitoringEnabled")
 
         let manager = CodexAccountManager(
             environment: ["CODEX_HOME": fixture.directory.path],
@@ -15327,6 +15325,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         _ = try manager.saveCurrentAccount()
         let model = MenuBarStatusModel(
             store: fixture.store,
+            userDefaults: defaults,
             codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
             codexAccountManager: manager,
             codexRateLimitFetcher: CodexRateLimitFetcher(
