@@ -200,11 +200,17 @@ final class ClaudeFeatureModelTests: XCTestCase {
     }
     func testForecastRequiresRecentSameCycleConsumptionAndWarnsOnce() {
         let now = Date(), reset = now.addingTimeInterval(3600)
-        let samples = (0...3).map { ClaudeQuotaSample(date: now.addingTimeInterval(Double($0 - 3) * 300), usedPercent: Double(40 + $0 * 10), resetsAt: reset) }
+        // Explicit types: the one-line closure ran past the type checker's time limit on CI.
+        let samples: [ClaudeQuotaSample] = (0...3).map { (step: Int) -> ClaudeQuotaSample in
+            let date: Date = now.addingTimeInterval(Double(step - 3) * 300)
+            let used: Double = Double(40 + step * 10)
+            return ClaudeQuotaSample(date: date, usedPercent: used, resetsAt: reset)
+        }
         XCTAssertFalse(ClaudeQuotaHistory.forecast(samples, now: now)!.willLastToReset)
         XCTAssertNil(ClaudeQuotaHistory.forecast(Array(samples.suffix(2)), now: now))
         XCTAssertNil(ClaudeQuotaHistory.forecast(samples, now: now.addingTimeInterval(901)))
-        XCTAssertNil(ClaudeQuotaHistory.forecast(samples + [.init(date: now, usedPercent: 10, resetsAt: reset)], now: now))
+        let afterReset: ClaudeQuotaSample = ClaudeQuotaSample(date: now, usedPercent: 10, resetsAt: reset)
+        XCTAssertNil(ClaudeQuotaHistory.forecast(samples + [afterReset], now: now))
         let store = ClaudeQuotaHistory(), prefs = ClaudeQuotaHistory.Preferences(predicted: true)
         var notices: [ClaudeQuotaNotice] = []
         for sample in samples {

@@ -23,6 +23,7 @@
 #include "../src/Ed25519.h"
 #include "../src/Appcast.h"
 #include "../src/UpdateService.h"
+#include "../src/QuotaService.h"
 
 #include <QLockFile>
 #include <QBuffer>
@@ -37,6 +38,9 @@
 #include <QJsonObject>
 #include <QTemporaryDir>
 #include <QtTest>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 using namespace asb;
 
@@ -995,6 +999,76 @@ private slots:
         const QStringList roots = usage::ClaudeScanner::defaultRoots("C:/Users/me", "", "");
         QCOMPARE(roots, (QStringList{"C:/Users/me/.config/claude/projects", "C:/Users/me/.claude/projects"}));
         QCOMPARE(usage::ClaudeScanner::defaultRoots("C:/Users/me", "D:/profile", ""), QStringList{"D:/profile/projects"});
+    }
+
+    // A history file that cannot be read (locked mid-write) is not cached as empty: the last good
+    // rows stand in, and the next scan reads it again although its size and time are unchanged.
+    void usageScanRetriesHistoryItCouldNotRead() {
+#ifdef Q_OS_WIN
+        QTemporaryDir dir;
+        const QString projects = dir.path() + "/claude/projects";
+        const QString path = projects + "/proj/s1.jsonl";
+        const auto assistant = [](int minute, const QString &id, qint64 input) {
+            const QJsonObject message{{"id", id}, {"model", "claude-opus-4-1"},
+                                      {"usage", QJsonObject{{"input_tokens", input}, {"output_tokens", 0}}}};
+            return jsonLine({{"type", "assistant"}, {"timestamp", isoAt(20, 9, minute)}, {"sessionId", "S1"},
+                             {"requestId", "r-" + id}, {"message", message}});
+        };
+        writeFile(path, assistant(1, "m1", 10));
+        usage::ClaudeScanner scanner({projects});
+        const qint64 now = QDateTime(QDate(2026, 11, 20), QTime(23, 0)).toMSecsSinceEpoch();
+        const usage::Report first = scanner.scan(now, 30, nullptr);
+        QVERIFY(findDay(first, 20));
+        QCOMPARE(findDay(first, 20)->totalTokens, 10);
+
+        append(path, assistant(2, "m2", 5));
+        const std::wstring nativePath = QDir::toNativeSeparators(path).toStdWString();
+        HANDLE lock = CreateFileW(nativePath.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        QVERIFY(lock != INVALID_HANDLE_VALUE);
+        bool readOk = true;
+        usage::ClaudeScanner::parseFile(path, usage::DayRange::lastDays(now, 30), nullptr, &readOk);
+        QVERIFY(!readOk);
+        bool codexReadOk = true;
+        usage::CodexScanner::parseFile(path, usage::DayRange::lastDays(now, 30), {}, &codexReadOk);
+        QVERIFY(!codexReadOk);
+        const usage::Report locked = scanner.scan(now, 30, nullptr);
+        CloseHandle(lock);
+        QVERIFY(findDay(locked, 20));
+        QCOMPARE(findDay(locked, 20)->totalTokens, 10); // the last good parse, not an empty file
+
+        const usage::Report reread = scanner.scan(now, 30, nullptr);
+        QVERIFY(findDay(reread, 20));
+        QCOMPARE(findDay(reread, 20)->totalTokens, 15);
+#endif
+    }
+
+    // Add Account with a codex that cannot start (a stale path after a CLI update): FailedToStart
+    // never emits `finished`, so the login state must be cleared there or later attempts are ignored.
+    void quotaServiceRecoversWhenCodexLoginCannotStart() {
+#ifdef Q_OS_WIN
+        QTemporaryDir dir;
+        const QString fake = dir.path() + "/bin/codex.exe";
+        writeFile(fake, "not a program");
+        // Keep the fake in place for the whole test: a lookup without it would find the real codex.
+        const QByteArray oldBinary = qgetenv("CODEX_BINARY"), oldHome = qgetenv("CODEX_HOME");
+        const bool hadBinary = qEnvironmentVariableIsSet("CODEX_BINARY"), hadHome = qEnvironmentVariableIsSet("CODEX_HOME");
+        qputenv("CODEX_BINARY", QDir::toNativeSeparators(fake).toLocal8Bit());
+        qputenv("CODEX_HOME", QDir::toNativeSeparators(dir.path() + "/codex-home").toLocal8Bit());
+        const auto restore = qScopeGuard([&] {
+            if (hadBinary) qputenv("CODEX_BINARY", oldBinary); else qunsetenv("CODEX_BINARY");
+            if (hadHome) qputenv("CODEX_HOME", oldHome); else qunsetenv("CODEX_HOME");
+        });
+        const QString data = dir.path() + "/data";
+        QuotaService service(data, dir.path() + "/home");
+        for (int attempt = 0; attempt < 2; ++attempt) { // the second one must start again, not return at once
+            QSignalSpy changed(&service, &QuotaService::changed);
+            service.addAccount();
+            QTRY_VERIFY(!service.addingAccount());
+            QVERIFY(changed.count() > 0);
+            QCOMPARE(service.accountMessage(), QString("loginFailed"));
+            QVERIFY(QDir(data + "/managed-codex-homes").isEmpty());
+        }
+#endif
     }
 
     // AppLanguage.systemPreferredLanguage and AppLocalization.text over the extracted table.

@@ -21,7 +21,8 @@ constexpr qint64 kClaudeMaxLineBytes = 512 * 1024; // longer lines are skipped
 constexpr double kCostScale = 1'000'000'000.0;
 
 // CostUsageJsonl.scan: every line, with lines longer than `maxLineBytes` cut to that length and
-// flagged. `onLine` returns false to stop. False when the file cannot be opened.
+// flagged. `onLine` returns false to stop. False when the file cannot be opened or a read fails
+// part way (a file locked mid-write, say): the caller must not cache what it got.
 bool forEachLine(const QString &path, qint64 maxLineBytes, const std::function<bool(const QByteArray &, bool)> &onLine) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) return false;
@@ -36,7 +37,10 @@ bool forEachLine(const QString &path, qint64 maxLineBytes, const std::function<b
     };
     while (true) {
         const QByteArray chunk = file.read(1 << 20);
-        if (chunk.isEmpty()) break;
+        if (chunk.isEmpty()) {
+            if (file.error() != QFileDevice::NoError) return false;
+            break;
+        }
         qsizetype start = 0;
         while (start < chunk.size()) {
             const qsizetype newline = chunk.indexOf('\n', start);
@@ -158,11 +162,12 @@ struct CodexMeta {
     QString cwd; // from the first line only, as CodexUsageDetails.readProjectPath
 };
 
-// parseCodexSessionMetadata: the first session_meta line anywhere in the file.
-CodexMeta readCodexMeta(const QString &path) {
+// parseCodexSessionMetadata: the first session_meta line anywhere in the file. `readOk` is false
+// when the file could not be read.
+CodexMeta readCodexMeta(const QString &path, bool *readOk = nullptr) {
     CodexMeta meta;
     bool firstLine = true;
-    forEachLine(path, 1024 * 1024, [&](const QByteArray &line, bool truncated) {
+    const bool ok = forEachLine(path, 1024 * 1024, [&](const QByteArray &line, bool truncated) {
         const bool isFirst = firstLine;
         firstLine = false;
         if (truncated || !contains(line, "session_meta")) return true;
@@ -178,6 +183,7 @@ CodexMeta readCodexMeta(const QString &path) {
             meta.cwd = QDir::toNativeSeparators(QDir::cleanPath(cwd));
         return false;
     });
+    if (readOk) *readOk = ok;
     return meta;
 }
 
@@ -365,14 +371,26 @@ struct CodexScanner::Memo {
         const QString path = info.absoluteFilePath();
         MetaEntry &entry = meta[path];
         const qint64 mtime = info.lastModified().toMSecsSinceEpoch();
-        if (entry.size != info.size() || entry.mtime != mtime) entry = {info.size(), mtime, readCodexMeta(path)};
+        if (entry.size != info.size() || entry.mtime != mtime) {
+            bool ok = true;
+            CodexMeta read = readCodexMeta(path, &ok);
+            if (ok) {
+                entry = {info.size(), mtime, std::move(read)};
+            } else {
+                // A failed read is not cached: the last good metadata (else what was read) stands
+                // in, and size -1 makes the next scan read the file again.
+                if (entry.meta.sessionId.isEmpty()) entry.meta = std::move(read);
+                entry.size = -1;
+            }
+        }
         return entry.meta;
     }
 };
 
 CodexScanner::CodexScanner(QStringList roots) : m_roots(std::move(roots)), m_memo(std::make_shared<Memo>()) {}
 
-CodexScanner::FileResult CodexScanner::parseFile(const QString &path, const DayRange &range, const Resolver &resolver) {
+CodexScanner::FileResult CodexScanner::parseFile(const QString &path, const DayRange &range, const Resolver &resolver,
+                                                 bool *readOk) {
     FileResult result;
     std::optional<QString> currentModel;
     std::optional<CodexTotals> previousTotals, rawTotalsBaseline, inheritedTotals, remainingInherited,
@@ -392,7 +410,8 @@ CodexScanner::FileResult CodexScanner::parseFile(const QString &path, const DayR
         }
     };
 
-    const CodexMeta meta = readCodexMeta(path);
+    bool metaOk = true;
+    const CodexMeta meta = readCodexMeta(path, &metaOk);
     result.sessionId = meta.sessionId;
     result.forkedFromId = meta.forkedFromId;
     if (!meta.forkedFromId.isEmpty() && !inheritedTotals) resolveForkBaseline(meta.forkedFromId, meta.forkTimestamp);
@@ -484,7 +503,7 @@ CodexScanner::FileResult CodexScanner::parseFile(const QString &path, const DayR
         result.rows.append(row);
     };
 
-    forEachLine(path, kCodexMaxLineBytes, [&](const QByteArray &line, bool truncated) {
+    const bool linesOk = forEachLine(path, kCodexMaxLineBytes, [&](const QByteArray &line, bool truncated) {
         if (line.isEmpty()) return true;
         if (truncated) {
             // A turn_context can carry a huge prompt; its model sits near the start.
@@ -530,6 +549,7 @@ CodexScanner::FileResult CodexScanner::parseFile(const QString &path, const DayR
         handleTokenCount(timestamp, dayKey, recordModel, total, last);
         return true;
     });
+    if (readOk) *readOk = metaOk && linesOk;
     return result;
 }
 
@@ -598,8 +618,15 @@ Report CodexScanner::scan(qint64 nowMs, int days, const ModelsDevCatalog *catalo
         live.insert(path);
         Memo::FileEntry &entry = memo.files[path];
         const qint64 mtime = info.lastModified().toMSecsSinceEpoch();
-        if (entry.size != info.size() || entry.mtime != mtime || entry.rangeKey != rangeKey)
-            entry = {info.size(), mtime, rangeKey, parseFile(path, range, resolver)};
+        if (entry.size != info.size() || entry.mtime != mtime || entry.rangeKey != rangeKey) {
+            bool ok = true;
+            FileResult result = parseFile(path, range, resolver, &ok);
+            if (ok) entry = {info.size(), mtime, rangeKey, std::move(result)};
+            // A read failure is not cached: the last good parse of this range stands in (else what
+            // was read), and size -1 makes the next scan read the file again.
+            else if (entry.rangeKey == rangeKey) entry.size = -1;
+            else entry = {-1, mtime, rangeKey, std::move(result)};
+        }
         parsed.append({info, entry.result});
     }
     for (auto it = memo.files.begin(); it != memo.files.end();) {
@@ -781,11 +808,11 @@ struct ClaudeScanner::Memo {
 ClaudeScanner::ClaudeScanner(QStringList roots) : m_roots(std::move(roots)), m_memo(std::make_shared<Memo>()) {}
 
 QList<ClaudeScanner::Row> ClaudeScanner::parseFile(const QString &path, const DayRange &range,
-                                                   const ModelsDevCatalog *catalog) {
+                                                   const ModelsDevCatalog *catalog, bool *readOk) {
     const bool subagent = QDir::fromNativeSeparators(path).contains("/subagents/");
     QMap<QString, Row> keyed;
     QList<Row> unkeyed;
-    forEachLine(path, kClaudeMaxLineBytes, [&](const QByteArray &line, bool truncated) {
+    const bool ok = forEachLine(path, kClaudeMaxLineBytes, [&](const QByteArray &line, bool truncated) {
         if (line.isEmpty() || truncated || !contains(line, "\"usage\"")) return true;
         const QJsonObject object = parseObject(line);
         if (object.value("type").toString() != "assistant") return true;
@@ -837,6 +864,7 @@ QList<ClaudeScanner::Row> ClaudeScanner::parseFile(const QString &path, const Da
     });
     QList<Row> rows = keyed.values(); // QMap: sorted by key, as on macOS
     rows.append(unkeyed);
+    if (readOk) *readOk = ok;
     return rows;
 }
 
@@ -878,8 +906,14 @@ Report ClaudeScanner::scan(qint64 nowMs, int days, const ModelsDevCatalog *catal
         live.insert(path);
         Memo::FileEntry &entry = memo.files[path];
         const qint64 mtime = info.lastModified().toMSecsSinceEpoch();
-        if (entry.size != info.size() || entry.mtime != mtime || entry.rangeKey != rangeKey)
-            entry = {info.size(), mtime, rangeKey, parseFile(path, range, catalog)};
+        if (entry.size != info.size() || entry.mtime != mtime || entry.rangeKey != rangeKey) {
+            bool ok = true;
+            QList<Row> parsedRows = parseFile(path, range, catalog, &ok);
+            if (ok) entry = {info.size(), mtime, rangeKey, std::move(parsedRows)};
+            // As for Codex: keep the last good rows (else what was read) and read the file again next scan.
+            else if (entry.rangeKey == rangeKey) entry.size = -1;
+            else entry = {-1, mtime, rangeKey, std::move(parsedRows)};
+        }
         for (const Row &row : std::as_const(entry.rows)) {
             const SourcedRow candidate{path, row};
             const QString key = claudeRowKey(row);

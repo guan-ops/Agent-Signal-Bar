@@ -111,8 +111,10 @@ public:
     explicit CodexScanner(QStringList roots);
     Report scan(qint64 nowMs, int days, const ModelsDevCatalog *catalog);
 
-    // parseCodexFileCancellable for one file (no resolver: forks are left unresolved).
-    static FileResult parseFile(const QString &path, const DayRange &range, const Resolver &resolver = {});
+    // parseCodexFileCancellable for one file (no resolver: forks are left unresolved). `readOk` is
+    // false when the file could not be read in full; scan() does not cache such a result.
+    static FileResult parseFile(const QString &path, const DayRange &range, const Resolver &resolver = {},
+                                bool *readOk = nullptr);
 
 private:
     struct Memo;
@@ -139,7 +141,8 @@ public:
     explicit ClaudeScanner(QStringList roots);
     Report scan(qint64 nowMs, int days, const ModelsDevCatalog *catalog);
 
-    static QList<Row> parseFile(const QString &path, const DayRange &range, const ModelsDevCatalog *catalog);
+    static QList<Row> parseFile(const QString &path, const DayRange &range, const ModelsDevCatalog *catalog,
+                                bool *readOk = nullptr);
     // ClaudeHistoryRoots.projects for Windows (%APPDATA%\Claude stands in for Application Support).
     static QStringList defaultRoots(const QString &home, const QString &configDirEnv, const QString &appData);
 

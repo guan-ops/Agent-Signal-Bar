@@ -77,12 +77,14 @@ void QuotaService::tick() {
 void QuotaService::setCodexSource(const QString &source) {
     if (source == m_codexSource) return;
     m_codexSource = source;
+    ++m_codexGeneration;
     refreshCodex();
 }
 
 void QuotaService::setCookieMode(const QString &mode) {
     if (mode == m_cookieMode) return;
     m_cookieMode = mode;
+    ++m_codexGeneration;
     refreshCodex();
 }
 
@@ -120,12 +122,20 @@ void QuotaService::startCodexFetch() {
         asb::codexauth::AccountStore(dataDir, authPath).persistRefreshed(oldFingerprint, data);
     };
     QPointer<QuotaService> self(this);
-    QThreadPool::globalInstance()->start([self, options] {
+    const quint64 generation = m_codexGeneration;
+    QThreadPool::globalInstance()->start([self, options, generation] {
         const asb::quota::CodexResult result = asb::quota::fetchCodex(options, asb::quota::blockingHttp, nowMs());
-        QMetaObject::invokeMethod(QCoreApplication::instance(), [self, result] {
+        QMetaObject::invokeMethod(QCoreApplication::instance(), [self, result, generation] {
             if (!self) return;
             CodexState &state = self->m_codex;
             state.fetching = false;
+            // Started for an account (or source) that is no longer current: its numbers or errors
+            // belong to that account, so drop them and fetch again for the current one.
+            if (generation != self->m_codexGeneration) {
+                emit self->changed();
+                self->tick();
+                return;
+            }
             state.error = result.ok ? QString() : result.error;
             if (result.ok) {
                 state.result = result;
@@ -151,14 +161,20 @@ void QuotaService::saveCurrentAccount() {
 void QuotaService::switchAccount(const QString &id) {
     QString error;
     m_accountMessage = m_accounts->switchTo(id, &error) ? QString() : error;
-    m_codex.hasResult = false; // the old account's quota must not show under the new one
-    refreshCodex();
+    codexAccountChanged();
 }
 
 void QuotaService::removeAccount(const QString &id) {
     QString error;
     m_accountMessage = m_accounts->remove(id, &error) ? QString() : error;
+    codexAccountChanged();
+}
+
+void QuotaService::codexAccountChanged() {
+    // The old account's quota must not show under the new one, including a fetch still in flight.
+    ++m_codexGeneration;
     m_codex.hasResult = false;
+    m_codex.error.clear();
     refreshCodex();
 }
 
@@ -210,16 +226,26 @@ void QuotaService::addAccount() {
             QDesktopServices::openUrl(QUrl(match.captured(0)));
         }
     });
-    connect(process, &QProcess::finished, this, [this, process](int code, QProcess::ExitStatus status) {
-        QString error;
-        const bool ok = status == QProcess::NormalExit && code == 0
-            && m_accounts->addFromFile(m_loginHome + "/auth.json", &error).has_value();
-        m_accountMessage = ok ? QStringLiteral("accountAdded") : (error.isEmpty() ? QStringLiteral("loginFailed") : error);
+    // Runs once: after `finished`, or after FailedToStart, which never emits `finished`.
+    const auto finish = [this, process](bool ok, const QString &message) {
+        if (m_login != process) return;
+        m_accountMessage = message;
         QDir(m_loginHome).removeRecursively();
         process->deleteLater();
         m_login = nullptr;
-        m_codex.hasResult = false;
-        refreshCodex();
+        if (ok) codexAccountChanged();
+        else emit changed();
+    };
+    connect(process, &QProcess::finished, this, [this, process, finish](int code, QProcess::ExitStatus status) {
+        QString error;
+        const bool ok = status == QProcess::NormalExit && code == 0
+            && m_accounts->addFromFile(m_loginHome + "/auth.json", &error).has_value();
+        finish(ok, ok ? QStringLiteral("accountAdded") : (error.isEmpty() ? QStringLiteral("loginFailed") : error));
+    });
+    connect(process, &QProcess::errorOccurred, this, [this, finish](QProcess::ProcessError error) {
+        if (error != QProcess::FailedToStart) return; // the other errors are followed by `finished`
+        m_codexCli.clear(); // the cached path may be stale (a CLI update): look it up again next time
+        finish(false, QStringLiteral("loginFailed"));
     });
     QTimer::singleShot(kLoginTimeoutMs, process, [process] { process->kill(); });
     process->start();
@@ -235,13 +261,17 @@ void QuotaService::cancelAddAccount() {
 void QuotaService::setClaudeConsent(bool allowed) {
     if (allowed == m_claudeConsent) return;
     m_claudeConsent = allowed;
-    if (!allowed && m_claudeSource != "web") m_claude.hasResult = false;
+    if (!allowed && m_claudeSource != "web") {
+        ++m_claudeGeneration; // an OAuth read still in flight must not publish after the user said no
+        m_claude.hasResult = false;
+    }
     refreshClaude();
 }
 
 void QuotaService::setClaudeSource(const QString &source) {
     if (source == m_claudeSource) return;
     m_claudeSource = source;
+    ++m_claudeGeneration;
     m_claude.hasResult = false;
     refreshClaude();
 }
@@ -321,16 +351,22 @@ void QuotaService::startClaudeFetch() {
     const QString sessionKey = useWeb ? m_sessionKey : QString();
     const QString organization = m_claudeOrganization;
     QPointer<QuotaService> self(this);
-    QThreadPool::globalInstance()->start([self, credentials, version, sessionKey, organization] {
+    const quint64 generation = m_claudeGeneration;
+    QThreadPool::globalInstance()->start([self, credentials, version, sessionKey, organization, generation] {
         asb::quota::ClaudeResult result;
         if (credentials) result = asb::quota::fetchClaudeOAuth(*credentials, version, asb::quota::blockingHttp, nowMs());
         // automatic: OAuth first, then the web session; a 429 ends the chain.
         if ((!credentials || !result.ok) && !sessionKey.isEmpty() && result.error != "rateLimited")
             result = asb::quota::fetchClaudeWeb(sessionKey, organization, asb::quota::blockingHttp);
-        QMetaObject::invokeMethod(QCoreApplication::instance(), [self, result] {
+        QMetaObject::invokeMethod(QCoreApplication::instance(), [self, result, generation] {
             if (!self) return;
             ClaudeState &state = self->m_claude;
             state.fetching = false;
+            if (generation != self->m_claudeGeneration) { // another source, or consent withdrawn
+                emit self->changed();
+                self->tick();
+                return;
+            }
             state.error = result.ok ? QString() : result.error;
             if (result.error == "rateLimited") state.retryAfterMs = result.retryAfterMs;
             if (result.ok) {

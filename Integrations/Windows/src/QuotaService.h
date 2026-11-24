@@ -87,6 +87,7 @@ signals:
 private:
     void tick();
     void startCodexFetch();
+    void codexAccountChanged();
     void startClaudeFetch();
     QString findCodexCli() const;
     QString claudeCliVersion();
@@ -107,6 +108,7 @@ private:
     QString m_cookie;
     qint64 m_codexFetchedAtMs = 0;
     bool m_codexPending = false;
+    quint64 m_codexGeneration = 0; // bumped when the account or source changes; older results are dropped
     QString m_codexCli;
     QPointer<QProcess> m_login;
     QString m_loginHome;
@@ -119,6 +121,7 @@ private:
     QString m_sessionKey;
     qint64 m_claudeFetchedAtMs = 0;
     bool m_claudePending = false;
+    quint64 m_claudeGeneration = 0; // bumped when the source changes or consent is withdrawn
     QString m_claudeVersion;
     bool m_claudeVersionChecked = false;
 };
