@@ -45,23 +45,6 @@ SettingsPage {
                     .map(code => ({ value: code, label: code }))
             }
         }
-        AsbRow {
-            title: Theme.t("液态玻璃效果", "Liquid glass")
-            subtitle: App.supportsBackdrop ? Theme.t("使用 Windows 11 的 Mica 材质。", "Uses Windows 11 Mica.")
-                                          : Theme.t("需要 Windows 11 22H2 或更新版本。", "Needs Windows 11 22H2 or later.")
-            PrefSwitch { key: "glassEnabled" }
-        }
-        AsbRow {
-            visible: App.prefs.glassEnabled
-            title: Theme.t("液态玻璃强度", "Liquid glass strength")
-            Segmented {
-                key: "glassEffect"
-                options: [
-                    { value: "reduced", label: Theme.t("标准", "Standard") },
-                    { value: "standard", label: Theme.t("增强", "Enhanced") }
-                ]
-            }
-        }
     }
 
     AsbSection {

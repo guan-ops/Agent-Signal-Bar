@@ -81,7 +81,6 @@ public:
 const QVariantMap &defaultPrefs() {
     static const QVariantMap defaults = {
         {"language", "system"}, {"theme", "system"}, {"currency", "USD"},
-        {"glassEnabled", true}, {"glassEffect", "reduced"},
         {"launchAtLogin", false}, {"lowPowerMode", false}, {"showDebugSettings", false},
         {"statusBarEnabled", true}, {"floatingEnabled", true}, {"menuMode", "detailed"},
         {"statusStyle", "trafficLight"}, {"statusLayout", "horizontal"},
@@ -623,13 +622,6 @@ QString AppController::uiFont() const {
 #endif
 }
 
-bool AppController::supportsBackdrop() const {
-#ifdef Q_OS_WIN
-    return QOperatingSystemVersion::current() >= QOperatingSystemVersion(QOperatingSystemVersion::Windows, 10, 0, 22621);
-#else
-    return false;
-#endif
-}
 
 asb::EffectCustomization AppController::effectCustomization() const {
     asb::EffectCustomization c;
@@ -1555,28 +1547,19 @@ void AppController::evaluateSounds() {
     m_greenWasLit = lit;
 }
 
-void AppController::applyBackdrop(QWindow *window, const QString &kind) const {
+void AppController::applyWindowFrame(QWindow *window) const {
 #ifdef Q_OS_WIN
-    if (!window) return;
-    if (!supportsBackdrop()) return;
+    // Windows 11 22H2 (build 22621) and later; older builds keep the default frame.
+    if (!window || QOperatingSystemVersion::current()
+                       < QOperatingSystemVersion(QOperatingSystemVersion::Windows, 10, 0, 22621))
+        return;
     const HWND hwnd = reinterpret_cast<HWND>(window->winId());
     const BOOL useDark = dark() ? TRUE : FALSE;
     DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &useDark, sizeof(useDark));
     const int corner = 2; // DWMWCP_ROUND
     DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &corner, sizeof(corner));
-    // Windows 11 22H2+: 1 none, 2 Mica, 3 Acrylic, 4 Mica Alt. Older builds ignore it.
-    int backdrop = 1;
-    if (m_prefs->value("glassEnabled").toBool()) {
-        if (kind == "popup") backdrop = 3;
-        else backdrop = m_prefs->value("glassEffect").toString() == "standard" ? 4 : 2;
-    }
-    DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
-    // Let the backdrop reach the client area behind the translucent QML surfaces.
-    const MARGINS margins = backdrop == 1 ? MARGINS{0, 0, 0, 0} : MARGINS{-1, -1, -1, -1};
-    DwmExtendFrameIntoClientArea(hwnd, &margins);
 #else
     Q_UNUSED(window);
-    Q_UNUSED(kind);
 #endif
 }
 

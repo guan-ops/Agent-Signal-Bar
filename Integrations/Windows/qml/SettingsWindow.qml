@@ -34,18 +34,12 @@ Window {
         raise()
         requestActivate()
     }
-    onVisibleChanged: if (visible) App.applyBackdrop(win, "window")
-    Connections {
-        target: App.prefs
-        function onValueChanged(key) {
-            if (["glassEnabled", "glassEffect"].indexOf(key) >= 0 && win.visible) App.applyBackdrop(win, "window")
-        }
-    }
+    onVisibleChanged: if (visible) App.applyWindowFrame(win)
     // The theme preference and, while it follows the system, a Windows light/dark switch:
     // the title bar's dark mode is set through DWM, so it needs a new call.
     Connections {
         target: App
-        function onThemeChanged() { if (win.visible) App.applyBackdrop(win, "window") }
+        function onThemeChanged() { if (win.visible) App.applyWindowFrame(win) }
     }
 
     Shortcut {
