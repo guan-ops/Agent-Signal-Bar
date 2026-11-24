@@ -1,0 +1,52 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/">
+        <file>translations.json</file>
+        <file>qml/qmldir</file>
+        <file>qml/Theme.qml</file>
+        <file>qml/DemoData.js</file>
+        <file>qml/Main.qml</file>
+        <file>qml/Icon.qml</file>
+        <file>qml/AsbText.qml</file>
+        <file>qml/AsbGroup.qml</file>
+        <file>qml/AsbSection.qml</file>
+        <file>qml/AsbRow.qml</file>
+        <file>qml/AsbMeter.qml</file>
+        <file>qml/AsbStat.qml</file>
+        <file>qml/AsbSwitch.qml</file>
+        <file>qml/AsbButton.qml</file>
+        <file>qml/PrefSwitch.qml</file>
+        <file>qml/Segmented.qml</file>
+        <file>qml/Dropdown.qml</file>
+        <file>qml/SecretField.qml</file>
+        <file>qml/StatusPill.qml</file>
+        <file>qml/QuotaLine.qml</file>
+        <file>qml/MenuRow.qml</file>
+        <file>qml/TrafficSignal.qml</file>
+        <file>qml/TokenChart.qml</file>
+        <file>qml/UsageCard.qml</file>
+        <file>qml/ClaudeUsageCard.qml</file>
+        <file>qml/PlatformSwitcher.qml</file>
+        <file>qml/PopupWindow.qml</file>
+        <file>qml/TrayPanel.qml</file>
+        <file>qml/SystemMenu.qml</file>
+        <file>qml/FloatingSignal.qml</file>
+        <file>qml/SettingsWindow.qml</file>
+        <file>qml/SidebarItem.qml</file>
+        <file>qml/SettingsPage.qml</file>
+        <file>qml/ActivityPage.qml</file>
+        <file>qml/UsagePage.qml</file>
+        <file>qml/LightPage.qml</file>
+        <file>qml/ConnectionsPage.qml</file>
+        <file>qml/GeneralPage.qml</file>
+        <file>qml/DebugPage.qml</file>
+        <file>qml/AboutPage.qml</file>
+        <file>qml/UpdateWindow.qml</file>
+        <file alias="sounds/completion-signal-nz.wav">resources/sounds/completion-signal-nz.wav</file>
+        <file alias="sounds/waiting-signal-nz.wav">resources/sounds/waiting-signal-nz.wav</file>
+        <file alias="sounds/completion-ai-aurora.wav">../../Sources/AgentSignalLight/Resources/completion-ai-aurora.wav</file>
+        <file alias="sounds/completion-ai-glow.wav">../../Sources/AgentSignalLight/Resources/completion-ai-glow.wav</file>
+        <file alias="sounds/waiting-ai-orbit.wav">../../Sources/AgentSignalLight/Resources/waiting-ai-orbit.wav</file>
+        <file alias="sounds/waiting-ai-tick.wav">../../Sources/AgentSignalLight/Resources/waiting-ai-tick.wav</file>
+    </qresource>
+</RCC>
