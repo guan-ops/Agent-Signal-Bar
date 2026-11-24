@@ -951,6 +951,23 @@ private slots:
         QVERIFY(findDay(again, 20)->partial);
         QCOMPARE(findDay(again, 20)->models.value("gpt-9").unpricedTokens, 110);
         QVERIFY(qFuzzyCompare(*findDay(again, 20)->cost, 0.0115 + 6.075));
+
+        // A fork scanned before its parent log exists is parsed again once the parent shows up,
+        // although the fork's own file did not change.
+        writeFile(sessions + "/2026/11/16/rollout-f.jsonl",
+                  codexLine("session_meta", isoAt(16, 10), {{"id", "F"}, {"forked_from_id", "late"}, {"timestamp", isoAt(16, 10)}})
+                      + codexLine("turn_context", isoAt(16, 10), {{"model", "gpt-5.5"}})
+                      + tokenCount(isoAt(16, 11), codexUsage(1300, 0, 130), {}));
+        const usage::Report beforeParent = scanner.scan(now, 30, nullptr);
+        QVERIFY(!findDay(beforeParent, 16)); // cumulative totals only and no baseline yet: left out
+        writeFile(sessions + "/2026/11/16/rollout-late.jsonl",
+                  codexLine("session_meta", isoAt(16, 8), {{"id", "late"}})
+                      + codexLine("turn_context", isoAt(16, 8), {{"model", "gpt-5.5"}})
+                      + tokenCount(isoAt(16, 9), codexUsage(1000, 0, 100), {}));
+        const usage::Report afterParent = scanner.scan(now, 30, nullptr);
+        const usage::Day *d16 = findDay(afterParent, 16);
+        QVERIFY(d16);
+        QCOMPARE(d16->totalTokens, 1100 + 330); // the parent's own 1100 + F's 330 after the fork
     }
 
     // parseClaudeFile + reconciledClaudeRows: the final streaming chunk wins, a message logged by a

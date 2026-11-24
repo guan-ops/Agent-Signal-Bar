@@ -100,9 +100,12 @@ public:
         QString sessionId;
         QString forkedFromId;
         QList<Row> rows;
+        // A fork whose parent log was not found: scan() parses it again once the parent shows up.
+        QString missingForkParent;
     };
     struct ForkBaseline {
         bool resolved = false;
+        bool parentMissing = false; // no log of the parent session (vs. no fork time to look up)
         std::optional<CodexTotals> totals;
     };
     using Resolver = std::function<ForkBaseline(const QString &parentId, const QString &forkedAt)>;

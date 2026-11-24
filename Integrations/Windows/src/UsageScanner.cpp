@@ -407,6 +407,7 @@ CodexScanner::FileResult CodexScanner::parseFile(const QString &path, const DayR
             hasUnresolvedForkBaseline = false;
         } else {
             hasUnresolvedForkBaseline = true;
+            if (baseline.parentMissing) result.missingForkParent = parent;
         }
     };
 
@@ -586,7 +587,9 @@ Report CodexScanner::scan(qint64 nowMs, int days, const ModelsDevCatalog *catalo
     };
     // CodexInheritedTotalsResolver.inheritedTotals(for:atOrBefore:)
     const Resolver resolver = [&](const QString &parent, const QString &forkedAt) -> ForkBaseline {
-        if (forkedAt.isEmpty() || missingParents.contains(parent)) return {};
+        const ForkBaseline missing{false, true, std::nullopt};
+        if (forkedAt.isEmpty()) return {};
+        if (missingParents.contains(parent)) return missing;
         if (!snapshotsBySession.contains(parent)) {
             const QString path = fileForSession(parent);
             QString parsedId;
@@ -594,12 +597,12 @@ Report CodexScanner::scan(qint64 nowMs, int days, const ModelsDevCatalog *catalo
                                                                       : readCodexSnapshots(path, &parsedId);
             if (path.isEmpty() || parsedId != parent) {
                 missingParents.insert(parent);
-                return {};
+                return missing;
             }
             snapshotsBySession.insert(parent, snapshots);
         }
         const std::optional<qint64> cutoff = msFromTimestamp(forkedAt);
-        ForkBaseline baseline{true, std::nullopt};
+        ForkBaseline baseline{true, false, std::nullopt};
         for (const TimestampedTotals &s : snapshotsBySession.value(parent)) {
             const bool atOrBefore = s.ms && cutoff ? *s.ms <= *cutoff : s.timestamp <= forkedAt;
             if (atOrBefore) baseline.totals = s.totals;
@@ -618,7 +621,12 @@ Report CodexScanner::scan(qint64 nowMs, int days, const ModelsDevCatalog *catalo
         live.insert(path);
         Memo::FileEntry &entry = memo.files[path];
         const qint64 mtime = info.lastModified().toMSecsSinceEpoch();
-        if (entry.size != info.size() || entry.mtime != mtime || entry.rangeKey != rangeKey) {
+        const bool changed = entry.size != info.size() || entry.mtime != mtime || entry.rangeKey != rangeKey;
+        // A fork parsed while its parent log was missing (not synced or restored yet) left out
+        // what it could not place; parse it again once that parent can be found.
+        const bool parentArrived = !changed && !entry.result.missingForkParent.isEmpty()
+            && !fileForSession(entry.result.missingForkParent).isEmpty();
+        if (changed || parentArrived) {
             bool ok = true;
             FileResult result = parseFile(path, range, resolver, &ok);
             if (ok) entry = {info.size(), mtime, rangeKey, std::move(result)};
