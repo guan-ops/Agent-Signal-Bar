@@ -1,7 +1,15 @@
 import AgentSignalLightCore
 import Foundation
 
+struct CodexConnectionHealth: Equatable, Sendable {
+    var roots: [String] = []
+    var unreadable: [String] = []
+    var existingRoots: Int = 0
+    var recentFiles: Int = 0
+}
+
 struct CodexDesktopActivityPollResult: Sendable {
+    var connection = CodexConnectionHealth()
     var activities: [CodexDesktopActivity] = []
     var quotaUpdates: [CodexDesktopQuotaUpdate] = []
 }
@@ -77,9 +85,13 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
     private var lastFullScanAt: Date?
     private var lastVSCodeHintScanAt: Date?
     private var hasPrimedExistingFiles = false
+    private var scanReadErrors = Set<String>()
 
     init(
         sessionsRootURL: URL? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        selectedPath: String? = nil,
+        homeDirectory: URL? = nil,
         sessionRootURLs: [URL]? = nil,
         forcedAgentsByRootPath: [String: String] = [:],
         vsCodeLogRootURL: URL? = nil,
@@ -98,8 +110,8 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
         beforeFileReadHook: ((URL) -> Void)? = nil
     ) {
         self.fileManager = fileManager
-        let home = fileManager.homeDirectoryForCurrentUser
-        let defaults = Self.defaultSessionRoots(fileManager: fileManager)
+        let home = homeDirectory ?? fileManager.homeDirectoryForCurrentUser
+        let defaults = CodexDataPaths.activityRoots(home: home, environment: environment, selectedPath: selectedPath, fileManager: fileManager)
         if let sessionRootURLs {
             self.sessionRootURLs = sessionRootURLs
         } else if let sessionsRootURL {
@@ -114,7 +126,7 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
         )
         self.forcedAgentsByRootPath = normalizedForcedAgents.merging(
             Dictionary(uniqueKeysWithValues: defaults.compactMap { root in
-                root.forcedAgent.map { (Self.normalizedPath(root.url.path), $0) }
+                root.agent.map { (Self.normalizedPath(root.url.path), $0) }
             }),
             uniquingKeysWith: { explicit, _ in explicit }
         )
@@ -132,47 +144,6 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
         self.replaysInitialHistory = replaysInitialHistory
         self.beforeSessionSnapshotReadHook = beforeSessionSnapshotReadHook
         self.beforeFileReadHook = beforeFileReadHook
-    }
-
-    private static func defaultSessionRoots(fileManager: FileManager) -> [(url: URL, forcedAgent: String?)] {
-        let home = fileManager.homeDirectoryForCurrentUser
-        var roots: [(url: URL, forcedAgent: String?)] = [
-            (home.appendingPathComponent(".codex/sessions", isDirectory: true), nil)
-        ]
-
-        let xcodeSessions = home.appendingPathComponent(
-            "Library/Developer/Xcode/CodingAssistant/codex/sessions",
-            isDirectory: true
-        )
-        var isXcodeDirectory: ObjCBool = false
-        if fileManager.fileExists(atPath: xcodeSessions.path, isDirectory: &isXcodeDirectory),
-           isXcodeDirectory.boolValue {
-            roots.append((xcodeSessions, "codex-xcode"))
-        }
-
-        let jetBrainsCache = home.appendingPathComponent(
-            "Library/Caches/JetBrains",
-            isDirectory: true
-        )
-        if let products = try? fileManager.contentsOfDirectory(
-            at: jetBrainsCache,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) {
-            for product in products {
-                let sessionsRoot = product
-                    .appendingPathComponent("aia/codex/sessions", isDirectory: true)
-                var isDirectory: ObjCBool = false
-                guard fileManager.fileExists(atPath: sessionsRoot.path, isDirectory: &isDirectory),
-                      isDirectory.boolValue
-                else {
-                    continue
-                }
-                roots.append((sessionsRoot, forcedAgentName(forJetBrainsProduct: product.lastPathComponent)))
-            }
-        }
-
-        return roots
     }
 
     func reset() {
@@ -199,17 +170,27 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
         defer { stateLock.unlock() }
 
         let files = recentSessionFiles(now: now)
+        var connection = CodexConnectionHealth(roots: sessionRootURLs.map(\.path), recentFiles: files.count)
+        for root in sessionRootURLs {
+            var directory: ObjCBool = false
+            if fileManager.fileExists(atPath: root.path, isDirectory: &directory) {
+                connection.existingRoots += 1
+                if !directory.boolValue || !fileManager.isReadableFile(atPath: root.path) { connection.unreadable.append(root.path) }
+            }
+        }
+        connection.unreadable = Array(Set(connection.unreadable).union(scanReadErrors)).sorted()
         if !hasPrimedExistingFiles {
             hasPrimedExistingFiles = true
             let result = primeExistingFiles(files, returningActivities: replaysInitialHistory)
-            guard replaysInitialHistory else { return CodexDesktopActivityPollResult() }
+            guard replaysInitialHistory else { return CodexDesktopActivityPollResult(connection: connection) }
             return CodexDesktopActivityPollResult(
+                connection: connection,
                 activities: sortedAcceptedActivities(from: result.activities, now: now),
                 quotaUpdates: result.quotaUpdates
             )
         }
 
-        var result = CodexDesktopActivityPollResult()
+        var result = CodexDesktopActivityPollResult(connection: connection)
 
         for file in files {
             let lines = readNewLines(from: file, now: now)
@@ -307,6 +288,7 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
             let activityAt: Date
         }
 
+        scanReadErrors.removeAll()
         var candidates: [Candidate] = []
         var seenPaths = Set<String>()
 
@@ -314,7 +296,11 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
             guard let enumerator = fileManager.enumerator(
                 at: rootURL,
                 includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
+                options: [.skipsHiddenFiles],
+                errorHandler: { [self] url, error in
+                    if (error as NSError).code != NSFileReadNoSuchFileError { scanReadErrors.insert(url.path) }
+                    return true
+                }
             ) else {
                 continue
             }
@@ -329,6 +315,7 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
                     continue
                 }
                 seenPaths.insert(url.path)
+                guard fileManager.isReadableFile(atPath: url.path) else { scanReadErrors.insert(url.path); continue }
                 let metadata = CostUsageScanner.codexFileMetadata(fileURL: url)
                 guard metadata.fileId != nil,
                       metadata.statFingerprint != nil,

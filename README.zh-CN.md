@@ -153,6 +153,7 @@ Agent Signal Bar 是本地优先应用，但不应被理解为完全离线：
 - Agent 活动来自已知的本地 Codex 日志，或本地 Hook、CLI 与 JSON 状态。
 - 状态快照、Hook 事件、用量扫描缓存和导出的诊断包都留在 Mac 上，除非你主动选择分享。
 - 可选的 Codex 账号与额度功能会直接连接 OpenAI，并可使用本地 Codex 凭据或可选的 `chatgpt.com` 浏览器 session 数据。已保存账号凭据和手动输入的 Cookie 使用 macOS Keychain 存储。
+- 可选 Claude 额度来源支持 Claude Code OAuth／CLI 与主动启用的 `claude.ai` 网页接入；浏览器会话由你主动导入并保存在本机钥匙串，额度历史保存在本机。详见 [Claude 支持](docs/CLAUDE_SUPPORT.md)。
 - 服务状态与更新检查会分别访问 OpenAI Status 和 GitHub/Sparkle。
 - 选择非美元费用显示货币时，会从 `open.er-api.com` 获取公开的每日汇率；请求不包含账号凭据或用量记录。
 - 不要求 Agent Signal Bar 后端账号，也不依赖项目托管的云服务。

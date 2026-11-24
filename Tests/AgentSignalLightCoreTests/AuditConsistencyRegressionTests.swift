@@ -146,9 +146,29 @@ final class AuditConsistencyRegressionTests: XCTestCase {
         XCTAssertThrowsError(try fixture.scan { url in
             do { try fixture.line("new", 900).write(to: url, atomically: true, encoding: .utf8) }
             catch { XCTFail("Fixture mutation failed: \(error)") }
-        })
+        }) { error in
+            XCTAssertTrue(CostUsageScanner.isClaudeSourceChanging(error), "A rewrite is a retryable change: \(error)")
+        }
         XCTAssertEqual(try Data(contentsOf: cacheURL), previous)
         XCTAssertEqual(try fixture.scan().summary?.totalTokens, 900)
+    }
+
+    func testClaudeFileDeletedDuringScanIsSkippedAndOtherHistoryIsKept() throws {
+        let fixture = try ClaudeConsistencyFixture()
+        defer { fixture.remove() }
+        let other = fixture.logs.appendingPathComponent("other.jsonl")
+        try fixture.line("other", 50).write(to: other, atomically: true, encoding: .utf8)
+        try fixture.line("one", 100).write(to: fixture.file, atomically: true, encoding: .utf8)
+        XCTAssertEqual(try fixture.scan().summary?.totalTokens, 150)
+        try fixture.append(fixture.line("two", 200))
+        // Claude Code pruning a session while it is read is not a history read failure.
+        let report = try fixture.scan { url in
+            guard url.standardizedFileURL.resolvingSymlinksInPath() == fixture.file.standardizedFileURL.resolvingSymlinksInPath() else { return }
+            do { try FileManager.default.removeItem(at: url) }
+            catch { XCTFail("Fixture deletion failed: \(error)") }
+        }
+        XCTAssertEqual(report.summary?.totalTokens, 50)
+        XCTAssertEqual(try fixture.scan().summary?.totalTokens, 50)
     }
 
     func testClaudeAppendDuringScanIsDeferredToNextScan() throws {

@@ -357,6 +357,20 @@ public final class SignalStateStore: @unchecked Sendable {
         }
     }
 
+    /// Forgets a session's quota but keeps its signal and timestamps. Writes nothing when the
+    /// session has no quota, so callers can use it whenever a quota stops being trustworthy.
+    public func clearSessionQuota(sessionID: String) throws -> SignalSnapshot {
+        try withStateLock {
+            var document = try readDocument()
+            guard document.sessions[sessionID]?.quota != nil else {
+                return document.snapshot(stateFileURL: stateFileURL)
+            }
+            document.sessions[sessionID]?.quota = nil
+            try writeDocument(document)
+            return document.snapshot(stateFileURL: stateFileURL)
+        }
+    }
+
     public func applySessionQuota(
         _ quota: AgentQuotaStatus,
         sessionID: String,

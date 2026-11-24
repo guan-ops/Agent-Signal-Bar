@@ -30,6 +30,37 @@ struct AgentSignalCLI {
             switch command {
             case "help", "--help", "-h":
                 printUsage()
+            case "install-hooks":
+                var target = "all"
+                var resources: URL?
+                var fixtureHome: URL?
+                var codexPath: String?
+                var install = false
+                var remove = false
+                var index = 1
+                while index < arguments.count {
+                    let key = arguments[index]
+                    switch key {
+                    case "--install": install = true
+                    case "--remove": remove = true
+                    case "--dry-run": install = false
+                    case "--target", "--resources", "--home", "--codex-home":
+                        let value = try optionValue(arguments, after: index, option: key)
+                        if key == "--target" { target = value }
+                        if key == "--resources" { resources = URL(fileURLWithPath: value) }
+                        if key == "--home" { fixtureHome = URL(fileURLWithPath: value) }
+                        if key == "--codex-home" { codexPath = value }
+                        index += 1
+                    default: throw CLIError.message("Unknown installer option: \(key)")
+                    }
+                    index += 1
+                }
+                let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+                let bundledRoot = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                let installer = NativeHookInstaller(resources: resources ?? bundledRoot,
+                    home: fixtureHome ?? FileManager.default.homeDirectoryForCurrentUser,
+                    environment: fixtureHome == nil ? ProcessInfo.processInfo.environment : [:], selectedCodexPath: codexPath)
+                print(try installer.run(target: target, install: install, remove: remove))
             case "list":
                 printSignalList()
             case "status":
@@ -109,7 +140,7 @@ struct AgentSignalCLI {
                 _ = try store.applySessionSignal(
                     signal,
                     sessionID: sessionID,
-                    agent: parsed.agent ?? "claude-code",
+                    agent: parsed.agent ?? ClaudeHookAdapter.agentName(environment: ProcessInfo.processInfo.environment),
                     lastEvent: parsed.event ?? ClaudeHookAdapter.displayEventName(eventName: eventName, payload: payload)
                 )
             case "agent-hook", "generic-hook", "hook":
@@ -275,6 +306,7 @@ private func printUsage() {
           \(command) <signal> [--session <id>] [--agent <name>] [--event <event>] [--json]
           \(command) set <signal> [--json]
           \(command) session <signal> --session <id> [--json]
+          \(command) install-hooks [--target all|codex|claude] [--install|--dry-run] [--remove]
           \(command) codex-hook [event]
           \(command) claude-hook [event]
           \(command) agent-hook [event] [--agent <name>] [--session <id>]

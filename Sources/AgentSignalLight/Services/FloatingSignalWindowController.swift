@@ -537,7 +537,7 @@ private final class FloatingSignalCursorPush {
     }
 }
 
-private struct FloatingSignalPanelView: View {
+struct FloatingSignalPanelView: View {
     private enum BadgeKind {
         case info
         case quota
@@ -656,13 +656,13 @@ private struct FloatingSignalPanelView: View {
                     contentSize: contentSize,
                     scale: scale
                 )
-                quotaBadge(
+                TimelineView(.periodic(from: .now, by: 1)) { _ in quotaBadge(
                     quotaStatus,
                     corner: corner,
                     contentOrigin: contentOrigin,
                     contentSize: contentSize,
                     scale: scale
-                )
+                ) }
                     .offset(
                         x: badgeOffset.width + quotaBadgeDragTranslation.width,
                         y: badgeOffset.height + quotaBadgeDragTranslation.height
@@ -708,6 +708,10 @@ private struct FloatingSignalPanelView: View {
         }
         .animation(.easeInOut(duration: 0.12), value: showsResizeHandle)
         .animation(.easeInOut(duration: 0.12), value: shouldShowInfoBadge)
+        .onChange(of: model.selectedSignalLightProvider) { _, _ in
+            isShowingQuotaPanel = false
+            isShowingTokenPanel = false
+        }
         .animation(.easeInOut(duration: 0.12), value: shouldShowTokenBadge)
         .animation(.easeInOut(duration: 0.12), value: model.floatingSignalInfoBadgeCorner)
         .animation(.easeInOut(duration: 0.12), value: model.floatingSignalQuotaBadgeCorner)
@@ -741,6 +745,7 @@ private struct FloatingSignalPanelView: View {
             Button(model.text("试听闪烁音", "Preview Flash Sound"), action: previewWaitingSound)
         }
         .preferredColorScheme(model.appTheme.colorScheme)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(model.text("悬浮信号灯", "Floating Signal Light"))
         .accessibilityValue(model.displayName(for: cachedLightSnapshot.aggregate))
         .onReceive(model.$snapshot) { _ in
@@ -778,11 +783,11 @@ private struct FloatingSignalPanelView: View {
             refreshCachedSnapshots()
             persistVisibleBadgeCornersSoon()
         }
-        .onReceive(model.$signalLightAgentScopes) { _ in
+        .onChange(of: model.signalLightAgentScopes) { _, _ in
             refreshCachedSnapshots()
             persistVisibleBadgeCornersSoon()
         }
-        .onReceive(model.$signalLightAgentSelectionMode) { _ in
+        .onChange(of: model.signalLightAgentSelectionMode) { _, _ in
             refreshCachedSnapshots()
             persistVisibleBadgeCornersSoon()
         }
@@ -806,18 +811,11 @@ private struct FloatingSignalPanelView: View {
     private var shouldShowTokenBadge: Bool {
         model.isFloatingSignalTokenBadgeEnabled
             && !model.isMonitoringPaused
-            && floatingTokenUsageTokens > 0
+            && (model.isClaudeFloatingUsage || floatingTokenUsageTokens > 0)
     }
 
-    private var floatingQuotaStatus: AgentQuotaStatus? {
-        guard model.isFloatingSignalQuotaBadgeEnabled,
-              !model.isMonitoringPaused,
-              let quota = model.latestAgentQuota
-        else {
-            return nil
-        }
-
-        return quota
+    private var floatingQuotaStatus: FloatingQuotaContent? {
+        model.floatingQuotaContent
     }
 
     private var resolvedQuotaBadgeCorner: FloatingSignalInfoBadgeCorner {
@@ -852,15 +850,11 @@ private struct FloatingSignalPanelView: View {
         return ZStack {
             Text(infoBadgeText)
                 .font(.system(size: fontSize, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
                 .monospacedDigit()
                 .minimumScaleFactor(0.75)
                 .frame(width: badgeSize, height: badgeSize)
-                .background(
-                    Circle()
-                        .fill(Color.black)
-                )
-                .clipShape(Circle())
+                .asbBadgeBackground()
                 .contentShape(Circle())
                 .accessibilityHidden(true)
 
@@ -904,10 +898,16 @@ private struct FloatingSignalPanelView: View {
         .help(model.text("点击查看悬浮灯状态，拖动可移动角标", "Click to show floating signal status; drag to move the badge"))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(model.text("查看悬浮灯状态", "Show floating signal status"))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction {
+            isShowingQuotaPanel = false
+            isShowingTokenPanel = false
+            isShowingInfoPanel.toggle()
+        }
     }
 
     private func quotaBadge(
-        _ quota: AgentQuotaStatus,
+        _ quota: FloatingQuotaContent,
         corner: FloatingSignalInfoBadgeCorner,
         contentOrigin: CGPoint,
         contentSize: CGSize,
@@ -925,8 +925,7 @@ private struct FloatingSignalPanelView: View {
                 .minimumScaleFactor(0.55)
                 .lineLimit(1)
                 .frame(width: badgeSize, height: badgeSize)
-                .background(Circle().fill(Color.black))
-                .clipShape(Circle())
+                .asbBadgeBackground()
                 .contentShape(Circle())
                 .accessibilityHidden(true)
 
@@ -988,13 +987,12 @@ private struct FloatingSignalPanelView: View {
         return ZStack {
             Text(text)
                 .font(.system(size: fontSize, weight: .bold, design: .rounded))
-                .foregroundStyle(Color(red: 0.42, green: 0.78, blue: 1.0))
+                .foregroundStyle(Color.accentColor)
                 .monospacedDigit()
                 .minimumScaleFactor(0.5)
                 .lineLimit(1)
                 .frame(width: badgeSize, height: badgeSize)
-                .background(Circle().fill(Color.black))
-                .clipShape(Circle())
+                .asbBadgeBackground()
                 .contentShape(Circle())
                 .accessibilityHidden(true)
 
@@ -1003,7 +1001,7 @@ private struct FloatingSignalPanelView: View {
                 onClick: {
                     isShowingInfoPanel = false
                     isShowingQuotaPanel = false
-                    model.refreshTokenActivityIfNeeded(force: model.tokenActivityDays.isEmpty)
+                    if !isShowingTokenPanel { model.refreshFloatingUsageForPanel() }
                     isShowingTokenPanel.toggle()
                 },
                 onDragChanged: { translation in
@@ -1047,32 +1045,50 @@ private struct FloatingSignalPanelView: View {
         return 13
     }
 
-    private func quotaBadgeText(for quota: AgentQuotaStatus) -> String {
-        model.quotaPercentText(for: model.selectedQuotaBadgeWindowStatus(for: quota))
+    private func quotaBadgeText(for quota: FloatingQuotaContent) -> String {
+        switch quota {
+        case .codex(let value):
+            if let credits = model.codexFloatingCredits { return CodexCreditsDisplay.badgeText(credits.remaining) }
+            return model.quotaPercentText(for: model.selectedQuotaBadgeWindowStatus(for: value))
+        case .codexCredits: return model.codexFloatingCredits.map { CodexCreditsDisplay.badgeText($0.remaining) } ?? "—"
+        case .claude: return model.claudeFloatingBadgeText
+        }
     }
 
-    private func quotaBadgeForeground(for quota: AgentQuotaStatus) -> Color {
-        guard let remainingPercent = model.selectedQuotaBadgeWindowStatus(for: quota)?.remainingPercent else {
-            return Color.white.opacity(0.62)
+    private func quotaBadgeForeground(for quota: FloatingQuotaContent) -> Color {
+        let remaining: Double?
+        switch quota {
+        case .codex(let value):
+            if model.codexFloatingCredits != nil { return .accentColor }
+            remaining = model.selectedQuotaBadgeWindowStatus(for: value)?.remainingPercent
+        case .codexCredits:
+            guard let credits = model.codexFloatingCredits else { return .secondary }
+            return credits.remaining > 0 ? .accentColor : ASBTone.critical.foreground
+        case .claude:
+            if model.claudeUsesPrepaidBalance && model.claudeFloatingBadgeText != "—" { return (model.claudeSupport.snapshot?.prepaidBalance ?? 0) > 0 ? .accentColor : ASBTone.critical.foreground }
+            remaining = model.claudeFloatingRemainingPercent()
         }
-
-        if remainingPercent <= 15 {
-            return Color(red: 1.0, green: 0.26, blue: 0.22)
-        }
-        if remainingPercent <= 35 {
-            return Color(red: 1.0, green: 0.75, blue: 0.22)
-        }
-        return Color(red: 0.28, green: 0.92, blue: 0.46)
+        guard let remainingPercent = remaining else { return .secondary }
+        // Same thresholds and colors as every quota meter in the app.
+        let tone = ASBTone.forRemainingPercent(remainingPercent)
+        return tone == .accent ? .primary : tone.foreground
     }
 
-    private func quotaBadgeHelp(for quota: AgentQuotaStatus) -> String {
+    private func quotaBadgeHelp(for content: FloatingQuotaContent) -> String {
+        if content == .codexCredits || (content != .claude && model.codexFloatingCredits != nil) {
+            return model.codexCreditsBadgeHelp
+        }
+        guard case .codex(let quota) = content else {
+            return "Claude · " + (model.claudeSelectedFloatingQuota.map { model.localizedClaudeText($0.title) + " · " } ?? "")
+                + quotaBadgeText(for: content) + " · " + model.claudeFloatingQuotaMessage
+        }
         guard model.selectedQuotaBadgeWindowStatus(for: quota) != nil else {
             return model.text(
                 "\(model.displayName(for: model.floatingSignalQuotaBadgeWindow))额度暂不可用，点击查看可用额度。",
                 "\(model.displayName(for: model.floatingSignalQuotaBadgeWindow)) quota is unavailable. Click to view available quota."
             )
         }
-        let percent = quotaBadgeText(for: quota)
+        let percent = quotaBadgeText(for: content)
         let identity = model.codexQuotaIdentityPresentation(for: quota)
         return model.text(
             "\(identity.title)剩余额度 \(percent) · \(identity.context)",
@@ -1273,22 +1289,18 @@ private struct FloatingSignalPanelView: View {
     }
 
     private var tokenBadgeText: String {
-        model.compactTokenBadgeText(floatingTokenUsageTokens)
+        model.floatingUsageTokens(for: model.floatingSignalTokenBadgeWindow).map(model.compactTokenBadgeText) ?? "—"
     }
 
     private var tokenBadgeHelp: String {
-        let tokenText = model.tokenUsageTitleLine(
-            for: model.floatingSignalTokenBadgeWindow,
-            tokens: floatingTokenUsageTokens
-        )
         return model.text(
-            "本机 Token 使用量 \(tokenText)",
-            "Device token usage \(tokenText)"
+            "\(model.floatingUsageProviderName) · 本机 Token 使用量 \(tokenBadgeText) · \(model.displayName(for: model.floatingSignalTokenBadgeWindow))",
+            "\(model.floatingUsageProviderName) · Device token usage \(tokenBadgeText) · \(model.displayName(for: model.floatingSignalTokenBadgeWindow))"
         )
     }
 
     private var floatingTokenUsageTokens: Int {
-        model.tokenActivityTotal(for: model.floatingSignalTokenBadgeWindow)
+        model.floatingUsageTokens(for: model.floatingSignalTokenBadgeWindow) ?? 0
     }
 
     private func signalBody(
@@ -2035,7 +2047,11 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
             }
             position(panel, relativeTo: anchorView)
             installMouseMonitorIfNeeded()
-            panel.orderFrontRegardless()
+            if !panel.isVisible {
+                panel.makeKeyAndOrderFront(nil)
+            } else {
+                panel.orderFrontRegardless()
+            }
         }
 
         func close() {
@@ -2056,7 +2072,7 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
                 return panel
             }
 
-            let panel = NSPanel(
+            let panel = FloatingSignalInfoPanel(
                 contentRect: NSRect(origin: .zero, size: NSSize(width: 250, height: 64)),
                 styleMask: [.borderless, .nonactivatingPanel],
                 backing: .buffered,
@@ -2163,10 +2179,16 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
     }
 }
 
+/// A borderless nonactivating panel must opt into key status for its buttons and accessibility focus.
+private final class FloatingSignalInfoPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 private struct FloatingSignalQuotaPanelAnchor: NSViewRepresentable {
     @Binding var isPresented: Bool
     @ObservedObject var model: MenuBarStatusModel
-    let quota: AgentQuotaStatus
+    let quota: FloatingQuotaContent
 
     func makeCoordinator() -> Coordinator {
         Coordinator(isPresented: $isPresented)
@@ -2204,7 +2226,7 @@ private struct FloatingSignalQuotaPanelAnchor: NSViewRepresentable {
             removeMouseMonitors()
         }
 
-        func update(isPresented: Bool, model: MenuBarStatusModel, quota: AgentQuotaStatus, anchorView: NSView) {
+        func update(isPresented: Bool, model: MenuBarStatusModel, quota: FloatingQuotaContent, anchorView: NSView) {
             self.anchorView = anchorView
 
             guard isPresented, anchorView.window != nil else {
@@ -2548,7 +2570,20 @@ private struct FloatingSignalTokenPanelAnchor: NSViewRepresentable {
     }
 }
 
-private struct FloatingSignalQuotaPopoverView: View {
+struct FloatingSignalQuotaPopoverView: View {
+    @ObservedObject var model: MenuBarStatusModel
+    let quota: FloatingQuotaContent
+    @ViewBuilder var body: some View {
+        switch quota {
+        case .codex(let value): CodexFloatingQuotaPopoverView(model: model, quota: value)
+        case .codexCredits:
+            FloatingUsagePanel { CodexCreditsSummaryView(model: model) }
+        case .claude: ClaudeFloatingQuotaPopoverView(model: model)
+        }
+    }
+}
+
+private struct CodexFloatingQuotaPopoverView: View {
     @ObservedObject var model: MenuBarStatusModel
     let quota: AgentQuotaStatus
 
@@ -2560,36 +2595,20 @@ private struct FloatingSignalQuotaPopoverView: View {
             quota: quota
         )
 
-        VStack(alignment: .leading, spacing: 7) {
-            Text(identity.title)
-                .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-
-            Text(identity.context)
-                .font(.system(size: 10.5, weight: .medium))
-                .foregroundStyle(.white.opacity(0.66))
-                .lineLimit(2)
-                .truncationMode(.tail)
-
-            if let limitID = identity.limitID {
-                Text("ID · \(limitID)")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.54))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+        FloatingUsagePanel {
+            FloatingUsageIdentity(title: identity.title, context: identity.context,
+                detail: model.quotaUpdatedText(for: quota), identifier: identity.limitID,
+                refreshLabel: model.text("刷新额度", "Refresh quota"), isRefreshing: model.isCodexRateLimitFetchInFlight,
+                refresh: { model.pollCodexRateLimitsIfNeeded(force: true) })
 
             if !isSelectedWindowAvailable {
                 Divider()
-                    .overlay(Color.white.opacity(0.12))
                 unavailableQuotaRow(model.floatingSignalQuotaBadgeWindow)
             }
 
             ForEach(Array(badgeWindows.enumerated()), id: \.element) { index, badgeWindow in
                 if index > 0 || !isSelectedWindowAvailable {
                     Divider()
-                        .overlay(Color.white.opacity(0.12))
                 }
 
                 quotaRow(
@@ -2600,18 +2619,12 @@ private struct FloatingSignalQuotaPopoverView: View {
 
             if let localObservation = recentLocalObservation {
                 Divider()
-                    .overlay(Color.white.opacity(0.12))
                 localObservationRow(localObservation)
             }
+
+            Divider()
+            CodexCreditsSummaryView(model: model)
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
-        .frame(width: 286, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.black.opacity(0.92))
-        )
-        .padding(8)
     }
 
     private func quotaRow(
@@ -2619,57 +2632,17 @@ private struct FloatingSignalQuotaPopoverView: View {
         badgeWindow: FloatingSignalQuotaBadgeWindow
     ) -> some View {
         let window = model.quotaWindow(for: badgeWindow, quota: quota)
-        return Button {
-            model.setFloatingSignalQuotaBadgeWindow(badgeWindow)
-        } label: {
-            HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.quotaTitleLine(for: badgeWindow, quota: quota))
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-
-                    Text(model.quotaResetText(for: window, badgeWindow: badgeWindow))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.72))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-
-                Spacer(minLength: 8)
-
-                selectionCircle(isSelected: model.floatingSignalQuotaBadgeWindow == badgeWindow)
-            }
-            .frame(maxWidth: .infinity, minHeight: 31, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .focusable(false)
+        return FloatingUsageChoiceRow(title: model.quotaTitleLine(for: badgeWindow, quota: quota),
+            subtitle: model.quotaResetText(for: window, badgeWindow: badgeWindow),
+            isSelected: model.floatingSignalQuotaBadgeWindow == badgeWindow,
+            remainingPercent: window?.remainingPercent,
+            action: { model.setFloatingSignalQuotaBadgeWindow(badgeWindow) })
     }
 
     private func unavailableQuotaRow(_ badgeWindow: FloatingSignalQuotaBadgeWindow) -> some View {
-        HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.quotaUnavailableTitleLine(for: badgeWindow))
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.72))
-                    .lineLimit(1)
-
-                Text(model.text(
-                    "当前主额度来源没有返回这个窗口",
-                    "The primary quota source did not return this window"
-                ))
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.white.opacity(0.52))
-                .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-            selectionCircle(isSelected: true)
-        }
-        .frame(maxWidth: .infinity, minHeight: 31, alignment: .leading)
-        .accessibilityElement(children: .combine)
+        FloatingUsageChoiceRow(title: model.quotaUnavailableTitleLine(for: badgeWindow),
+            subtitle: model.text("当前主额度来源没有返回这个窗口", "The primary quota source did not return this window"),
+            isSelected: true, available: false)
     }
 
     private var recentLocalObservation: AgentQuotaStatus? {
@@ -2684,150 +2657,88 @@ private struct FloatingSignalQuotaPopoverView: View {
 
         return VStack(alignment: .leading, spacing: 2) {
             Text(model.text("本地会话观察（未合并）", "Local session observation (not merged)"))
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(.orange.opacity(0.92))
+                .font(ASB.Typeface.caption)
+                .foregroundStyle(ASBTone.caution.foreground)
                 .lineLimit(1)
 
             Text(identity.title)
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.84))
+                .font(ASB.Typeface.bodyStrong)
+                .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.tail)
 
             if let limitID = identity.limitID {
                 Text("ID · \(limitID)")
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.54))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
 
             Text(summaries)
-                .font(.system(size: 10.5, weight: .medium))
-                .foregroundStyle(.white.opacity(0.62))
+                .font(ASB.Typeface.caption)
+                .foregroundStyle(.secondary)
                 .lineLimit(2)
 
             Text(identity.context)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.white.opacity(0.48))
+                .font(ASB.Typeface.caption)
+                .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .truncationMode(.tail)
         }
         .accessibilityElement(children: .combine)
     }
 
-    private func selectionCircle(isSelected: Bool) -> some View {
-        ZStack {
-            Circle()
-                .stroke(Color.white.opacity(isSelected ? 0.95 : 0.48), lineWidth: 1.4)
-
-            if isSelected {
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: 6, height: 6)
-            }
-        }
-        .frame(width: 14, height: 14)
-        .accessibilityHidden(true)
-    }
-
 }
 
-private struct FloatingSignalTokenPopoverView: View {
+struct FloatingSignalTokenPopoverView: View {
     @ObservedObject var model: MenuBarStatusModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        FloatingUsagePanel(width: 250) {
             HStack(spacing: 8) {
-                Text(model.text("Codex · 本机", "Codex · Device"))
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(.white)
+                Text(model.floatingUsageProviderName + model.text(" · 本机", " · Device"))
+                    .font(ASB.Typeface.bodyStrong)
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
 
                 Spacer(minLength: 8)
 
-                if model.isTokenActivityLoading {
+                if model.isFloatingUsageLoading {
                     ProgressView()
                         .controlSize(.small)
                         .scaleEffect(0.58)
-                        .tint(.white.opacity(0.8))
                 }
             }
 
+            if model.isClaudeFloatingUsage, let issue = model.claudeSupport.historyIssue {
+                Text(model.localizedClaudeText(issue)).font(.caption).foregroundStyle(ASBTone.caution.foreground)
+            }
             tokenRow(.today)
 
             Divider()
-                .overlay(Color.white.opacity(0.12))
 
             tokenRow(.last30Days)
 
             CostCurrencyRateNote(store: model.costCurrency, text: model.text, compact: true)
-                .environment(\.colorScheme, .dark)
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
-        .frame(width: 250, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.black.opacity(0.92))
-        )
-        .padding(8)
         .onAppear {
-            model.refreshTokenActivityIfNeeded(force: model.tokenActivityDays.isEmpty)
+            model.refreshFloatingUsageForPanel()
         }
     }
 
     private func tokenRow(_ tokenWindow: FloatingSignalTokenBadgeWindow) -> some View {
-        let tokens = model.tokenActivityTotal(for: tokenWindow)
-        let cost = model.tokenActivityEstimatedCost(for: tokenWindow)
+        let tokens = model.floatingUsageTokens(for: tokenWindow)
 
-        return Button {
-            model.setFloatingSignalTokenBadgeWindow(tokenWindow)
-        } label: {
-            HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.tokenUsageTitleLine(for: tokenWindow, tokens: tokens))
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-
-                    Text(model.tokenUsageCostText(cost, isLoading: model.isTokenActivityLoading,
-                        partial: model.tokenActivityCostIsPartial(for: tokenWindow)))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.72))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-
-                Spacer(minLength: 8)
-
-                selectionCircle(isSelected: model.floatingSignalTokenBadgeWindow == tokenWindow)
-            }
-            .frame(maxWidth: .infinity, minHeight: 31, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .focusable(false)
-    }
-
-    private func selectionCircle(isSelected: Bool) -> some View {
-        ZStack {
-            Circle()
-                .stroke(Color.white.opacity(isSelected ? 0.95 : 0.48), lineWidth: 1.4)
-
-            if isSelected {
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: 6, height: 6)
-            }
-        }
-        .frame(width: 14, height: 14)
-        .accessibilityHidden(true)
+        return FloatingUsageChoiceRow(
+            title: tokens.map { model.tokenUsageTitleLine(for: tokenWindow, tokens: $0) } ?? (model.displayName(for: tokenWindow) + " · — tokens"),
+            subtitle: model.floatingUsageCostText(for: tokenWindow),
+            isSelected: model.floatingSignalTokenBadgeWindow == tokenWindow,
+            action: { model.setFloatingSignalTokenBadgeWindow(tokenWindow) })
     }
 }
 
-private struct FloatingSignalInfoPopoverView: View {
+struct FloatingSignalInfoPopoverView: View {
     @ObservedObject var model: MenuBarStatusModel
 
     var body: some View {
@@ -2841,17 +2752,31 @@ private struct FloatingSignalInfoPopoverView: View {
                 )
             } else {
                 ForEach(visibleSessions) { session in
-                    infoCard(
-                        title: model.activitySessionTitle(for: session),
-                        subtitle: model.activitySessionStatusSubtitle(for: session),
-                        signal: session.signal,
-                        timestamp: session.updatedAt
-                    )
+                    if let provider = SignalLightProvider.matching(session) {
+                        Button { model.selectSignalLightProvider(provider) } label: {
+                            infoCard(
+                                title: model.activitySessionTitle(for: session),
+                                subtitle: model.activitySessionStatusSubtitle(for: session),
+                                signal: session.signal,
+                                timestamp: session.updatedAt,
+                                selected: model.displaySignalLightAgentScopes.contains { $0.matches(session: session) }
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .help(model.text("显示 \(provider.rawValue) 的状态灯", "Show \(provider.rawValue) signal lights"))
+                        .accessibilityAddTraits(model.displaySignalLightAgentScopes.contains { $0.matches(session: session) } ? [.isSelected] : [])
+                    } else {
+                        infoCard(title: model.activitySessionTitle(for: session),
+                                 subtitle: model.activitySessionStatusSubtitle(for: session),
+                                 signal: session.signal, timestamp: session.updatedAt)
+                    }
                 }
             }
         }
-        .padding(8)
+        .padding(6)
         .frame(width: 250, alignment: .leading)
+        .asbPanelSurface()
+        .padding(8)
     }
 
     private var visibleSessions: [SessionStatus] {
@@ -2862,7 +2787,8 @@ private struct FloatingSignalInfoPopoverView: View {
         title: String,
         subtitle: String,
         signal: AgentSignal,
-        timestamp: Date?
+        timestamp: Date?,
+        selected: Bool = false
     ) -> some View {
         HStack(alignment: .center, spacing: 8) {
             Circle()
@@ -2871,27 +2797,33 @@ private struct FloatingSignalInfoPopoverView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .font(ASB.Typeface.bodyStrong)
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
 
                 Text(subtitleLine(subtitle: subtitle, timestamp: timestamp))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.72))
+                    .font(ASB.Typeface.caption)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
 
             Spacer(minLength: 4)
+            if selected {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Color.accentColor).font(.system(size: 13))
+                    .accessibilityHidden(true)
+            }
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.black.opacity(0.92))
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(selected ? Color.accentColor.opacity(0.14) : Color.clear)
         )
+        .contentShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private func subtitleLine(subtitle: String, timestamp: Date?) -> String {
@@ -2901,16 +2833,7 @@ private struct FloatingSignalInfoPopoverView: View {
 }
 
 private func floatingInfoColor(for signal: AgentSignal) -> Color {
-    switch signal.displayState {
-    case .ready, .active, .completed:
-        return Color(red: 0.16, green: 0.78, blue: 0.34)
-    case .needsReview:
-        return Color(red: 0.97, green: 0.72, blue: 0.16)
-    case .permission, .blocked:
-        return Color(red: 0.94, green: 0.20, blue: 0.18)
-    case .stale, .paused:
-        return .secondary
-    }
+    ASBTone.forDisplayState(signal.displayState).lamp
 }
 
 private enum FloatingSignalSoundCue {

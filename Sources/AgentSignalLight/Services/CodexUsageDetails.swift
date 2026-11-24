@@ -1,7 +1,7 @@
 import Foundation
 
-/// Detail totals cover confirmed Codex session files in the last 30 calendar days.
-/// They exclude pending live observations and other providers (including Pi).
+/// Shared presentation container for confirmed local projects/sessions. Each provider builds its own instance.
+/// The Codex builder excludes pending live observations and other providers (including Pi).
 struct CodexUsageDetails: Equatable, Sendable {
     struct Session: Identifiable, Equatable, Sendable {
         let id: String
@@ -14,6 +14,7 @@ struct CodexUsageDetails: Equatable, Sendable {
         let costUSD: Double?
         let hasUnpricedUsage: Bool
         let models: [String]
+        var cacheCreationTokens: Int = 0
     }
 
     struct Project: Identifiable, Equatable, Sendable {

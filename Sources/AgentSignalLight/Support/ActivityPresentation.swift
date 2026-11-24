@@ -170,6 +170,8 @@ enum ActivityPresentation {
             return "codex"
         case "claude", "claude-code", "claude-desktop", "claude-cli",
              "claude-terminal", "terminal-claude", "claude-ide",
+             "claude-vscode", "vscode-claude", "claude-xcode", "xcode-claude",
+             "claude-idea", "claude-intellij", "claude-jetbrains",
              "idea-claude", "intellij-claude", "jetbrains-claude":
             return "claude"
         default:

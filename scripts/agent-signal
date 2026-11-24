@@ -5,6 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PACKAGE_BIN="$ROOT_DIR/bin/agent-signal"
 RELEASE_BIN="$ROOT_DIR/dist/bin/agent-signal"
 DEBUG_BIN="$ROOT_DIR/.build/debug/agent-signal"
+# The swiftbuild build system only links the products a build asked for, and the
+# app packaging builds `agent-signal-light`. Without this fallback a fresh debug
+# CLI was ignored and hooks silently fell back to an old release binary.
+if [[ ! -x "$DEBUG_BIN" && -x "$ROOT_DIR/.build/debug/agent-signal-light" ]]; then
+  DEBUG_BIN="$ROOT_DIR/.build/debug/agent-signal-light"
+fi
 
 if [[ -x "${AGENT_SIGNAL_BIN:-}" ]]; then
   exec "$AGENT_SIGNAL_BIN" "$@"

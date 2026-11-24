@@ -4,6 +4,49 @@ import XCTest
 
 @MainActor
 final class ClaudeHistoryCancellationTests: XCTestCase {
+    func testChangingSessionIsRetriedAndThenReportedAsSyncingNotUnreadable() async throws {
+        let changing = NSError(domain: CostUsageScanner.claudeConsistencyErrorDomain, code: 3)
+        let day = CostUsageDailyReport(data: [.init(date: "2026-11-16", inputTokens: 1, outputTokens: 1,
+            totalTokens: 2, costUSD: nil, modelsUsed: [], modelBreakdowns: nil)], summary: nil)
+        for (failures, expectedCalls) in [(1, 2), (Int.max, ClaudeSupportModel.historyChangeAttempts)] {
+            let suite = "claude-history-change-\(UUID())"
+            let defaults = UserDefaults(suiteName: suite)!
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let tracker = HistoryLoadTracker()
+            let model = ClaudeSupportModel(defaults: defaults, historyLoader: { _ in
+                let (call, _) = tracker.begin(); defer { tracker.end() }
+                if call <= failures { throw changing }
+                return day
+            })
+            model.refresh(force: true)
+            for _ in 0..<300 where model.isRefreshing { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertFalse(model.isRefreshing)
+            XCTAssertEqual(tracker.callCount, expectedCalls)
+            if failures == 1 {
+                XCTAssertNil(model.historyIssue)
+                XCTAssertEqual(model.days.count, 1)
+            } else {
+                XCTAssertTrue(model.historyIssue?.contains("Syncing") == true, model.historyIssue ?? "nil")
+                XCTAssertFalse(model.historyIssue?.contains("unavailable") == true)
+            }
+        }
+    }
+
+    func testOtherHistoryErrorsAreNotRetried() async throws {
+        let suite = "claude-history-error-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let tracker = HistoryLoadTracker()
+        let model = ClaudeSupportModel(defaults: defaults, historyLoader: { _ in
+            _ = tracker.begin(); defer { tracker.end() }
+            throw CocoaError(.fileReadNoPermission)
+        })
+        model.refresh(force: true)
+        for _ in 0..<300 where model.isRefreshing { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(tracker.callCount, 1)
+        XCTAssertTrue(model.historyIssue?.contains("unavailable") == true, model.historyIssue ?? "nil")
+    }
+
     func testResetCancelsTheRunningHistoryLoader() async throws {
         let suite = "claude-history-cancellation-\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
@@ -111,6 +154,11 @@ private final class HistoryLoadTracker: @unchecked Sendable {
     func end() {
         lock.lock(); defer { lock.unlock() }
         active -= 1
+    }
+
+    var callCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return calls
     }
 
     var maximumActive: Int {

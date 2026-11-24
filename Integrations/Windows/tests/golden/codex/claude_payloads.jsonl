@@ -1,0 +1,46 @@
+{"env":{},"payload":{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"synthetic prompt"}}
+{"env":{},"payload":{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash","tool_input":{"command":"ls","error":"in input"}}}
+{"env":{},"payload":{"hook_event_name":"PostToolUseFailure","session_id":"s1","tool_name":"Bash","error":"exit 1"}}
+{"env":{},"payload":{"hook_event_name":"Stop","session_id":"s1","stop_reason":"max_tokens"}}
+{"env":{},"payload":{"hook_event_name":"Stop","session_id":"s1","stop_reason":"error_during_execution"}}
+{"env":{},"payload":{"hook_event_name":"Stop","session_id":"s1"}}
+{"env":{},"payload":{"hook_event_name":"StopFailure","session_id":"s1"}}
+{"env":{},"payload":{"hook_event_name":"Notification","session_id":"s1","message":"synthetic: needs your permission"}}
+{"env":{},"payload":{"hook_event_name":"PermissionRequest","session_id":"s1","tool_name":"Bash"}}
+{"env":{},"payload":{"hook_event_name":"SessionEnd","session_id":"s1","reason":"exit"}}
+{"env":{},"payload":{"hook_event_name":"PreToolUse","signal":"blocked","session_id":"s1"}}
+{"env":{},"payload":{"status":"failed","session_id":"s1"}}
+{"env":{},"payload":{"state":"working","session_id":"s1"}}
+{"env":{},"payload":{"status":"something errored","session_id":"s1"}}
+{"env":{},"payload":{"hook_event_name":"Stop","session_id":"s1","result":{"error":true}}}
+{"env":{},"payload":{"hook_event_name":"Stop","session_id":"s1","metadata":{"exit_status":0}}}
+{"env":{},"payload":{"event":{"name":"PreCompact"},"session_id":"s2"}}
+{"env":{},"payload":{"hook_event_name":"Stop","session":{"id":"x","session_id":"nested-1"}}}
+{"env":{"CLAUDE_SESSION_ID":" env-session "},"payload":{"hook_event_name":"Stop"}}
+{"env":{},"payload":{"hook_event_name":"Stop","transcript_path":"/Users/synthetic/.claude/projects/p/abc.jsonl"}}
+{"env":{},"payload":{"hook_event_name":"Stop","cwd":" /tmp/proj "}}
+{"env":{},"payload":{"hook_event_name":"Stop"}}
+{"env":{},"payload":{"hook_event_name":"Stop","session_id":42}}
+{"env":{},"payload":{"hook_event_name":"Stop","session_id":1}}
+{"env":{},"payload":{"hook_event_name":"Stop","session_id":true,"signal":true}}
+{"env":{},"payload":{"hook_event_name":"pre-tool-use","session_id":"s3","tool_name":" Read "}}
+{"env":{},"event":"Stop","payload":{"hook_event_name":"PreToolUse","session_id":"s3","tool_name":"Read"}}
+{"env":{"CLAUDE_CODE_ENTRYPOINT":"cli"},"payload":{"hook_event_name":"Stop","session_id":"s4"}}
+{"env":{"CLAUDE_CODE_ENTRYPOINT":"claude-desktop"},"payload":{"hook_event_name":"Stop","session_id":"s4"}}
+{"env":{"CLAUDE_CODE_ENTRYPOINT":"claude-vscode"},"payload":{"hook_event_name":"Stop","session_id":"s4"}}
+{"env":{"CLAUDE_CODE_ENTRYPOINT":"JetBrains-plugin"},"payload":{"hook_event_name":"Stop","session_id":"s4"}}
+{"env":{"CLAUDE_CODE_ENTRYPOINT":"sdk-ts"},"payload":{"hook_event_name":"Stop","session_id":"s4"}}
+{"env":{"__CFBundleIdentifier":"com.anthropic.claudefordesktop"},"payload":{"hook_event_name":"Stop","session_id":"s4"}}
+{"env":{},"payload":{"hook_event_name":"PostToolUse","session_id":"s5","name":"Edit"}}
+{"env":{},"payload":{"hook_event_name":"Unknown Event","session_id":"s5"}}
+{"env":{},"payload":{"hook_event_name":"  Stop  ","session_id":"s5"}}
+{"env":{},"payload":{"hook_event_name":"Stop","session_id":"s5","error":"none"}}
+{"env":{},"payload":{"hook_event_name":"SubagentStop","session_id":"s5","error_message":"boom"}}
+{"env":{},"payload":{"hook_event_name":"TaskCreated","session_id":"s6"}}
+{"env":{},"payload":{"hook_event_name":"TeammateIdle","session_id":"s6"}}
+{"env":{},"payload":{"hook_event_name":"PostToolBatch","session_id":"s6"}}
+{"env":{},"payload":{"hook_event_name":"ElicitationResult","session_id":"s6"}}
+{"env":{},"payload":{"hook_event_name":"PermissionDenied","session_id":"s6","tool_name":"Bash"}}
+{"env":{},"payload":{"Hook-Event-Name":"SubagentStart","Session_ID":"s7"}}
+{"env":{},"payload":{"hook_event_name":"Stop","session_id":"s8","details":[{"failure_reason":"x"}]}}
+{"env":{},"payload":{"hook_event_name":"Stop","session_id":"s9","response":{"failed":"no"}}}

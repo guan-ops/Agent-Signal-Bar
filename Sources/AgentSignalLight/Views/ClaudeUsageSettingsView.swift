@@ -1,96 +1,49 @@
 import SwiftUI
-import Charts
 import AppKit
 
+/// Claude data/actions adapted to the same settings components used by Codex.
 struct ClaudeUsageSettingsView: View {
     @ObservedObject var model: MenuBarStatusModel
     @ObservedObject var support: ClaudeSupportModel
+    enum Section { case account, quota, balances, history }
+    var section: Section? = nil
+    var accountDetailsExpanded: Binding<Bool>? = nil
     let onConnections: () -> Void
     @State private var showSettings = false
+    @State private var showDays = false
+
+    private var detailsBinding: Binding<Bool> { accountDetailsExpanded ?? $showSettings }
+    private var busy: Bool { support.accountActionInProgress }
+    private var typography: UsageSettingsTypography { .init(language: model.appLanguage) }
+    private var titleFont: Font { typography.title }
+    private var bodyFont: Font { typography.body }
+    private var detailFont: Font { typography.detail }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(model.text("Claude 账号", "Claude account")).font(.headline)
-                        Spacer()
-                        if support.isRefreshing { ProgressView().controlSize(.small) }
-                        Button(model.text("刷新", "Refresh")) { support.refresh(force: true) }
-                            .disabled(support.isRefreshing || support.isSwitching)
-                    }
-                    Text(support.snapshot?.email ?? model.text("尚未读取登录账号", "Account not read yet"))
-                        .fontWeight(.medium).textSelection(.enabled)
-                    if let snapshot = support.snapshot {
-                        Text([snapshot.plan, snapshot.organization].compactMap { $0 }.joined(separator: " · "))
-                            .foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        Button(model.text("登录 Claude Code", "Sign in to Claude Code")) { support.login() }.disabled(support.isLoggingIn || support.isInstallingCLI)
-                        if support.isInstallingCLI {
-                            ProgressView().controlSize(.small)
-                            Text(model.text("正在安装…", "Installing…"))
-                        } else if support.isLoggingIn {
-                            ProgressView().controlSize(.small)
-                            Button(model.text("取消登录", "Cancel sign-in")) { support.cancelLogin() }
-                        } else if !support.hasClaudeCLI {
-                            Button(model.text("一键安装并登录", "Install and sign in")) { support.installAndLogin() }
-                        }
-                    }.disabled(support.isSwitching)
-                    Text(model.text("通过 Claude Code 自动跳转浏览器登录，完成后自动读取账号与配额。一键安装将运行 Anthropic 官方安装器，安装到当前用户目录，无需管理员密码。", "Claude Code opens browser sign-in, then account and usage refresh automatically. One-click installation runs Anthropic’s official installer in your user directory without an administrator password.")).foregroundStyle(.secondary)
-                    Text(model.text("个人订阅登录需要 Claude Pro 或 Max；Free 账号无法完成此授权。", "Personal subscription sign-in requires Claude Pro or Max; Free accounts cannot complete this authorization.")).foregroundStyle(.secondary)
-                    if !support.credentialConsent {
-                        Text(model.text("首次登录完成后，macOS 可能请求允许读取 Claude Code 登录信息。", "After first sign-in, macOS may ask for permission to read Claude Code credentials."))
-                            .foregroundStyle(.secondary)
-                    }
-                    DisclosureGroup(model.text("接入设置", "Connection settings"), isExpanded: $showSettings) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Button(model.text("重新读取现有登录", "Read existing login again")) { support.allowCredentialRead() }
-                            if support.credentialConsent {
-                                Button(model.text("停止读取登录信息", "Stop reading credentials")) { support.stopCredentialRead() }
-                            }
-                            executableRow("Claude CLI", path: support.claudePath) { support.claudePath = $0 }
-                            Toggle(model.text("读取 claude-swap 多账号", "Read accounts from claude-swap"), isOn: $support.swapEnabled)
-                            if support.swapEnabled {
-                                executableRow("claude-swap", path: support.swapPath) { support.swapPath = $0 }
-                                Text(model.text("在 cswap 中保存或移除账号；此处读取账号列表，点击切换后才会更改登录账号。", "Save or remove accounts in cswap. This list changes the signed-in account only when you click Switch."))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }.padding(.top, 6).disabled(support.isSwitching || support.isLoggingIn || support.isInstallingCLI)
-                    }
-                    .disclosureGroupStyle(UsageDetailsDisclosureStyle(
-                        expandedText: model.text("已展开", "Expanded"),
-                        collapsedText: model.text("已收起", "Collapsed")))
-                    if let message = support.loginMessage { Text(localized(message)).foregroundStyle(.secondary) }
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
-            }
-            if support.swapEnabled { accounts }
-            quota
-            history
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(model.text("Claude 状态灯", "Claude signal light")).font(.headline)
-                        Spacer()
-                        Button(model.text("连接设置", "Connections"), action: onConnections)
-                    }
-                    Toggle(model.text("状态灯显示 Claude Code", "Include Claude Code in signal lights"), isOn: Binding(
-                        get: { model.signalLightAgentScopes.contains(.claudeCode) },
-                        set: { enabled in
-                            var scopes = model.signalLightAgentScopes
-                            if enabled { scopes.insert(.claudeCode) } else { scopes.remove(.claudeCode) }
-                            if !scopes.isEmpty { model.setSignalLightAgentScopes(scopes) }
-                        }))
-                    Toggle(model.text("监控 Claude Desktop", "Monitor Claude Desktop"), isOn: Binding(
-                        get: { model.isClaudeDesktopMonitoringEnabled }, set: { model.setClaudeDesktopMonitoringEnabled($0) }))
-                    Text(model.text("Claude Code Hook 提供工作、等待授权、完成和阻塞状态。桌面进程监控只表示应用活动。", "Claude Code hooks report working, permission, done, and blocked states. Desktop process monitoring reports app activity only."))
-                        .foregroundStyle(.secondary)
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
+        VStack(alignment: .leading, spacing: 8) {
+            if let section {
+                switch section {
+                case .account: accountCard
+                case .quota: quotaCard
+                case .balances: balancesCard
+                case .history: historyCard
+                }
+            } else {
+                accountCard
+                quotaCard
+                balancesCard
+                historyCard
+                CodexUsageDetailsView(details: support.historyDetails, isLoading: support.isHistoryScanning,
+                                  text: model.text, tokens: model.compactTokenCountText,
+                                  formatCost: { model.estimatedCostText($0, partial: $1) }, provider: .claude)
             }
         }
-        .font(.caption)
+        .font(bodyFont)
         .controlSize(.small)
+        .disclosureGroupStyle(UsageDetailsDisclosureStyle(
+            expandedText: model.text("已展开", "Expanded"), collapsedText: model.text("已收起", "Collapsed")))
         .task {
+            guard section == nil else { return }
             support.refresh()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
@@ -99,148 +52,238 @@ struct ClaudeUsageSettingsView: View {
         }
     }
 
-    private func localized(_ text: String) -> String {
-        let parts = text.components(separatedBy: " / ")
-        return parts.count == 2 ? model.text(parts[0], parts[1]) : text
+    var accountCard: some View {
+        UsageAccountCard(model: model,
+            title: (support.hidePersonalInfo ? model.text("Claude 账号", "Claude account") : support.snapshot?.email) ?? model.text("未找到 Claude 登录", "No Claude login found"),
+            detail: support.snapshot?.plan?.capitalized, isActive: support.snapshot != nil,
+            badge: support.snapshot == nil ? nil : model.text("默认", "Default"),
+            isRefreshing: support.isRefreshing, isBusy: busy,
+            refreshHelp: model.text("刷新 Claude 账户、会话和 Token 使用", "Refresh Claude account, session, and token usage"),
+            refresh: { support.refresh(force: true) }, detailsExpanded: detailsBinding) {
+                UsageActionButton(model: model,
+                    title: support.usageSource == .web ? model.text("登录账号", "Sign in") : support.hasClaudeCLI ? model.text("登录账号", "Sign in") : model.text("安装并登录", "Install & sign in"),
+                    systemImage: "person.crop.circle.badge.plus", disabled: busy, action: signIn)
+                Menu {
+                    if support.accounts.isEmpty { Text(model.text("暂无保存账户", "No saved accounts")) }
+                    ForEach(support.accounts, id: \.number) { account in
+                        Button { support.switchAccount(account.number) } label: {
+                            Label(support.accountLabel(account), systemImage: account.isActive ? "checkmark.circle.fill" : "person")
+                        }.disabled(!support.canSwitchAccount(account))
+                    }
+                } label: { UsageControlSurface(model: model, title: model.text("切换", "Switch"), width: 65) }
+                .menuStyle(.borderlessButton).disabled(support.accounts.isEmpty || busy)
+                .help(model.text("切换保存的 Claude 账户", "Switch saved Claude account"))
+                Menu {
+                    Button(model.text("重新认证", "Reauthenticate")) { signIn() }
+                    Button(model.text("重新读取现有登录", "Read existing login again")) { support.allowCredentialRead() }
+                    if support.credentialConsent {
+                        Button(model.text("停止读取 Claude Code 登录", "Stop reading Claude Code credentials")) { support.stopCredentialRead() }
+                    }
+                    Divider()
+                    Button(model.text("多账号设置…", "Account settings…")) { detailsBinding.wrappedValue = true }
+                    Button(model.text("连接设置…", "Connections…"), action: onConnections)
+                } label: { UsageControlSurface(model: model, systemImage: "ellipsis") }
+                .menuStyle(.borderlessButton).disabled(busy).help(model.text("更多账户操作", "More account actions"))
+                if support.isLoggingIn {
+                    Button(model.text("取消登录", "Cancel sign-in")) { support.cancelLogin() }
+                }
+            } details: {
+                connectionDetails
+                if support.swapEnabled {
+                    if support.accounts.isEmpty {
+                        Text(model.text("暂无保存账号，请在 cswap 中添加后刷新。", "No saved accounts. Add one in cswap, then refresh."))
+                            .font(detailFont).foregroundStyle(.secondary)
+                    } else {
+                        Divider().opacity(0.35)
+                        ClaudeAccountsOverviewView(model: model, support: support)
+                    }
+                }
+            } messages: {
+                if let message = support.loginMessage { issue(localized(message), color: .secondary) }
+                if let message = support.switchIssue ?? support.swapIssue { issue(localized(message)) }
+                if support.credentialReadBlocked {
+                    ClaudeCredentialChoiceButtons(model: model, support: support)
+                }
+            }
     }
 
-    private var quota: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(model.text("订阅配额", "Subscription usage")).font(.headline)
-                    Spacer()
-                    if let date = support.snapshot?.updatedAt { Text(date, style: .time).foregroundStyle(.secondary) }
-                }
-                if let issue = support.quotaIssue {
-                    Text(localized(issue)).foregroundStyle(.orange)
-                    if support.snapshot != nil { Text(model.text("以下为上次读取的账号结果，尚未刷新。", "Below is the previously read account snapshot; it has not refreshed.")).foregroundStyle(.secondary) }
-                }
-                if let snapshot = support.snapshot {
-                    Text(snapshot.source).foregroundStyle(.secondary)
-                    ForEach(snapshot.windows) { window in windowRow(window) }
-                    if let used = snapshot.extraUsed {
-                        HStack {
-                            Text(model.text("额外用量", "Extra usage"))
-                            Spacer()
-                            Text(used, format: .currency(code: snapshot.extraCurrency))
-                            if let limit = snapshot.extraLimit { Text("/ " + limit.formatted(.currency(code: snapshot.extraCurrency))) }
-                        }
-                    }
-                } else {
-                    Text(model.text("暂无已验证配额。登录并读取账号后刷新。", "No verified quota. Sign in and read the account, then refresh."))
-                        .foregroundStyle(.secondary)
-                }
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
+    @ViewBuilder var balancesCard: some View {
+        if let snapshot = support.snapshot,
+           snapshot.extraUsed != nil || snapshot.extraLimit != nil || snapshot.prepaidBalance != nil || snapshot.cloudCredits != nil || snapshot.resetInventory != nil || snapshot.subscription != nil {
+            card { ClaudeEntitlementsView(model: model, support: support) }
         }
     }
 
-    private func windowRow(_ window: ClaudeQuotaWindow) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+    private var connectionDetails: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ClaudeSourceSettingsView(model: model, support: support)
+            detailRow(model.text("CLI", "CLI"), support.hasClaudeCLI ? model.text("已检测到", "Detected") : model.text("尚未安装", "Not installed"))
+            if !support.hidePersonalInfo, let organization = support.snapshot?.organization { detailRow(model.text("组织", "Organization"), organization) }
+            Text(model.text("通过 Claude Code 在浏览器中授权，完成后自动读取账号与配额。个人订阅需要 Pro 或 Max。",
+                            "Authorize Claude Code in your browser; account and quota refresh after sign-in. Personal subscriptions require Pro or Max."))
+                .font(detailFont).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if !support.hasClaudeCLI {
+                Text(model.text("未找到 Claude Code。请先自行安装，或在下方选择已安装的可执行文件：", "Claude Code was not found. Install it yourself, or choose the installed executable below:"))
+                    .font(detailFont).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(ClaudeSupportModel.installCommand).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+            }
+            // Without a snapshot the Session card already offers this as its empty-state action.
+            if support.snapshot != nil {
+                Button(model.text("重新读取现有登录", "Read existing login again")) { support.allowCredentialRead() }
+            }
+            executableRow("Claude CLI", path: support.claudePath) { support.claudePath = $0 }
+            Divider().opacity(0.35)
+            Toggle(model.text("读取 claude-swap 多账号", "Read accounts from claude-swap"), isOn: $support.swapEnabled)
+            if support.swapEnabled {
+                executableRow("claude-swap", path: support.swapPath) { support.swapPath = $0 }
+                Text(model.text("在 cswap 中保存或移除账号；此处点击“切换”后才更改登录账号。", "Save or remove accounts in cswap; the signed-in account changes only when you click Switch here."))
+                    .font(detailFont).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Divider().opacity(0.35)
+            Toggle(model.text("状态灯显示 Claude Code", "Include Claude Code in signal lights"), isOn: Binding(
+                get: { model.signalLightAgentScopes.contains(.claudeCode) },
+                set: { enabled in
+                    var scopes = model.signalLightAgentScopes
+                    if enabled { scopes.insert(.claudeCode) } else { scopes.remove(.claudeCode) }
+                    if !scopes.isEmpty { model.setSignalLightAgentScopes(scopes) }
+                }))
+            Toggle(model.text("监控 Claude Desktop", "Monitor Claude Desktop"), isOn: Binding(
+                get: { model.isClaudeDesktopMonitoringEnabled }, set: { model.setClaudeDesktopMonitoringEnabled($0) }))
+            Button(model.text("连接与 Hook 设置…", "Connections & hook settings…"), action: onConnections)
+            Text(model.text("Claude Code Hook 提供工作、等待授权、完成和阻塞状态；普通桌面聊天只显示应用活动。",
+                            "Claude Code hooks report working, permission, done, and blocked states; ordinary desktop chat reports app activity."))
+                .font(detailFont).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }.disabled(busy)
+    }
+
+    var quotaCard: some View {
+        card {
             HStack {
-                Text(localized(window.title))
+                Text(model.text("会话", "Session")).font(titleFont)
                 Spacer()
-                Text(model.text("已用", "Used") + " " + window.usedPercent.formatted(.number.precision(.fractionLength(0...1))) + "%")
-            }
-            ProgressView(value: window.usedPercent, total: 100)
-                .tint(window.usedPercent >= 90 ? .orange : .accentColor)
-            if let reset = window.resetsAt {
-                Text(model.text("重置时间：", "Resets: ") + reset.formatted(date: .abbreviated, time: .shortened))
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var accounts: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(model.text("已保存账号", "Saved accounts")).font(.headline)
-                if support.isSwitching { Label(model.text("正在切换账号…", "Switching account…"), systemImage: "arrow.triangle.2.circlepath") }
-                if let issue = support.switchIssue { Text(localized(issue)).foregroundStyle(.orange) }
-                if let issue = support.swapIssue { Text(localized(issue)).foregroundStyle(.orange) }
-                if support.accounts.isEmpty && !support.isSwitching {
-                    Text(model.text("请配置已安装的 claude-swap 并刷新。", "Configure installed claude-swap and refresh.")).foregroundStyle(.secondary)
+                if let date = support.snapshot?.updatedAt {
+                    Text(model.text("更新 ", "Updated ") + date.formatted(date: .omitted, time: .shortened))
+                        .font(detailFont).foregroundStyle(.tertiary)
                 }
-                ForEach(support.accounts, id: \.number) { account in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text(account.alias ?? "\(account.email) · \(account.organizationName.isEmpty ? "Account \(account.number)" : account.organizationName)")
-                                .lineLimit(2)
-                            Spacer()
-                            if account.isActive { Text(model.text("当前", "Active")).foregroundStyle(.secondary) }
-                            else {
-                                Button(model.text("切换", "Switch")) { support.switchAccount(account.number) }
-                                    .disabled(account.usageStatus != .ok || support.isSwitching || support.swapIssue != nil)
-                            }
-                        }
-                        if let window = account.fiveHour { Text("5h · " + window.usedPercent.formatted() + "%") }
-                        if let window = account.sevenDay { Text("7d · " + window.usedPercent.formatted() + "%") }
-                        ForEach(Array(account.scoped.enumerated()), id: \.offset) { _, scoped in
-                            Text(scoped.name + " · " + scoped.usedPercent.formatted() + "%")
-                        }
-                        if account.usageStatus != .ok { Text(model.text("需要检查该账号登录状态", "Check this account's sign-in status")).foregroundStyle(.orange) }
+            }
+            if let message = support.quotaIssue { issue(localized(message)) }
+            if let snapshot = support.snapshot {
+                Text(model.text("Claude 配额", "Claude quota")).fontWeight(.semibold)
+                Text([support.hidePersonalInfo ? nil : snapshot.email, snapshot.source].compactMap { $0 }.joined(separator: " · "))
+                    .font(detailFont).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                if support.quotaIssue != nil {
+                    issue(model.text("上次读取结果，尚未刷新。", "Previous snapshot; not refreshed yet."))
+                }
+                // Only show returned windows; an absent window is never zero usage.
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)], spacing: 8) {
+                    ForEach(snapshot.windows) { window in
+                        UsageQuotaWindowTile(language: model.appLanguage,
+                            title: localized(window.title) + model.text(" · 剩余 ", " · Left ")
+                                + (100 - window.usedPercent).formatted(.number.precision(.fractionLength(0...1))) + "%",
+                            reset: window.resetsAt.map { model.text("重置 ", "Resets ") + model.localizedDateTimeString(for: $0) }
+                                ?? window.resetDescription ?? model.text("重置时间未提供", "Reset time unavailable"),
+                            remainingPercent: 100 - window.usedPercent)
                     }
                 }
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
+            } else {
+                Text(model.text("暂无已验证配额", "No verified quota")).fontWeight(.semibold)
+                Text(model.text("登录或重新读取现有 Claude Code 登录后显示。", "Sign in or read your existing Claude Code login to show quota."))
+                    .font(detailFont).foregroundStyle(.secondary)
+                Button(model.text("重新读取现有登录", "Read existing login again")) { support.allowCredentialRead() }
+                    .disabled(busy || support.isRefreshing)
+            }
+            DisclosureGroup(model.text("额度历史与提醒", "Quota history & notifications")) {
+                ClaudeQuotaHistoryView(model: model, support: support).padding(.top, 8)
+            }.font(detailFont)
         }
     }
 
-    private var history: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(model.text("本机 Claude Code · 30 天", "Local Claude Code · 30 days")).font(.headline)
-                Text(model.text("本机会话汇总，不归属于当前所选账号；费用为估算值。", "Local session totals, not attributed to the selected account. Costs are estimates."))
-                    .foregroundStyle(.secondary)
-                if support.isHistoryScanning {
+    var historyCard: some View {
+        let summary = support.historySummary()
+        return card {
+            HStack(spacing: 8) {
+                Text(model.text("本机 Token 使用", "Local Token Usage")).font(titleFont)
+                Image(systemName: "info.circle").foregroundStyle(.secondary)
+                    .help(model.text("汇总本机 Claude Code 会话日志，包含缓存 Token；切换账号不影响统计范围。费用为估算，并非订阅账单。",
+                                     "Local Claude Code session logs including cached tokens, across accounts. Costs are estimates, not subscription charges."))
+                Spacer()
+            }
+            if support.isHistoryScanning {
+                Text(model.text("正在扫描本机会话并估算 Token…", "Scanning local sessions and estimating tokens…"))
+                    .font(detailFont).foregroundStyle(.secondary)
+                ProgressView().progressViewStyle(.linear)
+                    .accessibilityLabel(model.text("本地 Token 估算进度", "Local token estimation progress"))
+            }
+            if let message = support.historyIssue { issue(localized(message)) }
+            if summary.month.incompleteRequests > 0 {
+                issue(model.text("有 \(summary.month.incompleteRequests) 个请求用量不完整；仅汇总已确认部分。", "\(summary.month.incompleteRequests) requests have incomplete usage; totals include confirmed records only."))
+            }
+            if summary.month.hasUnpricedUsage && summary.entries.contains(where: ClaudeHistorySummary.hasUnpricedUsage) {
+                issue(model.text("部分用量或费用未知；≥ 表示已确认的费用小计。", "Some usage or costs are unknown; ≥ marks the confirmed cost subtotal."))
+            }
+            UsageTokenDashboard(language: model.appLanguage,
+                todayCost: model.estimatedCostText(summary.today.costUSD, partial: summary.today.hasUnpricedUsage),
+                monthCost: model.estimatedCostText(summary.month.costUSD, partial: summary.month.hasUnpricedUsage),
+                todayTokens: tokenText(summary.today.tokens), monthTokens: tokenText(summary.month.tokens)) {
+                UsageTokenHistoryChart(model: model, days: summary.chartDays, isClaude: true,
+                    unpricedDays: Set(summary.entries.filter(ClaudeHistorySummary.hasUnpricedUsage).map(\.date)),
+                    incompleteDays: Set(summary.entries.filter { ($0.incompleteRequestCount ?? 0) > 0 }.map(\.date)))
+            }
+            if support.historyUpdatedAt != nil && summary.entries.isEmpty {
+                Text(model.text("近 30 天未发现本地 Claude Code 用量记录。", "No local Claude Code usage records in the last 30 days."))
+                    .font(detailFont).foregroundStyle(.secondary)
+            }
+            DisclosureGroup(model.text("每日与模型明细", "Daily & model details"), isExpanded: $showDays) {
+                ForEach(summary.entries.reversed(), id: \.date) { day in
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(model.text("正在扫描本机会话并估算 Token…", "Scanning local sessions and estimating tokens…"))
-                            .foregroundStyle(.secondary)
-                        ProgressView()
-                            .progressViewStyle(.linear)
-                            .tint(.orange)
-                            .accessibilityLabel(model.text("本地 Token 估算进度", "Local token estimation progress"))
-                        if support.historyUpdatedAt != nil {
-                            Text(model.text("正在更新，以下为上次扫描结果。", "Updating; previous scan results are shown below."))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                if let issue = support.historyIssue { Text(localized(issue)).foregroundStyle(.orange) }
-                if support.historyUpdatedAt == nil {
-                    if !support.isHistoryScanning {
-                        Text(model.text("尚未读取历史", "History not read yet")).foregroundStyle(.secondary)
-                    }
-                } else if support.days.isEmpty {
-                    Text(model.text("未发现本地 Claude Code 用量记录", "No local Claude Code usage records found")).foregroundStyle(.secondary)
-                } else {
-                    HStack {
-                        Text("Token · " + support.days.compactMap(\.totalTokens).reduce(0, +).formatted())
-                        Spacer()
-                        let costs = support.days.compactMap(\.costUSD)
-                        if !costs.isEmpty { Text(model.estimatedCostText(costs.reduce(0, +), partial: support.days.contains { $0.hasUnpricedUsage })) }
-                    }
-                    Chart(support.days, id: \.date) { day in
-                        BarMark(x: .value("Day", day.date), y: .value("Tokens", day.totalTokens ?? 0))
-                            .foregroundStyle(Color.orange.gradient)
-                    }.frame(height: 100).chartXAxis(.hidden)
-                    ForEach(support.days.suffix(7).reversed(), id: \.date) { day in
                         HStack {
-                            Text(day.date)
+                            Text(day.date).fontWeight(.semibold)
                             Spacer()
-                            Text((day.totalTokens ?? 0).formatted() + " Token")
-                            if let cost = day.costUSD { Text(model.estimatedCostText(cost, partial: day.hasUnpricedUsage)) }
+                            Text(tokenText(day.totalTokens))
+                            Text(model.estimatedCostText(day.costUSD, partial: ClaudeHistorySummary.hasUnpricedUsage(day)))
                         }
-                    }
+                        if let count = day.incompleteRequestCount, count > 0 { Text(model.text("用量不完整：\(count) 个请求", "Incomplete usage: \(count) requests")).foregroundStyle(.orange).font(detailFont) }
+                        ForEach(day.modelBreakdowns ?? [], id: \.modelName) { breakdown in
+                            HStack {
+                                Text(breakdown.modelName).lineLimit(1).truncationMode(.middle)
+                                if (breakdown.incompleteRequestCount ?? 0) > 0 { Image(systemName: "exclamationmark.circle").help(model.text("包含用量不完整的请求", "Contains incomplete requests")) }
+                                Spacer()
+                                Text(tokenText(breakdown.totalTokens))
+                                Text(model.estimatedCostText(breakdown.costUSD, partial: breakdown.hasUnpricedUsage || (breakdown.incompleteRequestCount ?? 0) > 0))
+                            }.font(detailFont).foregroundStyle(.secondary)
+                        }
+                    }.padding(.vertical, 5)
                 }
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
+            }
         }
     }
 
+    private func card<Content: View>(@ViewBuilder content: @escaping () -> Content) -> some View {
+        UsageSettingsCard(content: content)
+    }
+    private func signIn() { if support.usageSource == .web { detailsBinding.wrappedValue = true } else { support.login() } }
+    private func localized(_ value: String) -> String {
+        let parts = value.components(separatedBy: " / ")
+        return parts.count == 2 ? model.text(parts[0], parts[1]) : value
+    }
+    private func tokenText(_ total: Int?) -> String {
+        total.map { model.compactTokenCountText($0) + " token" } ?? model.text("暂无数据", "Unavailable")
+    }
+    private func issue(_ value: String, color: Color = .orange) -> some View {
+        Text(value).font(detailFont).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
+    }
+    private func detailRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(title).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).textSelection(.enabled).multilineTextAlignment(.trailing)
+        }.font(detailFont)
+    }
     private func executableRow(_ title: String, path: String, selected: @escaping (String) -> Void) -> some View {
         HStack {
             Text(title)
             Text(path.isEmpty ? model.text("自动检测", "Auto detect") : URL(fileURLWithPath: path).lastPathComponent)
-                .foregroundStyle(.secondary).lineLimit(1)
+                .foregroundStyle(.secondary).lineLimit(1).help(path)
             Spacer()
             Button(model.text("选择…", "Choose…")) {
                 let panel = NSOpenPanel()

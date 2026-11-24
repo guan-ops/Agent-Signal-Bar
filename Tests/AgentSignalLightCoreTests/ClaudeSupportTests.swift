@@ -282,20 +282,30 @@ final class ClaudeSupportTests: XCTestCase {
             }
             menuWindow.orderOut(nil)
         }
-        let host = NSHostingView(rootView: ScrollView {
-            ClaudeUsageSettingsView(model: model, support: support, onConnections: {}).padding(16)
-        }.frame(width: 540, height: 820))
-        host.frame = NSRect(x: 0, y: 0, width: 540, height: 820)
-        let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
-        window.contentView = host
-        window.appearance = NSAppearance(named: .aqua)
-        window.orderFront(nil)
-        try await Task.sleep(for: .milliseconds(500))
-        host.layoutSubtreeIfNeeded()
-        host.displayIfNeeded()
-        XCTAssertGreaterThan(host.fittingSize.width, 0)
-        XCTAssertGreaterThan(host.fittingSize.height, 0)
-        window.orderOut(nil)
+        for scheme in [ColorScheme.light, .dark] {
+            let host = NSHostingView(rootView: ScrollView {
+                ClaudeUsageSettingsView(model: model, support: support, onConnections: {}).padding(16)
+            }.frame(width: 540, height: 820).preferredColorScheme(scheme))
+            host.frame = NSRect(x: 0, y: 0, width: 540, height: 820)
+            let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+            window.contentView = host
+            window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+            host.wantsLayer = true
+            host.layer?.backgroundColor = NSColor(white: scheme == .dark ? 0.16 : 0.96, alpha: 1).cgColor
+            window.orderFront(nil)
+            try await Task.sleep(for: .milliseconds(500))
+            host.layoutSubtreeIfNeeded()
+            host.displayIfNeeded()
+            XCTAssertGreaterThan(host.fittingSize.width, 0)
+            XCTAssertGreaterThan(host.fittingSize.height, 0)
+            if let directory = ProcessInfo.processInfo.environment["ASB_CLAUDE_LAYOUT_PREVIEW"],
+               let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])?.write(
+                    to: URL(fileURLWithPath: directory).appendingPathComponent("claude-settings-\(scheme == .dark ? "dark" : "light").png"))
+            }
+            window.orderOut(nil)
+        }
     }
 
     @MainActor
@@ -317,9 +327,8 @@ final class ClaudeSupportTests: XCTestCase {
         for _ in 0..<100 where model.isRefreshing { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertNil(model.snapshot)
         XCTAssertTrue(model.quotaIssue?.contains("Account changed") == true)
-        // Identity mismatch returns before local history; no unrelated source is fetched as a fallback.
-        finished.isInverted = true
-        await fulfillment(of: [finished], timeout: 0.05)
+        // Local device history is independent of subscription ownership and still completes.
+        await fulfillment(of: [finished], timeout: 1)
     }
 }
 

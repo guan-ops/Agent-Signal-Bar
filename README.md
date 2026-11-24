@@ -153,6 +153,7 @@ Agent Signal Bar is local-first, but it is not described as fully offline:
 - Agent activity is detected from known local Codex logs or local hook, CLI, and JSON state.
 - State snapshots, hook events, cost-scan caches, and exported diagnostics remain on your Mac unless you choose to share them.
 - Optional Codex account and quota features connect directly to OpenAI and can use local Codex credentials or optional `chatgpt.com` browser-session data. Saved account credentials and manually entered cookies use macOS Keychain storage.
+- Optional Claude quota sources use Claude Code OAuth/CLI or user-enabled `claude.ai` Web access. Browser import is explicit, Web sessions stay in macOS Keychain, and quota history stays on this Mac. See [Claude support](docs/CLAUDE_SUPPORT.md).
 - Service-status and update checks contact OpenAI Status and GitHub/Sparkle respectively.
 - Selecting a non-USD cost currency fetches public daily rates from `open.er-api.com`. This request contains no account credentials or usage records.
 - No Agent Signal Bar backend account or project-hosted cloud service is required.

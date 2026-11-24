@@ -56,6 +56,29 @@ public enum SignalLampAnimation {
         }
     }
 
+    /// The color a single-lamp icon shows: the brightest lit lamp, or nil when all are dark.
+    /// Equal brightness (all lamps on) prefers green, then yellow, then red.
+    public static func dominantColor(
+        signal: AgentSignal,
+        tick: Int,
+        allLightsOn: Bool = false,
+        customization: SignalEffectCustomization = .default
+    ) -> SignalLampColor? {
+        func preference(_ color: SignalLampColor) -> Int {
+            switch color {
+            case .green: return 0
+            case .yellow: return 1
+            case .red: return 2
+            }
+        }
+        return SignalLampColor.allCases
+            .map { ($0, intensity($0, signal: signal, tick: tick, allLightsOn: allLightsOn, customization: customization)) }
+            .filter { $0.1 > 0 }
+            .max { lhs, rhs in
+                lhs.1 != rhs.1 ? lhs.1 < rhs.1 : preference(lhs.0) > preference(rhs.0)
+            }?.0
+    }
+
     public static func scale(
         _ color: SignalLampColor,
         signal: AgentSignal,

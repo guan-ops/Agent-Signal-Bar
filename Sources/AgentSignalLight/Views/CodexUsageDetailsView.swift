@@ -6,6 +6,7 @@ struct CodexUsageDetailsView: View {
     let text: (String, String) -> String
     let tokens: (Int) -> String
     let formatCost: (Double?, Bool) -> String
+    var provider: UsageMenuNavigation.Provider = .codex
     @State private var query = ""
     @State private var selectedProject: String?
     @State private var projectsExpanded = false
@@ -34,15 +35,15 @@ struct CodexUsageDetailsView: View {
                     Text(date, style: .time).foregroundStyle(.secondary)
                 }
             }
-            Text(text("本机 Codex 会话日志，按项目路径汇总；不归属于当前所选账号。仅包含已完成扫描的用量。",
-                      "Local Codex session logs grouped by project path, across accounts. Only confirmed scanned usage is included."))
+            Text(text("本机 \(provider.rawValue) 会话日志，按项目路径汇总；不归属于当前所选账号。仅包含已完成扫描的用量。",
+                      "Local \(provider.rawValue) session logs grouped by project path, across accounts. Only confirmed scanned usage is included."))
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if details == nil {
                 Text(isLoading ? text("正在整理项目与会话…", "Loading projects and sessions…")
                      : text("完成一次本地扫描后显示明细。", "Details appear after a local scan completes."))
                     .foregroundStyle(.secondary)
             } else if details?.sessions.isEmpty == true {
-                Text(text("近 30 天没有可统计的 Codex 会话。", "No Codex session usage in the last 30 days."))
+                Text(text("近 30 天没有可统计的 \(provider.rawValue) 会话。", "No \(provider.rawValue) session usage in the last 30 days."))
                     .foregroundStyle(.secondary)
             } else {
                 TextField(text("搜索项目、路径、会话 ID 或模型", "Search project, path, session ID or model"), text: $query)
@@ -58,17 +59,20 @@ struct CodexUsageDetailsView: View {
                 } label: {
                     sectionLabel(text("会话", "Sessions"), count: sessions.count)
                 }
-                Text(text("缓存 Token 已包含在输入中，不重复计入总量。费用按模型价格估算，并非订阅账单；≥ 表示仍有未定价用量。",
-                          "Cached tokens are included in input, not added again. Costs are model-price estimates, not subscription charges; ≥ marks partially priced usage."))
+                Text(provider == .claude
+                     ? text("输入、缓存读取、缓存写入和输出分别计入总量。费用按模型价格估算，并非订阅账单；≥ 表示仍有未定价用量。",
+                            "Input, cache reads, cache writes, and output count separately toward total tokens. Costs are estimates, not subscription charges; ≥ marks partially priced usage.")
+                     : text("缓存 Token 已包含在输入中，不重复计入总量。费用按模型价格估算，并非订阅账单；≥ 表示仍有未定价用量。",
+                            "Cached tokens are included in input, not added again. Costs are model-price estimates, not subscription charges; ≥ marks partially priced usage."))
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .font(.caption)
         .disclosureGroupStyle(UsageDetailsDisclosureStyle(
             expandedText: text("已展开", "Expanded"), collapsedText: text("已收起", "Collapsed")))
-        .padding(12)
+        .padding(ASB.Space.m)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.tertiary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .asbGroupBackground()
         .onChange(of: query) { _, value in
             projectLimit = 3
             sessionLimit = 5
@@ -140,6 +144,10 @@ struct CodexUsageDetailsView: View {
                     Text(text("输入 \(tokens(session.inputTokens)) · 缓存 \(tokens(session.cachedTokens)) · 输出 \(tokens(session.outputTokens))",
                               "Input \(tokens(session.inputTokens)) · Cached \(tokens(session.cachedTokens)) · Output \(tokens(session.outputTokens))"))
                         .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if provider == .claude {
+                        Text(text("缓存写入 \(tokens(session.cacheCreationTokens))", "Cache writes \(tokens(session.cacheCreationTokens))"))
+                            .foregroundStyle(.secondary)
+                    }
                     HStack {
                         if let date = session.lastActivity {
                             Text(date, format: .dateTime.month().day().hour().minute())
@@ -151,7 +159,7 @@ struct CodexUsageDetailsView: View {
                     }.foregroundStyle(.secondary)
                 }.textSelection(.enabled).padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                    .asbInsetTile()
             }
             if sessions.count > sessionLimit {
                 Button(text("显示更多会话（剩余 \(sessions.count - sessionLimit)）",

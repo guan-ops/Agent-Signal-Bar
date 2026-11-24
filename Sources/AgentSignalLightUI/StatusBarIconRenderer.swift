@@ -37,7 +37,20 @@ public enum StatusBarIconRenderer {
         }
 
         let displayState = snapshot.aggregate.displayState
-        for (color, rect) in lampRects(in: baseSize, layout: layout, metrics: metrics) {
+        let lamps: [(SignalLampColor, NSRect)]
+        if style == .singleLamp {
+            // One lamp in the lit color; a gray ring when every lamp is dark.
+            let color = SignalLampAnimation.dominantColor(
+                signal: snapshot.aggregate, tick: tick,
+                allLightsOn: allLightsOn, customization: effectCustomization) ?? .green
+            let diameter = metrics.lampDiameter
+            lamps = [(color, NSRect(x: aligned((baseSize.width - diameter) / 2),
+                                    y: aligned((baseSize.height - diameter) / 2),
+                                    width: diameter, height: diameter))]
+        } else {
+            lamps = lampRects(in: baseSize, layout: layout, metrics: metrics)
+        }
+        for (color, rect) in lamps {
             let intensity = SignalLampAnimation.intensity(
                 color,
                 signal: snapshot.aggregate,
@@ -144,8 +157,9 @@ public enum StatusBarIconRenderer {
         let background = NSBezierPath(roundedRect: insetRect, xRadius: radius, yRadius: radius)
         NSColor.black.withAlphaComponent(0.88).setFill()
         background.fill()
-        NSColor.white.withAlphaComponent(0.16).setStroke()
-        background.lineWidth = 0.75
+        // A light edge keeps the black housing distinct on a dark menu bar.
+        NSColor.white.withAlphaComponent(0.26).setStroke()
+        background.lineWidth = 1
         background.stroke()
     }
 
@@ -249,6 +263,8 @@ public enum StatusBarIconRenderer {
             return NSColor.secondaryLabelColor.withAlphaComponent(0.28)
         case .macOS:
             return NSColor.clear
+        case .singleLamp:
+            return NSColor.secondaryLabelColor.withAlphaComponent(0.22)
         }
     }
 
@@ -286,6 +302,8 @@ public enum StatusBarIconRenderer {
                 return NSColor.secondaryLabelColor.withAlphaComponent(0.14)
             case .macOS:
                 return NSColor.white.withAlphaComponent(0.92)
+            case .singleLamp:
+                return NSColor.secondaryLabelColor.withAlphaComponent(0.4)
             }
         }
         switch style {
@@ -293,6 +311,8 @@ public enum StatusBarIconRenderer {
             return NSColor.secondaryLabelColor.withAlphaComponent(0.12)
         case .macOS:
             return NSColor.white.withAlphaComponent(0.92)
+        case .singleLamp:
+            return NSColor.secondaryLabelColor.withAlphaComponent(0.4)
         }
     }
 
@@ -303,7 +323,7 @@ public enum StatusBarIconRenderer {
         switch style {
         case .trafficLight:
             return NSColor.white.withAlphaComponent(0.20)
-        case .macOS:
+        case .macOS, .singleLamp:
             return lampColor
         }
     }

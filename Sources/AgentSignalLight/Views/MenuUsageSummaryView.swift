@@ -57,9 +57,9 @@ struct MenuUsageSummaryView: View {
                 }
             } else {
                 for account in claude.accounts {
-                    let item = UsageActionMenuItem(title: String((account.alias ?? account.email).prefix(30))) { claude.switchAccount(account.number) }
+                    let item = UsageActionMenuItem(title: ClaudeAccountPresentation.menuLabel(claude.accountLabel(account))) { claude.switchAccount(account.number) }
                     item.state = account.isActive ? .on : .off
-                    item.isEnabled = !account.isActive && account.usageStatus == .ok && !claude.isSwitching && claude.swapIssue == nil
+                    item.isEnabled = claude.canSwitchAccount(account)
                     accounts.addItem(item)
                 }
             }
@@ -72,13 +72,13 @@ struct MenuUsageSummaryView: View {
 
     private var isClaude: Bool { navigation.provider == .claude }
     private var isRefreshing: Bool {
-        isClaude ? claude.isRefreshing || claude.isSwitching
+        isClaude ? claude.isRefreshing || claude.accountActionInProgress
             : model.isTokenActivityLoading || model.isCodexAccountActionRunning || model.isCodexRateLimitFetchInFlight
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: ASB.Space.m) {
+            HStack(spacing: ASB.Space.s) {
                 Picker(model.text("用量平台", "Usage provider"), selection: $navigation.provider) {
                     ForEach(UsageMenuNavigation.Provider.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }.pickerStyle(.segmented).labelsHidden()
@@ -87,23 +87,28 @@ struct MenuUsageSummaryView: View {
                     .help(model.text("刷新用量", "Refresh usage"))
                     .accessibilityLabel(model.text("刷新用量", "Refresh usage"))
             }
+            // UI 2.0: account and quota in one group, device usage in another.
             VStack(alignment: .leading, spacing: 10) {
                 if nativeMenu {
                     Button { onOpenSettings(navigation.provider) } label: { account }
                         .buttonStyle(.plain)
                 } else { account }
-                Divider()
                 quota
-                Divider()
+            }
+            .padding(ASB.Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .asbGroupBackground()
+            VStack(alignment: .leading, spacing: 10) {
                 tokens
                 CostCurrencyRateNote(store: model.costCurrency, text: model.text, compact: true)
             }
-            .padding(12)
-            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+            .padding(ASB.Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .asbGroupBackground()
             Button(model.text("用量与账号设置…", "Usage & account settings…")) { onOpenSettings(navigation.provider) }
                 .buttonStyle(.borderless)
         }
-        .font(.caption)
+        .font(ASB.Typeface.caption)
         .controlSize(.small)
         .frame(maxWidth: .infinity, alignment: .leading)
         .task(id: navigation.provider) {
@@ -117,10 +122,10 @@ struct MenuUsageSummaryView: View {
 
     private var account: some View {
         HStack(alignment: .top, spacing: 10) {
-            Text(navigation.provider.rawValue).font(.headline)
+            Text(navigation.provider.rawValue).font(ASB.Typeface.bodyStrong)
             Spacer(minLength: 0)
             VStack(alignment: .leading, spacing: 3) {
-                Text(isClaude ? claude.snapshot?.email ?? model.text("尚未读取账号", "Account not read")
+                Text(isClaude ? (claude.hidePersonalInfo ? model.text("Claude 账号", "Claude account") : claude.snapshot?.email) ?? model.text("尚未读取账号", "Account not read")
                     : model.codexCurrentAccount?.displayName ?? model.codexProviderAccountEmail ?? model.text("尚未登录", "Not signed in"))
                     .fontWeight(.semibold).lineLimit(1).truncationMode(.middle)
                 if let plan = isClaude ? claude.snapshot?.plan : model.codexCurrentAccount?.planName ?? model.codexProviderPlanName {
@@ -132,8 +137,8 @@ struct MenuUsageSummaryView: View {
             Menu {
                 if isClaude {
                     ForEach(claude.accounts, id: \.number) { account in
-                        Button(shortTitle(account.alias ?? account.email)) { claude.switchAccount(account.number) }
-                            .disabled(account.isActive || account.usageStatus != .ok || claude.isSwitching || claude.swapIssue != nil)
+                        Button(ClaudeAccountPresentation.menuLabel(claude.accountLabel(account))) { claude.switchAccount(account.number) }
+                            .disabled(!claude.canSwitchAccount(account))
                     }
                 } else {
                     ForEach(model.codexSavedAccounts) { account in
@@ -154,20 +159,22 @@ struct MenuUsageSummaryView: View {
         if isClaude {
             if let issue = claude.quotaIssue ?? claude.switchIssue ?? claude.swapIssue { issueText(localized(issue)) }
             if let snapshot = claude.snapshot {
-                Text(snapshot.source).foregroundStyle(.secondary).font(.caption2)
-                Text(model.text("更新 ", "Updated ") + snapshot.updatedAt.formatted(date: .omitted, time: .shortened))
-                    .foregroundStyle(.secondary)
-                if claude.quotaIssue != nil { issueText(model.text("上次读取结果", "Previous snapshot")) }
+                captureCaption(context: snapshot.source, updated: model.quotaUpdatedText(for: snapshot.updatedAt))
+                if claude.quotaIssue != nil || !snapshot.isFresh(at: Date()) { issueText(model.text("上次读取结果", "Previous snapshot")) }
                 ForEach(snapshot.windows.prefix(2)) { window in
-                    quotaRow(title: localized(window.title), remaining: 100 - window.usedPercent,
-                             reset: window.resetsAt.map { model.text("重置 ", "Resets ") + $0.formatted(date: .abbreviated, time: .shortened) })
+                    ASBQuotaLine(title: model.claudeQuotaWindowTitle(window),
+                                 valueText: model.quotaRemainingText(100 - window.usedPercent),
+                                 remainingPercent: 100 - window.usedPercent,
+                                 detail: model.claudeQuotaResetText(window), compact: true)
                 }
-                if let used = snapshot.extraUsed {
-                    Text(model.text("额外用量 ", "Extra usage ") + used.formatted(.currency(code: snapshot.extraCurrency)))
-                        .foregroundStyle(.secondary)
+                if snapshot.windows.count > 2 {
+                    Text(model.text("另有 \(snapshot.windows.count - 2) 个额度窗口，详见用量设置。", "\(snapshot.windows.count - 2) more quota windows in Usage settings."))
+                        .font(ASB.Typeface.caption).foregroundStyle(.secondary)
                 }
+                ClaudeCompactBalancesView(model: model, support: claude)
+
             } else {
-                Text(model.text("在用量设置中登录 Claude Code 以显示配额。", "Sign in to Claude Code in Usage settings to show quota."))
+                Text(model.text("暂无已验证配额", "No verified quota"))
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         } else {
@@ -175,16 +182,14 @@ struct MenuUsageSummaryView: View {
             if model.codexUsageFetchState?.isStale == true { issueText(model.text("上次读取结果", "Previous snapshot")) }
             if let quota = model.latestAgentQuota {
                 let identity = model.codexQuotaIdentityPresentation(for: quota)
-                HStack {
-                    Text(identity.context).lineLimit(1).truncationMode(.middle)
-                        .help([identity.title, identity.context, identity.limitID].compactMap { $0 }.joined(separator: " · "))
-                    Spacer(minLength: 4)
-                    Text(model.quotaUpdatedText(for: quota)).fixedSize()
-                }.font(.caption2).foregroundStyle(.secondary)
+                captureCaption(context: identity.context, updated: model.quotaUpdatedText(for: quota))
+                    .help([identity.title, identity.context, identity.limitID].compactMap { $0 }.joined(separator: " · "))
                 ForEach(model.quotaBadgeWindows(for: quota), id: \.self) { slot in
                     let window = model.quotaWindow(for: slot, quota: quota)
-                    quotaRow(title: model.quotaTitleLine(for: slot, quota: quota), remaining: window?.remainingPercent,
-                             reset: model.quotaResetText(for: window, badgeWindow: slot), includesPercent: true)
+                    ASBQuotaLine(title: model.quotaWindowTitle(for: slot, quota: quota),
+                                 valueText: model.quotaRemainingText(window?.remainingPercent),
+                                 remainingPercent: window?.remainingPercent,
+                                 detail: model.quotaResetText(for: window, badgeWindow: slot), compact: true)
                 }
             } else { Text(model.text("暂无已验证配额", "No verified quota")).foregroundStyle(.secondary) }
             if model.recentLocalQuotaObservation() != nil {
@@ -192,49 +197,48 @@ struct MenuUsageSummaryView: View {
                     .foregroundStyle(.secondary)
             }
             if model.isCodexAccountMessageError, let issue = model.codexAccountMessage { issueText(issue) }
+            CodexCreditsSummaryView(model: model)
             if let credits = model.codexResetCreditsPresentation() {
                 HStack {
                     Text(credits.title + " · " + credits.availableText)
                     Spacer(minLength: 4)
                     Label(credits.expirySummaryText, systemImage: "clock")
                         .lineLimit(1).minimumScaleFactor(0.7)
-                }.font(.caption2).foregroundStyle(.secondary).help(credits.helpText)
+                }.font(ASB.Typeface.caption).foregroundStyle(.secondary).help(credits.helpText)
             }
         }
     }
 
-    private func quotaRow(title: String, remaining: Double?, reset: String?, includesPercent: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text(title).lineLimit(1)
-                Spacer(minLength: 2)
-                if !includesPercent, let remaining {
-                    Text(model.text("剩余 ", "Left ") + remaining.formatted(.number.precision(.fractionLength(0))) + "%")
-                }
-            }
-            if let remaining, remaining.isFinite {
-                ProgressView(value: min(max(remaining, 0), 100), total: 100)
-                    .tint(remaining <= 10 ? .orange : .accentColor)
-            }
-            if let reset { Text(reset).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
-        }
+    private func captureCaption(context: String, updated: String) -> some View {
+        HStack {
+            Text(context).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 4)
+            Text(updated).fixedSize()
+        }.font(ASB.Typeface.caption).foregroundStyle(.secondary)
     }
 
     private var tokens: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .top, spacing: 16) {
-                metricColumn(title: model.text("今日", "Today"), tokens: todayTokens, cost: todayCost, partial: isClaude ? todayClaudeEntry?.hasUnpricedUsage == true : model.tokenActivityCostIsPartial(for: .today))
-                metricColumn(title: model.text("近 30 天", "30 days"), tokens: monthTokens, cost: monthCost, partial: isClaude ? historyDays.contains { $0.costIsPartial } : model.tokenActivityCostIsPartial(for: .last30Days))
+                metricColumn(title: model.text("今日", "Today"), tokens: todayTokens, cost: todayCost,
+                             partial: isClaude ? claude.historySummary().today.hasUnpricedUsage : model.tokenActivityCostIsPartial(for: .today))
+                metricColumn(title: model.text("近 30 天", "30 days"), tokens: monthTokens, cost: monthCost,
+                             partial: isClaude ? claude.historySummary().month.hasUnpricedUsage : model.tokenActivityCostIsPartial(for: .last30Days))
             }
-            MenuTokenHistoryChart(model: model, days: historyDays, isClaude: isClaude)
+            MenuTokenHistoryChart(model: model, days: historyDays, isClaude: isClaude,
+                                  unpricedDays: isClaude ? Set(claude.historySummary().entries.filter(ClaudeHistorySummary.hasUnpricedUsage).map(\.date)) : [],
+                                  incompleteDays: isClaude ? Set(claude.historySummary().entries.filter { ($0.incompleteRequestCount ?? 0) > 0 }.map(\.date)) : [])
                 .id(navigation.provider)
                 .padding(.vertical, 5)
             if let popularModel {
                 Text(model.text("最常用模型：", "Top model: ") + popularModel)
-                    .font(.caption2).lineLimit(1).truncationMode(.middle)
+                    .font(ASB.Typeface.caption).lineLimit(1).truncationMode(.middle)
             }
             Text(model.text("本机汇总 · 费用为估算，并非订阅账单", "This Mac · Estimated cost, not a subscription bill"))
-                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                .font(ASB.Typeface.caption).foregroundStyle(.secondary).lineLimit(1)
+            if isClaude, claude.historySummary().month.incompleteRequests > 0 {
+                Text(model.text("包含用量不完整的请求；仅显示已确认小计", "Incomplete requests; confirmed subtotals only")).font(ASB.Typeface.caption).foregroundStyle(ASBTone.caution.foreground)
+            }
             if !isClaude { CodexTokenScanProgressView(model: model) }
             if isClaude && claude.isHistoryScanning {
                 Text(model.text("正在扫描；保留已有结果。", "Scanning; previous results retained.")).foregroundStyle(.secondary)
@@ -249,26 +253,18 @@ struct MenuUsageSummaryView: View {
         }
     }
 
-    private func metricColumn(title: String, tokens: Int?, cost: Double?, partial: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title).foregroundStyle(.secondary)
-            Text(model.estimatedCostText(cost, partial: partial))
-                .font(.system(size: 17, weight: .semibold)).monospacedDigit()
-                .lineLimit(1).minimumScaleFactor(0.7)
-            Text(tokens.map { model.compactTokenCountText($0) + " Token" } ?? "—")
-                .fontWeight(.medium).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
-        }.frame(maxWidth: .infinity, alignment: .leading)
+    private func metricColumn(title: String, tokens: Int?, cost: Double?, partial: Bool = false) -> some View {
+        ASBStat(label: title, value: model.estimatedCostText(cost, partial: partial),
+                detail: tokens.map { model.compactTokenCountText($0) + " Token" } ?? "—")
     }
 
     private var monthTokens: Int? {
         if !isClaude { return model.tokenActivityDisplayTotal(for: .last30Days) }
-        guard claude.historyUpdatedAt != nil else { return nil }
-        return historyDays.reduce(0) { $0 + $1.totalTokens }
+        return claude.historySummary().month.tokens
     }
     private var monthCost: Double? {
         if !isClaude { return model.tokenActivityEstimatedCost(for: .last30Days) }
-        let costs = historyDays.compactMap(\.estimatedCostUSD)
-        return costs.isEmpty ? nil : costs.reduce(0, +)
+        return claude.historySummary().month.costUSD
     }
     private var popularModel: String? {
         var totals: [String: Int] = [:]
@@ -285,7 +281,7 @@ struct MenuUsageSummaryView: View {
         let today = calendar.startOfDay(for: Date())
         let start = calendar.date(byAdding: .day, value: -29, to: today) ?? today
         let end = calendar.date(byAdding: .day, value: 1, to: today) ?? today
-        let records: [CodexTokenActivityDay] = isClaude ? claude.days.compactMap(Self.activityDay(for:)) : model.tokenActivityDays
+        let records = isClaude ? claude.historySummary().chartDays : model.tokenActivityDays
         return records.filter { $0.day >= start && $0.day < end }
     }
 
@@ -300,17 +296,11 @@ struct MenuUsageSummaryView: View {
 
     private var todayTokens: Int? {
         if !isClaude { return model.tokenActivityDisplayTotal(for: .today) }
-        guard claude.historyUpdatedAt != nil else { return nil }
-        return todayClaudeEntry?.totalTokens ?? (claude.days.isEmpty ? nil : 0)
+        return claude.historySummary().today.tokens
     }
     private var todayCost: Double? {
         if !isClaude { return model.tokenActivityEstimatedCost(for: .today) }
-        return todayClaudeEntry?.costUSD
-    }
-    private var todayClaudeEntry: CostUsageDailyReport.Entry? {
-        let formatter = DateFormatter(); formatter.calendar = Calendar.current
-        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
-        return claude.days.first { $0.date == formatter.string(from: Date()) }
+        return claude.historySummary().today.costUSD
     }
     private func refresh(force: Bool) {
         if isClaude { claude.refresh(force: force) }
@@ -321,7 +311,7 @@ struct MenuUsageSummaryView: View {
         }
     }
     private func issueText(_ value: String) -> some View {
-        Text(value).foregroundStyle(.orange).lineLimit(2).help(value)
+        Text(value).foregroundStyle(ASBTone.caution.foreground).lineLimit(2).help(value)
     }
     private func localized(_ value: String) -> String {
         let parts = value.components(separatedBy: " / ")

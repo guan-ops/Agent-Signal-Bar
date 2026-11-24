@@ -18,6 +18,8 @@ public enum TrafficSignalLayout: String, CaseIterable {
 public enum TrafficSignalStyle: String, CaseIterable {
     case trafficLight
     case macOS
+    /// One lamp in the color that is currently lit; for crowded (notched) menu bars.
+    case singleLamp
 
     public var displayName: String {
         switch self {
@@ -25,6 +27,8 @@ public enum TrafficSignalStyle: String, CaseIterable {
             return "经典灯牌"
         case .macOS:
             return "极简圆点"
+        case .singleLamp:
+            return "单灯"
         }
     }
 }
@@ -59,6 +63,8 @@ public enum TrafficSignalSize {
                 return 16
             case .macOS:
                 return 12
+            case .singleLamp:
+                return 14
             }
         }
     }
@@ -89,6 +95,8 @@ public enum TrafficSignalSize {
                 return layout == .vertical ? 5 : 8
             case .macOS:
                 return layout == .vertical ? 4 : 6
+            case .singleLamp:
+                return 0
             }
         }
     }
@@ -100,6 +108,14 @@ public enum TrafficSignalSize {
         trafficLightVerticalUsesMacOSSize: Bool
     ) -> EdgeInsets {
         switch (self, layout, style) {
+        case (.menuBar, _, .singleLamp):
+            let metrics = SignalIconGeometry.metrics(layout: layout, style: style)
+            let horizontalInset = (metrics.iconSize.width - metrics.lampDiameter) / 2
+            let verticalInset = (metrics.iconSize.height - metrics.lampDiameter) / 2
+            return EdgeInsets(top: verticalInset, leading: horizontalInset,
+                              bottom: verticalInset, trailing: horizontalInset)
+        case (.panel, _, .singleLamp):
+            return EdgeInsets(top: 3, leading: 3, bottom: 3, trailing: 3)
         case (.menuBar, .horizontal, _):
             let metrics = SignalIconGeometry.metrics(
                 layout: layout,
@@ -187,6 +203,11 @@ public struct TrafficSignalView: View {
 
     public var body: some View {
         Group {
+            if style == .singleLamp {
+                lamp(SignalLampAnimation.dominantColor(
+                    signal: snapshot.aggregate, tick: tick,
+                    allLightsOn: allLightsOn, customization: effectCustomization) ?? .green)
+            } else {
             switch layout {
             case .horizontal:
                 HStack(spacing: size.spacing(
@@ -210,6 +231,7 @@ public struct TrafficSignalView: View {
                     lamp(.yellow)
                     lamp(.green)
                 }
+            }
             }
         }
         .padding(size.padding(
@@ -424,6 +446,8 @@ private struct SignalLampDot: View {
             return .secondary.opacity(0.10)
         case .macOS:
             return .white.opacity(0.92)
+        case .singleLamp:
+            return .secondary.opacity(0.35)
         }
     }
 
@@ -439,7 +463,8 @@ private struct TrafficSignalChrome: ViewModifier {
     let style: TrafficSignalStyle
 
     func body(content: Content) -> some View {
-        if style == .macOS {
+        // Only the classic lamp has a housing.
+        if style != .trafficLight {
             content
                 .background(.clear)
         } else {
