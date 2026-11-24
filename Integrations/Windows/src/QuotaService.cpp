@@ -280,6 +280,13 @@ void QuotaService::setClaudeSource(const QString &source) {
 void QuotaService::setClaudeOrganization(const QString &uuid) {
     if (uuid == m_claudeOrganization) return;
     m_claudeOrganization = uuid;
+    if (m_claudeSource != "oauth") {
+        // Another organization's quota and billing: the old one's must not show, and a request
+        // still in flight for it must not publish. The organization choices stay for the picker.
+        ++m_claudeGeneration;
+        m_claude.hasResult = false;
+        m_claude.error.clear();
+    }
     refreshClaude();
 }
 
