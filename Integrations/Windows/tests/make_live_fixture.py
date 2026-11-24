@@ -1,28 +1,22 @@
 """Write synthetic Codex rollout files with timestamps relative to now.
 
-    python3 -I Integrations/Windows/tests/make_live_fixture.py <codex-home>
-    AgentSignalBar --codex-dir <codex-home> --capture <out>   (or --probe 5)
+    python3 -I Integrations/Windows/tests/make_live_fixture.py
+    AgentSignalBar --codex-dir <fixture> --capture <out>   (or --probe 5)
+
+<fixture> is /tmp/asb-live-fixture (on Windows, asb-live-fixture in the temp
+folder); the script prints its sessions folder. The folder is fixed on purpose:
+its sessions folder is deleted first, so no path is taken from the command line.
 
 Three sessions: a CLI turn running a tool, a VS Code turn waiting for escalated
 permission, and a Desktop turn that just finished. All content is made up.
-
-<codex-home> must be inside the temp folder (or /tmp): its sessions folder is
-deleted first, so a real Codex home must never be passed.
 """
 import json
 import os
 import shutil
-import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 
-if len(sys.argv) != 2:
-    sys.exit("usage: make_live_fixture.py <codex-home inside the temp folder>")
-# Only a throwaway folder: the sessions folder below is deleted before it is rewritten.
-allowed = tuple(os.path.realpath(base) + os.sep for base in (tempfile.gettempdir(), "/tmp"))
-home = os.path.realpath(sys.argv[1])
-if not home.startswith(allowed):
-    sys.exit("refusing to write outside the temp folder: " + home)
+home = os.path.join("/tmp" if os.name == "posix" else tempfile.gettempdir(), "asb-live-fixture")
 sessions = os.path.join(home, "sessions")
 shutil.rmtree(sessions, ignore_errors=True)
 now = datetime.now(timezone.utc)

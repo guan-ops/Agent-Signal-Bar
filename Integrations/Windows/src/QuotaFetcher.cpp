@@ -581,9 +581,10 @@ ClaudeResult fetchClaudeWeb(const QString &sessionKey, const QString &organizati
         name = list.first().toObject().value("name").toString();
     }
     ClaudeResult result;
+    // Also on success: the picker needs them to switch to another organization later.
+    result.organizations = choices;
     if (uuid.isEmpty()) {
         result.error = list.isEmpty() ? QStringLiteral("invalidResponse") : QStringLiteral("chooseOrganization");
-        result.organizations = choices;
         return result;
     }
     HttpResponse usageResponse = http(request("organizations/" + uuid + "/usage?cedar_ember=1", 30'000));

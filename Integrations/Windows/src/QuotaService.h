@@ -88,6 +88,7 @@ private:
     void tick();
     void startCodexFetch();
     void codexAccountChanged();
+    void claudeSessionChanged();
     void startClaudeFetch();
     QString findCodexCli() const;
     QString claudeCliVersion();

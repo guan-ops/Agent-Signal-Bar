@@ -300,7 +300,7 @@ SettingsPage {
             color: Theme.toneForeground("caution")
         }
         AsbRow {
-            visible: page.claudeLive !== null && page.claudeLive.organizations.length > 0
+            visible: page.claudeLive !== null && page.claudeLive.organizations.length > 1
             title: Theme.t("组织", "Organization")
             Dropdown {
                 key: "claudeWebOrganization"

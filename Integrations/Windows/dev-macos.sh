@@ -29,7 +29,7 @@ if [ "${1:-}" = "capture" ]; then
     ls /private/tmp/asb-capture
 elif [ "${1:-}" = "capture-live" ]; then
     # Live data path against synthetic rollouts only (never the real ~/.codex).
-    python3 -I "$here/tests/make_live_fixture.py" /private/tmp/asb-live-fixture
+    python3 -I "$here/tests/make_live_fixture.py" # writes /tmp/asb-live-fixture (/private/tmp on macOS)
     # Claude Code hook events through the real hook command, into a fixture state file.
     export AGENT_SIGNAL_LIGHT_STATE_FILE=/private/tmp/asb-live-fixture/status.json
     rm -f "$AGENT_SIGNAL_LIGHT_STATE_FILE"

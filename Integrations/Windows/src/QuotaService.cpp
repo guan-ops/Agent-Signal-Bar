@@ -287,15 +287,27 @@ bool QuotaService::setClaudeSession(const QString &pasted) {
     if (pasted.trimmed().isEmpty()) {
         m_sessionKey.clear();
         QFile::remove(path);
-        refreshClaude();
+        claudeSessionChanged();
         return true;
     }
     const QString key = asb::quota::sanitizeClaudeSessionKey(pasted);
     if (key.isEmpty() || !asb::secrets::writeProtected(path, key.toUtf8())) return false;
     m_sessionKey = key;
-    m_claude.retryAfterMs = 0;
-    refreshClaude();
+    claudeSessionChanged();
     return true;
+}
+
+void QuotaService::claudeSessionChanged() {
+    m_claude.retryAfterMs = 0; // a 429 for the old session says nothing about the new one
+    if (m_claudeSource != "oauth") {
+        // Possibly another claude.ai account: its quota, billing and organizations must not show,
+        // and a request still in flight for the old session must not publish (or re-arm a back-off).
+        ++m_claudeGeneration;
+        m_claude.hasResult = false;
+        m_claude.error.clear();
+        m_claude.result.organizations.clear();
+    }
+    refreshClaude();
 }
 
 bool QuotaService::hasClaudeCredentials() const {
@@ -374,7 +386,8 @@ void QuotaService::startClaudeFetch() {
                 state.hasResult = true;
                 state.updatedAtMs = nowMs();
             } else {
-                state.result.organizations = result.organizations;
+                // A transient failure (offline, 5xx) keeps the organization picker it had.
+                if (!result.organizations.isEmpty()) state.result.organizations = result.organizations;
                 if (result.error == "loginRequired" || result.error == "unauthorized") state.hasResult = false;
             }
             emit self->changed();

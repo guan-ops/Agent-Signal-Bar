@@ -1389,6 +1389,7 @@ private slots:
         QCOMPARE(choose.organizations.size(), 2);
         const quota::ClaudeResult chosen = quota::fetchClaudeWeb("sessionKey=x", "o2", web);
         QVERIFY2(chosen.ok, qPrintable(chosen.error));
+        QCOMPARE(chosen.organizations.size(), 2); // still there to switch organizations later
         QCOMPARE(chosen.usage.organization, QString("Work"));
         QCOMPARE(*chosen.usage.prepaidBalance, 25.0);
         QCOMPARE(chosen.usage.prepaidCurrency, QString("EUR"));
