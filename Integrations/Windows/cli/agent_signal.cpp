@@ -26,6 +26,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QProcessEnvironment>
+#include <QSettings>
 #include <QTimeZone>
 #include <cstdio>
 #include <functional>
@@ -334,25 +335,44 @@ int installHooks(const QStringList &arguments) {
     const QString userHome = home ? QDir::cleanPath(QFileInfo(*home).absoluteFilePath()) : QDir::homePath();
     const QString claudeEnv = home ? QString() : qEnvironmentVariable("CLAUDE_CONFIG_DIR");
     const QString codexEnv = home ? QString() : qEnvironmentVariable("CODEX_HOME");
+    const QString primaryCodexHome = codexHome(userHome, selectedCodexHome, codexEnv);
 
     struct Spec {
         QString name;
         ClaudeHookInstaller installer;
+        bool optional = false; // skipped, not fatal, when its file cannot be read
     };
     std::vector<Spec> specs;
     if (target != "claude")
         specs.push_back({QStringLiteral("Codex User"),
-                      ClaudeHookInstaller(codexHome(userHome, selectedCodexHome, codexEnv), exe,
-                                          ClaudeHookInstaller::Target::Codex)});
+                         ClaudeHookInstaller(primaryCodexHome, exe, ClaudeHookInstaller::Target::Codex)});
+    // Removal (the uninstaller runs it without --codex-home) also cleans the Codex data folder
+    // chosen in the app's Connections page: the app installs its Codex hooks there, and the
+    // hooks would otherwise keep calling the removed agent-signal.exe.
+    if (remove && target != "claude" && !home && !selectedCodexHome) {
+        const QSettings prefs(QSettings::IniFormat, QSettings::UserScope, "AgentSignalBar", "AgentSignalBar");
+        const QString saved = prefs.value("codexDataDir").toString().trimmed();
+        const QString savedHome = saved.isEmpty() ? QString() : codexHome(userHome, saved, QString());
+        if (!savedHome.isEmpty() && savedHome.compare(primaryCodexHome, Qt::CaseInsensitive) != 0
+            && QFileInfo(savedHome).isDir())
+            specs.push_back({QStringLiteral("Codex (Agent Signal Bar folder)"),
+                             ClaudeHookInstaller(savedHome, exe, ClaudeHookInstaller::Target::Codex), true});
+    }
     if (target != "codex")
         specs.push_back({QStringLiteral("Claude Code"),
                       ClaudeHookInstaller(ClaudeHookInstaller::defaultClaudeRoot(userHome, claudeEnv), exe)});
 
-    // Plan everything first: one unreadable file writes nothing.
+    // Plan everything first: one unreadable file writes nothing (an optional one is left out).
     QStringList messages;
+    std::vector<const Spec *> planned;
     for (const Spec &spec : specs) {
         const asb::hooks::HookReport plan = spec.installer.preview(remove);
-        if (!plan.ok) throw CliError{spec.name + ": " + plan.error};
+        if (!plan.ok) {
+            if (!spec.optional) throw CliError{spec.name + ": " + plan.error};
+            messages.append(QStringLiteral("[skipped] %1: %2").arg(spec.name, plan.error));
+            continue;
+        }
+        planned.push_back(&spec);
         messages.append(describe(spec.name, plan, false, exe));
     }
     if (!install) {
@@ -361,7 +381,8 @@ int installHooks(const QStringList &arguments) {
     }
     messages.clear();
     QList<asb::hooks::HookReport> applied;
-    for (const Spec &spec : specs) {
+    for (const Spec *plannedSpec : planned) {
+        const Spec &spec = *plannedSpec;
         const asb::hooks::HookReport report = remove ? spec.installer.uninstall() : spec.installer.install();
         if (!report.ok) {
             QStringList rollbackErrors;
@@ -390,6 +411,7 @@ void printUsage() {
           "  " + c + " session <signal> --session <id> [--json]\n"
           "  " + c + " install-hooks [--target all|codex|claude] [--install|--dry-run] [--remove]\n"
           "        [--home <dir>] [--codex-home <dir>]\n"
+          "        (--remove also cleans the Codex folder chosen in the app, unless --home or --codex-home)\n"
           "  " + c + " codex-hook [event]\n"
           "  " + c + " claude-hook [event]\n"
           "  " + c + " agent-hook [event] [--agent <name>] [--session <id>]\n"

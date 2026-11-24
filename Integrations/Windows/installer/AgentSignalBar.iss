@@ -218,8 +218,9 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ResultCode: Integer;
 begin
-  // Before the files go: agent-signal.exe removes its own hooks. ([UninstallRun] cannot do this:
-  // its Check runs at install time, before the question is asked.)
+  // Before the files go: agent-signal.exe removes its own hooks, from Claude Code, the default
+  // Codex home and the Codex folder chosen in the app (it reads the app's settings itself).
+  // ([UninstallRun] cannot do this: its Check runs at install time, before the question is asked.)
   if (CurUninstallStep = usUninstall) and RemoveHooks then
     Exec(ExpandConstant('{app}\agent-signal.exe'), 'install-hooks --install --remove', '', SW_HIDE,
          ewWaitUntilTerminated, ResultCode);

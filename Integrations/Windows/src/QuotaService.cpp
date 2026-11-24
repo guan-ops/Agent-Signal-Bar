@@ -273,6 +273,7 @@ void QuotaService::setClaudeSource(const QString &source) {
     m_claudeSource = source;
     ++m_claudeGeneration;
     m_claude.hasResult = false;
+    m_claude.retryAfterMs = 0; // the previous source's 429 must not keep the new one from being asked
     refreshClaude();
 }
 
