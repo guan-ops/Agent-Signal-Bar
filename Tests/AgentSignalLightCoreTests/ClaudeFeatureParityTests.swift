@@ -200,7 +200,11 @@ final class ClaudeFeatureModelTests: XCTestCase {
     }
     func testForecastRequiresRecentSameCycleConsumptionAndWarnsOnce() {
         let now = Date(), reset = now.addingTimeInterval(3600)
-        let samples = (0...3).map { ClaudeQuotaSample(date: now.addingTimeInterval(Double($0 - 3) * 300), usedPercent: Double(40 + $0 * 10), resetsAt: reset) }
+        let samples: [ClaudeQuotaSample] = (0...3).map { (step: Int) -> ClaudeQuotaSample in
+            let offset: TimeInterval = Double(step - 3) * 300
+            let usedPercent: Double = Double(40 + step * 10)
+            return ClaudeQuotaSample(date: now.addingTimeInterval(offset), usedPercent: usedPercent, resetsAt: reset)
+        }
         XCTAssertFalse(ClaudeQuotaHistory.forecast(samples, now: now)!.willLastToReset)
         XCTAssertNil(ClaudeQuotaHistory.forecast(Array(samples.suffix(2)), now: now))
         XCTAssertNil(ClaudeQuotaHistory.forecast(samples, now: now.addingTimeInterval(901)))
