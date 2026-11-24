@@ -139,6 +139,9 @@ public:
 
     // `roots`: projects folders (searched recursively) or single .jsonl files.
     explicit ClaudeScanner(QStringList roots);
+    // Roots looked up again on every scan, so history folders created later (a new Claude desktop
+    // session) are found. Called on the scanning thread.
+    explicit ClaudeScanner(std::function<QStringList()> roots);
     Report scan(qint64 nowMs, int days, const ModelsDevCatalog *catalog);
 
     static QList<Row> parseFile(const QString &path, const DayRange &range, const ModelsDevCatalog *catalog,
@@ -149,6 +152,7 @@ public:
 private:
     struct Memo;
     QStringList m_roots;
+    std::function<QStringList()> m_rootsProvider;
     std::shared_ptr<Memo> m_memo;
 };
 

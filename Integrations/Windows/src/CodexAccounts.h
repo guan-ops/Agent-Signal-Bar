@@ -89,6 +89,9 @@ private:
     QString secretPath(const QString &id) const;
     std::optional<int> match(const QList<Account> &accounts, const Identity &identity, const QString &fp) const;
     std::optional<QString> store(const QByteArray &data, QString *error);
+    // Saves the current login (possibly refreshed since it was saved) before it is replaced.
+    // `current` / `exists`: what auth.json held, for replaceIfUnchanged.
+    bool keepCurrentLogin(QByteArray *current, bool *exists, QString *error);
 
     QString m_dir;
     QString m_authPath;

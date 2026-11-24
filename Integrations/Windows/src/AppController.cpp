@@ -199,11 +199,22 @@ AppController::AppController(const QString &settingsFile, const QString &capture
         m_usage = new UsageService(this);
         m_usage->setLowPower(m_prefs->value("lowPowerMode").toBool());
         m_usage->setCurrency(m_prefs->value("currency").toString());
-        const QStringList claudeRoots = !m_claudeDirOverride.isEmpty()
-            ? QStringList{QDir::cleanPath(m_claudeDirOverride + "/projects")}
-            : asb::usage::ClaudeScanner::defaultRoots(QDir::homePath(), qEnvironmentVariable("CLAUDE_CONFIG_DIR"),
-                                                      qEnvironmentVariable("APPDATA"));
-        m_usage->start(usageCodexRoots(), m_captureDir.isEmpty() ? claudeRoots : QStringList(),
+        // Claude's default roots are looked up on every scan: a Claude desktop session started
+        // after this app creates its history folder later. An explicit directory stays fixed.
+        std::function<QStringList()> claudeRoots;
+        if (!m_captureDir.isEmpty()) {
+            claudeRoots = [] { return QStringList(); };
+        } else if (!m_claudeDirOverride.isEmpty()) {
+            const QStringList fixed{QDir::cleanPath(m_claudeDirOverride + "/projects")};
+            claudeRoots = [fixed] { return fixed; };
+        } else {
+            const QString home = QDir::homePath(), configDir = qEnvironmentVariable("CLAUDE_CONFIG_DIR"),
+                          appData = qEnvironmentVariable("APPDATA");
+            claudeRoots = [home, configDir, appData] {
+                return asb::usage::ClaudeScanner::defaultRoots(home, configDir, appData);
+            };
+        }
+        m_usage->start(usageCodexRoots(), std::move(claudeRoots),
                        QFileInfo(asb::debuglog::path()).absolutePath() + "/Cache", m_captureDir.isEmpty());
         connect(m_usage, &UsageService::changed, this, &AppController::rebuildUsage);
         connect(this, &AppController::languageChanged, this, &AppController::rebuildUsage);

@@ -807,6 +807,9 @@ struct ClaudeScanner::Memo {
 
 ClaudeScanner::ClaudeScanner(QStringList roots) : m_roots(std::move(roots)), m_memo(std::make_shared<Memo>()) {}
 
+ClaudeScanner::ClaudeScanner(std::function<QStringList()> roots)
+    : m_rootsProvider(std::move(roots)), m_memo(std::make_shared<Memo>()) {}
+
 QList<ClaudeScanner::Row> ClaudeScanner::parseFile(const QString &path, const DayRange &range,
                                                    const ModelsDevCatalog *catalog, bool *readOk) {
     const bool subagent = QDir::fromNativeSeparators(path).contains("/subagents/");
@@ -896,7 +899,7 @@ QStringList ClaudeScanner::defaultRoots(const QString &home, const QString &conf
 Report ClaudeScanner::scan(qint64 nowMs, int days, const ModelsDevCatalog *catalog) {
     const DayRange range = DayRange::lastDays(nowMs, days);
     const QString rangeKey = range.scanSinceKey + '|' + range.scanUntilKey;
-    const QList<QFileInfo> files = jsonlFiles(m_roots, range.scanSinceMs);
+    const QList<QFileInfo> files = jsonlFiles(m_rootsProvider ? m_rootsProvider() : m_roots, range.scanSinceMs);
     Memo &memo = *m_memo;
     QSet<QString> live;
     QList<SourcedRow> rows;

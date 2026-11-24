@@ -265,6 +265,12 @@ std::optional<QString> AccountStore::saveCurrent(QString *error) {
     return store(data, error);
 }
 
+bool AccountStore::keepCurrentLogin(QByteArray *current, bool *exists, QString *error) {
+    *current = readAll(m_authPath, exists);
+    if (!*exists || current->isEmpty() || !parseIdentity(*current) || !currentNeedsSaving()) return true;
+    return store(*current, error).has_value();
+}
+
 bool AccountStore::switchTo(const QString &id, QString *error) {
     const QList<Account> accounts = load();
     const auto target = std::find_if(accounts.cbegin(), accounts.cend(), [&](const Account &a) { return a.id == id; });
@@ -273,10 +279,8 @@ bool AccountStore::switchTo(const QString &id, QString *error) {
         return false;
     }
     bool exists = false;
-    const QByteArray current = readAll(m_authPath, &exists);
-    // Keep the current login (possibly refreshed since it was saved) before replacing it.
-    if (exists && !current.isEmpty() && parseIdentity(current) && currentNeedsSaving() && !store(current, error))
-        return false;
+    QByteArray current;
+    if (!keepCurrentLogin(&current, &exists, error)) return false;
     const auto data = secret(id);
     if (!data) {
         if (error) *error = QStringLiteral("the saved copy of this account cannot be read");
@@ -318,8 +322,14 @@ std::optional<QString> AccountStore::addFromFile(const QString &authPath, QStrin
         if (error) *error = QStringLiteral("codex login wrote no auth.json");
         return std::nullopt;
     }
+    // Keep the outgoing login first: when it is the same account (signing in again to replace an
+    // expired login), storing it afterwards would put the old credentials back over the new ones.
+    bool exists = false;
+    QByteArray current;
+    if (!keepCurrentLogin(&current, &exists, error)) return std::nullopt;
     const auto id = store(data, error);
-    if (!id || !switchTo(*id, error)) return std::nullopt;
+    if (!id || !replaceIfUnchanged(m_authPath, exists ? fingerprint(current) : QString(), data, error))
+        return std::nullopt;
     return id;
 }
 

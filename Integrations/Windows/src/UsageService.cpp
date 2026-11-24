@@ -47,10 +47,10 @@ UsageService::UsageService(QObject *parent) : QObject(parent) {
 
 UsageService::~UsageService() = default;
 
-void UsageService::start(const QStringList &codexRoots, const QStringList &claudeRoots, const QString &cacheDir,
-                         bool network) {
+void UsageService::start(const QStringList &codexRoots, std::function<QStringList()> claudeRoots,
+                         const QString &cacheDir, bool network) {
     m_codexScanner = std::make_shared<asb::usage::CodexScanner>(codexRoots);
-    m_claudeScanner = std::make_shared<asb::usage::ClaudeScanner>(claudeRoots);
+    m_claudeScanner = std::make_shared<asb::usage::ClaudeScanner>(std::move(claudeRoots));
     m_cacheDir = cacheDir;
     if (network) m_network = new QNetworkAccessManager(this);
     m_started = true;

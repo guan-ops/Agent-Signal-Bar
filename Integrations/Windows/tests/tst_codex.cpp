@@ -996,6 +996,21 @@ private slots:
         QCOMPARE(report.sessions.first().projectPath, QString("C:\\work\\beta"));
         QCOMPARE(report.sessions.first().totalTokens, 6365);
 
+        // Default roots are looked up on every scan: a Claude desktop session started later is found.
+        {
+            QTemporaryDir appData;
+            const QString homeDir = appData.path() + "/home";
+            usage::ClaudeScanner live([homeDir, base = appData.path()] {
+                return usage::ClaudeScanner::defaultRoots(homeDir, "", base);
+            });
+            QVERIFY(!findDay(live.scan(now, 30, nullptr), 20));
+            writeFile(appData.path() + "/Claude/claude-code-sessions/u1/.claude/projects/p/s.jsonl",
+                      assistant(isoAt(20, 10), "d1", "rd1", "claude-opus-4-1", {{"input_tokens", 4}, {"output_tokens", 1}}));
+            const usage::Report later = live.scan(now, 30, nullptr);
+            QVERIFY(findDay(later, 20));
+            QCOMPARE(findDay(later, 20)->totalTokens, 5);
+        }
+
         const QStringList roots = usage::ClaudeScanner::defaultRoots("C:/Users/me", "", "");
         QCOMPARE(roots, (QStringList{"C:/Users/me/.config/claude/projects", "C:/Users/me/.claude/projects"}));
         QCOMPARE(usage::ClaudeScanner::defaultRoots("C:/Users/me", "D:/profile", ""), QStringList{"D:/profile/projects"});
@@ -1288,6 +1303,23 @@ private slots:
         const QByteArray refreshed = login("a@example.com", "acct-a") + " ";
         store.persistRefreshed(codexauth::fingerprint(login("a@example.com", "acct-a")), refreshed);
         QCOMPARE(*store.secret(*idA), refreshed);
+
+        // Signing in again to the active account (an expired login) keeps the new credentials:
+        // the outgoing copy of the same account must not be saved back over them.
+        QByteArray fresh = login("a@example.com", "acct-a");
+        fresh.replace("t-acct-a", "t-acct-a-fresh");
+        writeText(dir.path() + "/again-auth.json", fresh);
+        const auto again = store.addFromFile(dir.path() + "/again-auth.json", &error);
+        QVERIFY2(again.has_value(), qPrintable(error));
+        QCOMPARE(*again, *idA);
+        QCOMPARE(store.accounts().size(), 2);
+        QCOMPARE(*store.secret(*idA), fresh);
+        {
+            QFile current(authPath);
+            QVERIFY(current.open(QIODevice::ReadOnly));
+            QCOMPARE(current.readAll(), fresh);
+        }
+        QVERIFY(!store.currentNeedsSaving());
 
         // Never overwrite a file that changed since it was read.
         QVERIFY(!codexauth::replaceIfUnchanged(authPath, "0000", "x", &error));

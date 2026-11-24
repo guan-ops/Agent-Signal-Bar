@@ -25,8 +25,10 @@ public:
     explicit UsageService(QObject *parent = nullptr);
     ~UsageService() override;
 
-    // `network`: allow the two price feeds (off for capture runs).
-    void start(const QStringList &codexRoots, const QStringList &claudeRoots, const QString &cacheDir, bool network);
+    // `network`: allow the two price feeds (off for capture runs). `claudeRoots` runs before every
+    // scan, on the scanning thread.
+    void start(const QStringList &codexRoots, std::function<QStringList()> claudeRoots, const QString &cacheDir,
+               bool network);
     void setCodexRoots(const QStringList &roots);
     void setPaused(bool paused);
     void setLowPower(bool lowPower) { m_lowPower = lowPower; }
