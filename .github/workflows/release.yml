@@ -101,11 +101,16 @@ jobs:
       - name: Verify checksums
         run: shasum -a 256 -c dist/AgentSignalBar-SHA256SUMS.txt
 
-      - name: Publish GitHub Release
+      # Immutable releases are on for this repository: once a release is published, no asset can be
+      # added and its tag can never be reused. So this creates a draft, the windows job adds its
+      # files to it, and a maintainer publishes the draft after checking every asset
+      # (docs/GITHUB_RELEASES.md). Without draft: true the action would publish right after upload.
+      - name: Create draft GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           name: Agent Signal Bar ${{ github.ref_name }}
           body_path: dist/release-notes.md
+          draft: true
           files: |
             dist/AgentSignalBar.zip
             dist/AgentSignalBar.dmg
@@ -116,7 +121,7 @@ jobs:
             dist/AgentSignalBar-release-manifest.json
             dist/AgentSignalBar-SHA256SUMS.txt
 
-  # The Windows build (Integrations/Windows), added to the release the macOS job published. Its
+  # The Windows build (Integrations/Windows), added to the draft release the macOS job created. Its
   # appcast is signed with the same SPARKLE_PRIVATE_KEY; WINDOWS_CERTIFICATE_PFX (base64 .pfx) and
   # WINDOWS_CERTIFICATE_PASSWORD are optional and add Authenticode signatures.
   windows:
@@ -163,7 +168,8 @@ jobs:
             if ((Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower() -ne $hash) { throw "Checksum mismatch: $name" }
           }
 
-      - name: Upload to the GitHub Release
+      # gh release upload resolves a draft release by its pending tag name.
+      - name: Upload to the draft GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

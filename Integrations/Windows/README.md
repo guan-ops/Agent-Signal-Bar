@@ -70,7 +70,7 @@ powershell -ExecutionPolicy Bypass -File Integrations\Windows\package.ps1 -QtDir
 | `AgentSignalBar-windows-x64-appcast.xml` | 给应用内更新读的 Sparkle appcast：`sparkle:version` 是 build 号，`sparkle:os="windows"`，更新说明取 `docs/releases/v<版本>.md`（Markdown） |
 | `AgentSignalBar-windows-SHA256SUMS.txt` | 以上文件的 SHA-256 |
 
-应用内更新和 macOS 版的 Sparkle 一样，所以同一个 `SPARKLE_PRIVATE_KEY` 同时给两个平台签名（公钥 `lEr2AUplk4vAvH+IwB4DygGqobWmBkbyy1YYr1nRy70=`）。`tools/sign_update` 接受 Sparkle 导出的两种私钥格式（32 字节种子，或旧版 96 字节），而且只在私钥和内置公钥配对时才签名。GitHub Actions 的 `release.yml` 在 macOS 任务发布后由 `windows` 任务构建这些文件，并上传到同一个 Release。
+应用内更新和 macOS 版的 Sparkle 一样，所以同一个 `SPARKLE_PRIVATE_KEY` 同时给两个平台签名（公钥 `lEr2AUplk4vAvH+IwB4DygGqobWmBkbyy1YYr1nRy70=`）。`tools/sign_update` 接受 Sparkle 导出的两种私钥格式（32 字节种子，或旧版 96 字节），而且只在私钥和内置公钥配对时才签名。GitHub Actions 的 `release.yml` 先由 macOS 任务创建草稿 Release，再由 `windows` 任务构建这些文件并上传到同一个草稿。仓库开启了不可变发布（immutable releases），发布后不能再补传文件，所以两个平台的文件都核对无误后，才手动发布草稿（见 `docs/GITHUB_RELEASES.md`）。
 
 代码签名需要你自己的证书，没有证书时产物不签名（能用，但 SmartScreen 会提示“未知发布者”）。有证书时设置 `WINDOWS_CERTIFICATE_PFX`（.pfx 文件的 base64）和 `WINDOWS_CERTIFICATE_PASSWORD`，或者用 `-CertificateThumbprint` 指定当前用户证书库里的证书。脚本会用 `signtool` 给两个 exe、安装包和卸载程序签名，时间戳服务器是 `-TimestampUrl`（默认 DigiCert）。在 CI 里把这两个值存成 `release` 环境的 secrets。
 
