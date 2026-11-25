@@ -71,9 +71,10 @@ SettingsPage {
             Dropdown {
                 key: "lightAgentMode"
                 pickerWidth: 150
+                // Each Codex source, not the whole Codex group: on macOS "Codex" is only the
+                // heading over its sources. Xcode does not run on Windows.
                 options: [
                     { value: "following", label: Theme.t("自动", "Automatic") },
-                    { value: "codex", label: "Codex" },
                     { value: "codexDesktop", label: Theme.t("Codex 桌面版", "Codex Desktop") },
                     { value: "codexCLI", label: Theme.t("Codex 终端", "Codex CLI") },
                     { value: "codexVSCode", label: "Codex VS Code" },

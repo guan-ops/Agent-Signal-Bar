@@ -31,7 +31,7 @@ Window {
         raise()
         requestActivate()
     }
-    onVisibleChanged: if (visible) App.applyBackdrop(win, "window")
+    onVisibleChanged: if (visible) App.applyWindowFrame(win)
     // Closing the window is "Remind Me Later"; a download carries on in the background.
     onClosing: if (!askPermission && (stage === "available" || stage === "upToDate" || stage === "failed")) App.remindUpdateLater()
 

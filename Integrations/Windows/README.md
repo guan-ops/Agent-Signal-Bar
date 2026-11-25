@@ -9,7 +9,7 @@ Windows 版沿用 CodexBar `Integrations/Linux` 的分层方式：C++ 控制器 
 | 路径 | 内容 |
 | --- | --- |
 | `src/SignalModel.*` | `AgentSignalLightCore` 灯语的移植，包括信号别名、显示状态、各灯效的亮度与缩放，以及低功耗模式和新西兰模式的节奏 |
-| `src/AppController.*` | 偏好设置（INI，键名对应 macOS UserDefaults）、共享动画时钟、语言、主题、托盘弹窗定位、Mica/亚克力背景、开机自启动（`HKCU\…\Run`）、试听提示音 |
+| `src/AppController.*` | 偏好设置（INI，键名对应 macOS UserDefaults）、共享动画时钟、语言、主题、托盘弹窗定位、窗口深色标题栏与圆角、开机自启动（`HKCU\…\Run`）、试听提示音 |
 | `src/TrayIconRenderer.*` | 托盘图标绘制，提供经典灯牌、极简圆点、单灯三种风格，支持横向和竖向，并适配任务栏深浅色 |
 | `src/CodexSessionParser.*` | `CodexDesktopSessionParser.swift` 的移植：把 rollout 日志行转成思考、工作、等待授权、完成等活动 |
 | `src/CodexActivityMonitor.*` | `CodexDesktopActivityMonitor.swift` 的移植：找最近写入的 8 个 rollout 文件并只读新增的完整行；首次轮询不回放历史 |
@@ -33,7 +33,7 @@ Windows 版沿用 CodexBar `Integrations/Linux` 的分层方式：C++ 控制器 
 
 ## 在 Windows 上构建
 
-需要 Windows 10 1809 及以上（Mica 需要 Windows 11 22H2）、Visual Studio 2022（MSVC x64），以及 Qt 6.8 或更新版本的 MSVC 套件（含 Qt Quick Controls 和 Qt SVG）。
+需要 Windows 10 1809 及以上、Visual Studio 2022（MSVC x64），以及 Qt 6.8 或更新版本的 MSVC 套件（含 Qt Quick Controls 和 Qt SVG）。
 
 > [!IMPORTANT]
 > 请把仓库 clone 到**只含英文字符的路径**（例如 `C:\src\Agent-Signal-Bar`）。Qt 的 `rcc` 打不开中文路径下的 `.qrc`，测试也会把 golden 文件路径编译进程序。
@@ -118,7 +118,7 @@ Integrations/Windows/dev-macos.sh capture
 | 悬浮信号灯 | 置顶工具窗口 | ✅ 拖动、缩放预设、自定义缩放、角标、右键菜单、浮层；位置会保存，显示器拔掉后会移回主屏 |
 | 灯语、灯效与节奏 | `SignalModel` | ✅ 与 Swift 实现逐帧比对（1998 组 golden 数据），节奏表另有单元测试 |
 | 设置窗口 7 个页面 | QML 页面 | ⚠️ 运行、灯效、连接、通用、调试页和用量页的本机 Token 部分都接上了真实数据，加载中、空状态和错误文案随功能一起补齐。仍缺的 macOS 文案主要属于没有移植的功能：Claude CLI `/usage` 探测、cswap 账号切换和 Pi 会话。运行 `python3 -I Integrations/Windows/tests/parity_strings.py` 可列出缺失项（结果写到临时目录下的 `asb-parity`） |
-| 液态玻璃 | Mica（标准）/ Mica Alt（增强），只用于设置窗口 | ⚠️ 已写 DWM 调用；低于 Windows 11 22H2 时自动保持不透明。需要实机验收 |
+| 液态玻璃 | 不提供，窗口保持不透明 | ✅ 有意不做：macOS 专属外观，Windows 版没有这个选项 |
 | 开机自启动（SMAppService） | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | ⚠️ 已实现，需要实机验收 |
 | 提示音（AVFoundation，可调音量） | `PlaySound` 从内存播放按音量缩放后的 WAV（`SoundFile`；新西兰录音已转成 WAV） | ✅ 按 `FloatingSignalWindowController` 自动播放：灯变为“已完成”时一声完成提示音，Agent 工作时绿灯每亮一次一声闪烁音；轻柔/标准/响亮三档音量（0.28/0.55/0.88）。已在实机上确认触发时机 |
 | 多语言（10 种） | `I18n` + `translations.json`（由 `tests/extract_translations.ps1` 从 `AppLanguage.swift` 生成） | ✅ 与 macOS 相同的方式：简体中文和英文每条都有；繁体中文、日语、韩语、西班牙语、法语、德语、葡萄牙语用 macOS 的翻译表（260 条），表里没有的文案显示英文。“跟随系统”按 macOS 的规则识别语言；数字（万/亿）、日期和字体随语言切换（微软雅黑 / 微软正黑体 / Yu Gothic UI / Malgun Gothic / Segoe UI）。对齐了 21 条英文写法以便命中翻译表。截图回归多了一组日语界面 |
@@ -149,7 +149,7 @@ Integrations/Windows/dev-macos.sh capture
 2. 单击托盘图标：卡片面板出现在图标上方并贴着任务栏；任务栏移到顶部或侧边后，面板仍然贴着任务栏；点击其他位置时面板关闭。
 3. 右键托盘图标：弹出系统菜单；“显示/隐藏悬浮灯”“暂停监控”“关闭声音提醒”能立即生效。
 4. 悬浮灯：可以拖动，并且始终在其他窗口之上；拖动右下角箭头可以缩放；右键菜单能切换大小和方向；退出后重新打开，位置保持不变。
-5. 设置 → 通用：切换主题和语言后界面立即更新；打开“液态玻璃效果”后，Windows 11 上出现 Mica 背景（Windows 10 上应保持纯色，不报错）。
+5. 设置 → 通用：切换主题和语言后界面立即更新，深色主题下设置窗口的标题栏也变深（Windows 11 22H2 起）；这一页没有“液态玻璃”选项。
 6. 设置 → 通用 → 开机自启动：开启后注册表 `HKCU\…\Run` 出现 `AgentSignalBar`，关闭后该项被删除。
 7. 设置 → 灯效：各灯效下拉框和新西兰模式改变托盘与悬浮灯的节奏；“试听”按钮能播放四种提示音。
 8. 设置 → 调试（在“通用”里打开“显示调试设置”）：逐个点击灯光调试按钮，托盘和悬浮灯同步变化。

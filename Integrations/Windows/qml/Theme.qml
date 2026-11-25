@@ -43,15 +43,10 @@ QtObject {
     readonly property int radiusGroup: 10
     readonly property int radiusPanel: 14
 
-    // Liquid glass → Windows 11 Mica: the settings surfaces turn translucent so the DWM
-    // backdrop shows through. Elsewhere (and with glass off) they stay opaque.
-    readonly property bool glass: App.supportsBackdrop && App.prefs.glassEnabled === true
-    function surface(c, glassAlpha) { return glass ? Qt.rgba(c.r, c.g, c.b, glassAlpha) : c }
-
-    // Surfaces.
-    readonly property color windowBg: surface(dark ? "#1e1e1e" : "#f3f3f3", 0)
-    readonly property color contentBg: surface(dark ? "#232323" : "#f5f5f5", 0.45)
-    readonly property color sidebarBg: surface(dark ? "#2c2c2e" : "#e9e9ec", 0.25)
+    // Surfaces. Opaque: the Windows app has no liquid glass (macOS's material).
+    readonly property color windowBg: dark ? "#1e1e1e" : "#f3f3f3"
+    readonly property color contentBg: dark ? "#232323" : "#f5f5f5"
+    readonly property color sidebarBg: dark ? "#2c2c2e" : "#e9e9ec"
     readonly property color groupFill: dark ? Qt.rgba(0.172, 0.172, 0.172, 1) : "#ffffff"
     readonly property color groupStroke: dark ? Qt.rgba(1, 1, 1, 0.07) : Qt.rgba(0, 0, 0, 0.07)
     readonly property color track: dark ? Qt.rgba(1, 1, 1, 0.14) : Qt.rgba(0, 0, 0, 0.10)

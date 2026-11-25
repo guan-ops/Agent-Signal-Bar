@@ -44,8 +44,6 @@ class AppController : public QObject {
     Q_PROPERTY(QString version READ version CONSTANT)
     Q_PROPERTY(QString captureDir READ captureDir CONSTANT)
     Q_PROPERTY(QString uiFont READ uiFont NOTIFY languageChanged)
-    // DWMWA_SYSTEMBACKDROP_TYPE needs Windows 11 22H2 (build 22621); older systems stay opaque.
-    Q_PROPERTY(bool supportsBackdrop READ supportsBackdrop CONSTANT)
     // True when the lamp follows Codex activity; false for capture and --signal demo runs.
     Q_PROPERTY(bool liveData READ liveData CONSTANT)
     // Visible sessions and recent events as QML-ready maps (title, detail, state, time, ...).
@@ -107,7 +105,6 @@ public:
     QString version() const;
     QString captureDir() const { return m_captureDir; }
     QString uiFont() const;
-    bool supportsBackdrop() const;
     bool liveData() const { return m_runtime != nullptr; }
     QVariantList sessions() const { return m_sessions; }
     QVariantList events() const { return m_events; }
@@ -158,7 +155,9 @@ public:
     Q_INVOKABLE void copyText(const QString &text) const;
     Q_INVOKABLE void openUrl(const QString &url) const;
     Q_INVOKABLE void previewSound(const QString &kind, const QString &sound) const;
-    Q_INVOKABLE void applyBackdrop(QWindow *window, const QString &kind) const;
+    // Dark title bar following the theme, and rounded corners. The Windows app has no liquid
+    // glass (Mica / Acrylic backdrop): its windows stay opaque.
+    Q_INVOKABLE void applyWindowFrame(QWindow *window) const;
     Q_INVOKABLE QString settingsFilePath() const;
     Q_INVOKABLE void checkCodexConnection();
     Q_INVOKABLE void checkClaudeHook();
