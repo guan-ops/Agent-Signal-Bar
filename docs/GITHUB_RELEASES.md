@@ -85,11 +85,11 @@ When both jobs have succeeded, check the draft:
 TAG=v<version>
 gh release view "$TAG" --json isDraft,assets --jq '{isDraft, assets: [.assets[].name]}'
 CHECK_DIR="$(mktemp -d /private/tmp/asb-release-check.XXXXXX)"
-gh release download "$TAG" --dir "$CHECK_DIR"
-(cd "$CHECK_DIR" \
-  && shasum -a 256 -c AgentSignalBar-SHA256SUMS.txt \
-  && shasum -a 256 -c AgentSignalBar-windows-SHA256SUMS.txt)
-grep -h "shortVersionString" "$CHECK_DIR"/*appcast*.xml
+gh release download "$TAG" --dir "$CHECK_DIR/dist"
+# The macOS checksum file lists dist/<file>; the Windows one lists bare file names.
+(cd "$CHECK_DIR" && shasum -a 256 -c dist/AgentSignalBar-SHA256SUMS.txt)
+(cd "$CHECK_DIR/dist" && shasum -a 256 -c AgentSignalBar-windows-SHA256SUMS.txt)
+grep -h "shortVersionString" "$CHECK_DIR"/dist/*appcast*.xml
 ```
 
 Expect `isDraft: true`, the 8 macOS files and the 4 Windows files, both checksum files passing, and
