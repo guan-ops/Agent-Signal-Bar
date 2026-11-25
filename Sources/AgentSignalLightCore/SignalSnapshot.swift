@@ -9,6 +9,7 @@ public struct SessionStatus: Identifiable, Equatable, Sendable {
     public let agent: String?
     public let lastEvent: String?
     public let quota: AgentQuotaStatus?
+    public let awaitingView: Bool
 
     public init(
         sessionID: String,
@@ -16,7 +17,8 @@ public struct SessionStatus: Identifiable, Equatable, Sendable {
         updatedAt: Date,
         agent: String? = nil,
         lastEvent: String? = nil,
-        quota: AgentQuotaStatus? = nil
+        quota: AgentQuotaStatus? = nil,
+        awaitingView: Bool = false
     ) {
         self.sessionID = sessionID
         self.signal = signal
@@ -24,6 +26,7 @@ public struct SessionStatus: Identifiable, Equatable, Sendable {
         self.agent = agent
         self.lastEvent = lastEvent
         self.quota = quota
+        self.awaitingView = awaitingView
     }
 }
 

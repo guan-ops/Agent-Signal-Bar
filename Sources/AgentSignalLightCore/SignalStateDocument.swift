@@ -6,19 +6,23 @@ public struct SessionRecord: Codable, Equatable, Sendable {
     public var lastEvent: String?
     public var updatedAt: Date
     public var quota: AgentQuotaStatus?
+    /// Reply awaiting user review; must not use short `done` TTL as unread.
+    public var awaitingView: Bool
 
     public init(
         agent: String? = nil,
         signal: AgentSignal,
         lastEvent: String? = nil,
         updatedAt: Date,
-        quota: AgentQuotaStatus? = nil
+        quota: AgentQuotaStatus? = nil,
+        awaitingView: Bool = false
     ) {
         self.agent = agent
         self.signal = signal
         self.lastEvent = lastEvent
         self.updatedAt = updatedAt
         self.quota = quota
+        self.awaitingView = awaitingView
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -27,6 +31,29 @@ public struct SessionRecord: Codable, Equatable, Sendable {
         case lastEvent = "last_event"
         case updatedAt = "updated_at"
         case quota
+        case awaitingView = "awaiting_view"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        agent = try container.decodeIfPresent(String.self, forKey: .agent)
+        signal = try container.decode(AgentSignal.self, forKey: .signal)
+        lastEvent = try container.decodeIfPresent(String.self, forKey: .lastEvent)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        quota = try container.decodeIfPresent(AgentQuotaStatus.self, forKey: .quota)
+        awaitingView = try container.decodeIfPresent(Bool.self, forKey: .awaitingView) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(agent, forKey: .agent)
+        try container.encode(signal, forKey: .signal)
+        try container.encodeIfPresent(lastEvent, forKey: .lastEvent)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(quota, forKey: .quota)
+        if awaitingView {
+            try container.encode(awaitingView, forKey: .awaitingView)
+        }
     }
 }
 
@@ -139,7 +166,8 @@ public extension SignalStateDocument {
                     updatedAt: record.updatedAt,
                     agent: record.agent,
                     lastEvent: record.lastEvent,
-                    quota: record.quota
+                    quota: record.quota,
+                    awaitingView: record.awaitingView
                 )
             }
             .sorted { lhs, rhs in
