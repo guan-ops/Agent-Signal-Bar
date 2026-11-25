@@ -49,8 +49,15 @@ private enum FloatingSignalPanelLayout {
         max(badgeSize(for: scale), resizeHandleSize(for: scale)) + controlGap(for: scale)
     }
 
+    /// Room below the bottom badge for its shadow. The window has no system shadow (see
+    /// `ensurePanel`), so a shadow shows only where the window has room for it. The sides
+    /// already have room, and the shadow falls downward, so only the bottom needs more.
+    static func shadowRoom(for _: CGFloat) -> CGFloat {
+        5
+    }
+
     private static func bottomOutset(for scale: CGFloat) -> CGFloat {
-        resizeHandleSize(for: scale) + controlGap(for: scale)
+        resizeHandleSize(for: scale) + controlGap(for: scale) + shadowRoom(for: scale)
     }
 }
 
@@ -262,7 +269,10 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.hasShadow = true
+        // No system shadow. With it on, screenshots showed a dark outline about a point outside
+        // each badge, and the gap between the two let a bright window or wallpaper show
+        // through as a ring. The badges draw their own shadow instead.
+        panel.hasShadow = false
         panel.isMovableByWindowBackground = true
         panel.acceptsMouseMovedEvents = true
         panel.delegate = self
@@ -303,7 +313,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         switch anchor {
         case .savedOrDefault:
             if let savedOrigin = model.savedFloatingSignalOrigin() {
-                origin = savedOrigin
+                origin = frameOrigin(forSavedOrigin: savedOrigin, visualScale: visualScale)
             } else {
                 origin = defaultPanelFrame(for: size).origin
             }
@@ -326,8 +336,18 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         }
         isApplyingFrame = false
         if persistsOrigin {
-            model.setFloatingSignalOrigin(frame.origin)
+            model.setFloatingSignalOrigin(savedOrigin(forFrameOrigin: frame.origin, visualScale: visualScale))
         }
+    }
+
+    /// The saved origin is the window's origin without the shadow room below the content. A
+    /// position saved before that room existed therefore still puts the light in the same place.
+    private func frameOrigin(forSavedOrigin origin: NSPoint, visualScale: CGFloat) -> NSPoint {
+        NSPoint(x: origin.x, y: origin.y - FloatingSignalPanelLayout.shadowRoom(for: visualScale))
+    }
+
+    private func savedOrigin(forFrameOrigin origin: NSPoint, visualScale: CGFloat) -> NSPoint {
+        NSPoint(x: origin.x, y: origin.y + FloatingSignalPanelLayout.shadowRoom(for: visualScale))
     }
 
     private func setFloatingSignalVisualScaleFromResizeHandle(_ visualScale: CGFloat, persist: Bool) {
@@ -391,7 +411,8 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
             return
         }
 
-        model.setFloatingSignalOrigin(movedPanel.frame.origin)
+        model.setFloatingSignalOrigin(
+            savedOrigin(forFrameOrigin: movedPanel.frame.origin, visualScale: model.floatingSignalVisualScale))
     }
 
     private func evaluateCompletionSound() {
