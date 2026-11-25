@@ -7,8 +7,13 @@ This repository uses GitHub Actions for continuous integration and tag-based rel
 Every push and pull request to `main` runs:
 
 - shell script syntax checks
+- Python script regression tests
 - `swift test`
+- builds of every product, including the Intel (`x86_64`) slices
 - `./script/verify_local_integrations.sh`
+
+CI does not build the Windows version (`Integrations/Windows`). It is built and tested only by the
+release workflow.
 
 Workflow file:
 
@@ -45,7 +50,8 @@ Pushing the tag starts:
 .github/workflows/release.yml
 ```
 
-The release workflow runs tests, packages the app, verifies checksums, and uploads:
+The release workflow runs tests, packages the app, verifies checksums, and creates a
+**draft** release with:
 
 - `AgentSignalBar.zip`
 - `AgentSignalBar.dmg`
@@ -56,7 +62,51 @@ The release workflow runs tests, packages the app, verifies checksums, and uploa
 - `AgentSignalBar-release-manifest.json`
 - `AgentSignalBar-SHA256SUMS.txt`
 
-The release package builds universal macOS binaries by default (`arm64 x86_64`),
+Its `windows` job then builds the Windows version, runs the Windows unit tests, and uploads to the
+same draft:
+
+- `AgentSignalBar-v<version>-windows-x64-setup.exe`
+- `AgentSignalBar-v<version>-windows-x64.zip`
+- `AgentSignalBar-windows-x64-appcast.xml`
+- `AgentSignalBar-windows-SHA256SUMS.txt`
+
+Nothing is public until a maintainer publishes the draft (see below).
+
+## Publishing the Draft
+
+Immutable releases are enabled for this repository. Once a release is published, its assets can't
+be added, replaced or deleted, and its tag is locked. If the release is deleted later, the same tag
+name still can't be used again. That is why the workflow stops at a draft: both platforms' files
+have to be on the release before it is published.
+
+When both jobs have succeeded, check the draft:
+
+```bash
+TAG=v<version>
+gh release view "$TAG" --json isDraft,assets --jq '{isDraft, assets: [.assets[].name]}'
+CHECK_DIR="$(mktemp -d /private/tmp/asb-release-check.XXXXXX)"
+gh release download "$TAG" --dir "$CHECK_DIR/dist"
+# The macOS checksum file lists dist/<file>; the Windows one lists bare file names.
+(cd "$CHECK_DIR" && shasum -a 256 -c dist/AgentSignalBar-SHA256SUMS.txt)
+(cd "$CHECK_DIR/dist" && shasum -a 256 -c AgentSignalBar-windows-SHA256SUMS.txt)
+grep -h "shortVersionString" "$CHECK_DIR"/dist/*appcast*.xml
+```
+
+Expect `isDraft: true`, the 8 macOS files and the 4 Windows files, both checksum files passing, and
+the new version in all three appcasts. Then publish:
+
+```bash
+gh release edit "$TAG" --draft=false --latest
+```
+
+This step can't be undone. Both update feeds are read from `releases/latest/download/`, so installed
+apps see the new version only after this.
+
+If a job fails, the draft stays unpublished and no user sees it. Re-run the failed job from the
+Actions page; the Windows upload uses `--clobber`, so a re-run replaces its files. If the fix needs a
+code change, delete the draft and the tag (neither is locked before publishing), merge the fix and
+push the tag again. After publishing, fix problems with a new patch version instead.
+ macOS binaries by default (`arm64 x86_64`),
 so the app, bundled CLI, release CLI, and icon preview CLI are verified for both
 Apple Silicon and Intel Mac.
 
@@ -122,7 +172,7 @@ Before tagging a new version, confirm:
 - `VERSION` has the intended `VERSION=x.y.z` and monotonically increasing `BUILD=n`.
 - `docs/releases/<tag>.md` exists and includes clear Chinese and English release notes.
 - `README.md` and `README.zh-CN.md` describe the current behavior.
-- `SPARKLE_PRIVATE_KEY` is configured for GitHub Actions before pushing a tag.
+- `SPARKLE_PRIVATE_KEY` is configured in the `release` environment before pushing a tag. Both the macOS and the Windows appcasts are signed with it.
 - `./script/verify_release_all.sh --skip-package` passes if artifacts already exist, including universal architecture checks.
 - `./script/verify_release_all.sh` passes for a full local release gate and confirms the app/CLI contain `arm64 x86_64` slices.
 
