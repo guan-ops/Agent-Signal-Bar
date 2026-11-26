@@ -23,6 +23,10 @@ let package = Package(
     targets: [
         .target(name: "AgentSignalLightCore"),
         .target(
+            name: "AgentSignalKeychainShim",
+            linkerSettings: [.linkedFramework("Security")]
+        ),
+        .target(
             name: "AgentSignalLightUI",
             dependencies: ["AgentSignalLightCore"]
         ),
@@ -31,6 +35,7 @@ let package = Package(
             dependencies: [
                 "AgentSignalLightCore",
                 "AgentSignalLightUI",
+                "AgentSignalKeychainShim",
                 .product(name: "SweetCookieKit", package: "SweetCookieKit"),
                 .product(name: "Sparkle", package: "Sparkle")
             ],
