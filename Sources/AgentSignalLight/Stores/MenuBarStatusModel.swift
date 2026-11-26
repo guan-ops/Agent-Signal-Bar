@@ -2558,6 +2558,8 @@ final class MenuBarStatusModel: ObservableObject {
 
     private func enableLaunchAtLoginByDefaultIfNeeded() {
         guard !isLaunchAtLoginEnabled else { return }
+        // Not running from an app bundle (tests, a bare executable): there is nothing to register.
+        guard launchAtLoginManager.canRegister else { return }
         setLaunchAtLoginEnabled(true)
     }
 

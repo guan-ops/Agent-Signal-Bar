@@ -32,6 +32,13 @@ struct LaunchAtLoginManager: Sendable {
         launchAgentDirectory.appendingPathComponent("\(label).plist")
     }
 
+    /// A login item can only open an app bundle. In a test runner or a bare executable
+    /// `Bundle.main` is the folder that holds the binary, and registering that would replace
+    /// the user's real login item with one that opens a folder.
+    var canRegister: Bool {
+        appURL.pathExtension.lowercased() == "app"
+    }
+
     var isEnabled: Bool {
         FileManager.default.fileExists(atPath: plistURL.path) && launchctlPrintSucceeds()
     }
@@ -45,6 +52,8 @@ struct LaunchAtLoginManager: Sendable {
     }
 
     private func install() throws {
+        guard canRegister else { throw LaunchAtLoginError.notAnAppBundle(appURL) }
+
         try FileManager.default.createDirectory(
             at: launchAgentDirectory,
             withIntermediateDirectories: true
@@ -63,6 +72,8 @@ struct LaunchAtLoginManager: Sendable {
     }
 
     private func uninstall() throws {
+        guard canRegister else { throw LaunchAtLoginError.notAnAppBundle(appURL) }
+
         try? runLaunchctl(arguments: ["bootout", "gui/\(getuid())", plistURL.path], allowsFailure: true)
         try? FileManager.default.removeItem(at: plistURL)
     }
@@ -256,11 +267,14 @@ struct LaunchAtLoginManager: Sendable {
 
 enum LaunchAtLoginError: Error, LocalizedError {
     case launchctlFailed(String)
+    case notAnAppBundle(URL)
 
     var errorDescription: String? {
         switch self {
         case .launchctlFailed(let message):
             return message
+        case .notAnAppBundle(let url):
+            return "Launch at login needs an app bundle, not \(url.path)"
         }
     }
 }

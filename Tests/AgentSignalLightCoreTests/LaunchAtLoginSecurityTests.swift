@@ -85,6 +85,41 @@ final class LaunchAtLoginSecurityTests: XCTestCase {
         }
     }
 
+    func testOnlyAnAppBundleCanBeRegistered() {
+        // `Bundle.main.bundleURL` of the shipped app: a directory URL ending in ".app/".
+        let app = URL(fileURLWithPath: "/Applications/AgentSignalLight.app", isDirectory: true)
+        XCTAssertTrue(LaunchAtLoginManager(appURL: app).canRegister)
+        XCTAssertTrue(LaunchAtLoginManager(appURL: URL(fileURLWithPath: "/tmp/Agent Signal.APP/")).canRegister)
+
+        // What a test runner or `swift run` reports: the folder that holds the executable.
+        let folder = URL(fileURLWithPath: "/Applications/Xcode.app/Contents/Developer/usr/bin", isDirectory: true)
+        XCTAssertFalse(LaunchAtLoginManager(appURL: folder).canRegister)
+        XCTAssertFalse(LaunchAtLoginManager().canRegister, "The test runner is not an app bundle")
+    }
+
+    func testEnablingWithoutAnAppBundleThrowsAndWritesNothing() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let launchAgents = root.appendingPathComponent("LaunchAgents", isDirectory: true)
+        let stateDirectory = root.appendingPathComponent("state", isDirectory: true)
+        let manager = LaunchAtLoginManager(
+            appURL: root.appendingPathComponent("bin", isDirectory: true),
+            launchAgentDirectory: launchAgents,
+            stateDirectoryURL: stateDirectory
+        )
+
+        for enabled in [true, false] {
+            XCTAssertThrowsError(try manager.setEnabled(enabled)) { error in
+                guard case LaunchAtLoginError.notAnAppBundle = error else {
+                    return XCTFail("Expected notAnAppBundle, got \(error)")
+                }
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: launchAgents.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stateDirectory.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+    }
+
     private func temporaryRoot() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent(
             "agent-signal-launch-security-\(UUID().uuidString)",
