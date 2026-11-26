@@ -6,23 +6,26 @@ import XCTest
 
 final class ClaudeSilentCredentialTests: XCTestCase {
     func testLegacyInteractionFlagIsDisabledAndRestoredIncludingNestedCalls() throws {
-        var before: DarwinBoolean = false
-        XCTAssertEqual(SecKeychainGetUserInteractionAllowed(&before), errSecSuccess)
+        let before = try XCTUnwrap(KeychainInteractionPolicy.isInteractionAllowed)
         let result = KeychainInteractionPolicy.perform(allowInteraction: false) {
-            var inside: DarwinBoolean = true
-            XCTAssertEqual(SecKeychainGetUserInteractionAllowed(&inside), errSecSuccess)
-            XCTAssertFalse(inside.boolValue)
+            XCTAssertEqual(KeychainInteractionPolicy.isInteractionAllowed, false)
             return KeychainInteractionPolicy.perform(allowInteraction: false) {
-                var nested: DarwinBoolean = true
-                XCTAssertEqual(SecKeychainGetUserInteractionAllowed(&nested), errSecSuccess)
-                XCTAssertFalse(nested.boolValue)
+                XCTAssertEqual(KeychainInteractionPolicy.isInteractionAllowed, false)
                 return errSecAuthFailed
             }
         }
         XCTAssertEqual(result, errSecAuthFailed)
-        var after: DarwinBoolean = false
-        XCTAssertEqual(SecKeychainGetUserInteractionAllowed(&after), errSecSuccess)
-        XCTAssertEqual(after.boolValue, before.boolValue, "Never leave a process-wide setting changed")
+        XCTAssertEqual(KeychainInteractionPolicy.isInteractionAllowed, before, "Never leave a process-wide setting changed")
+    }
+
+    func testAllowedInteractionLeavesTheLegacyFlagUntouched() throws {
+        let before = try XCTUnwrap(KeychainInteractionPolicy.isInteractionAllowed)
+        let result = KeychainInteractionPolicy.perform(allowInteraction: true) {
+            XCTAssertEqual(KeychainInteractionPolicy.isInteractionAllowed, before)
+            return errSecSuccess
+        }
+        XCTAssertEqual(result, errSecSuccess)
+        XCTAssertEqual(KeychainInteractionPolicy.isInteractionAllowed, before)
     }
 
     func testSilentReadFailsClosedInsteadOfUsingAnAmbientCredentialFile() throws {
@@ -36,9 +39,7 @@ final class ClaudeSilentCredentialTests: XCTestCase {
             XCTAssertThrowsError(try ClaudeCredentialReader.read(allowPrompt: false, environment: [:], home: root, keychainRead: { query in
                 XCTAssertEqual(query[kSecAttrService as String] as? String, "Claude Code-credentials")
                 XCTAssertEqual((query[kSecUseAuthenticationContext as String] as? LAContext)?.interactionNotAllowed, true)
-                var allowed: DarwinBoolean = true
-                XCTAssertEqual(SecKeychainGetUserInteractionAllowed(&allowed), errSecSuccess)
-                XCTAssertFalse(allowed.boolValue)
+                XCTAssertEqual(KeychainInteractionPolicy.isInteractionAllowed, false)
                 return (status, nil)
             })) { XCTAssertEqual($0 as? ClaudeSupportError, .keychainDenied) }
         }
