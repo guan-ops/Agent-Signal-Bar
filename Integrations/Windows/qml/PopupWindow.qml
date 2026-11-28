@@ -73,7 +73,28 @@ Window {
             clip: contentHeight > height
             interactive: contentHeight > height
             boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ScrollBar { policy: flick.interactive ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+            // Shown whenever the content is taller than the window (the system menu is taller than
+            // a 1080p work area): AsNeeded shows the Basic style's handle only while hovering or
+            // scrolling, so nothing hinted that Check for Updates, Settings and Quit lay below.
+            // It sits in the right padding, 5 px wide so it fits the system menu's 6 px, clear of
+            // right-aligned text. Anchored to flick (its parent before the reparenting, a sibling
+            // after), as in the ScrollBar docs: anchoring to surface fails while flick is the parent.
+            ScrollBar.vertical: ScrollBar {
+                id: vbar
+                parent: surface
+                anchors.top: flick.top
+                anchors.bottom: flick.bottom
+                anchors.right: flick.right
+                anchors.rightMargin: 1 - win.padding
+                padding: 1
+                policy: flick.interactive ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+                // Theme colours: the Basic handle uses palette.mid, which vanishes on the dark panel.
+                contentItem: Rectangle {
+                    implicitWidth: 3
+                    radius: 1.5
+                    color: vbar.pressed || vbar.hovered ? Theme.secondary : Theme.tertiary
+                }
+            }
 
             ColumnLayout {
                 id: column
