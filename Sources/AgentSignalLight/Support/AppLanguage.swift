@@ -252,15 +252,6 @@ extension MenuBarStatusModel {
         }
     }
 
-    func displayName(for effect: SettingsGlassEffect) -> String {
-        switch effect {
-        case .reduced:
-            return text("标准", "Standard")
-        case .standard:
-            return text("增强", "Enhanced")
-        }
-    }
-
     func displayName(for mode: StatusMenuMode) -> String {
         switch mode {
         case .detailed:

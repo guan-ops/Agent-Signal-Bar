@@ -8,8 +8,8 @@ struct DebugWindowView: View {
     @ObservedObject var model: MenuBarStatusModel
     @ObservedObject var updater: SparkleUpdaterService
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.displayScale) private var displayScale
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.displayScale) private var displayScale
     @State private var selectedSettingsTab: SettingsTab = .activity
     @State private var expandedSettingsDropdown: SettingsDropdownID?
     @State private var selectedUsagePlatform: UsagePlatform = .codex
@@ -44,7 +44,7 @@ struct DebugWindowView: View {
                 .padding(.top, 12)
                 .padding(.bottom, 10)
                 .fixedSize(horizontal: false, vertical: true)
-                .background { settingsPaneBackground(isSidebar: false).ignoresSafeArea() }
+                .background { settingsPageBackground.ignoresSafeArea() }
                 .overlay { SettingsWindowDragRegionView() }
                 .overlay(alignment: .bottom) {
                     Rectangle()
@@ -59,7 +59,7 @@ struct DebugWindowView: View {
                     .padding(.top, 8)
                     .frame(width: SettingsWindowMetrics.sidebarWidth)
                     .background {
-                        settingsPaneBackground(isSidebar: true)
+                        settingsSidebarBackground
                             .ignoresSafeArea()
                     }
                     .overlay(alignment: .trailing) {
@@ -73,7 +73,7 @@ struct DebugWindowView: View {
                 settingsContentArea
                     .id(selectedSettingsTab)
                     .background {
-                        settingsPaneBackground(isSidebar: false)
+                        settingsPageBackground
                             .ignoresSafeArea()
                     }
             }
@@ -491,21 +491,6 @@ struct DebugWindowView: View {
                     }
                 }
                 .zIndex(expandedSettingsDropdown == .currency ? 1000 : 0)
-
-                settingRow(model.text("液态玻璃效果", "Liquid glass")) {
-                    settingsSwitch(settingsGlassEnabledBinding)
-                }
-
-                if model.isSettingsGlassEnabled {
-                    settingRow(model.text("液态玻璃强度", "Liquid glass strength")) {
-                        compactSegmentedControl(
-                            options: SettingsGlassEffect.allCases,
-                            selection: settingsGlassEffectBinding
-                        ) { effect in
-                            model.displayName(for: effect)
-                        }
-                    }
-                }
 
             }
             .zIndex(isGeneralDropdownExpanded ? 10 : 1)
@@ -3206,7 +3191,7 @@ struct DebugWindowView: View {
         .buttonStyle(.plain)
         .frame(width: width, height: dropdownControlHeight, alignment: .leading)
         .background(
-            glassControlBackground(cornerRadius: 6)
+            controlBackground(cornerRadius: 6)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -3272,7 +3257,7 @@ struct DebugWindowView: View {
         .padding(.horizontal, 9)
         .frame(width: width, height: dropdownControlHeight)
         .background(
-            glassControlBackground(cornerRadius: 6)
+            controlBackground(cornerRadius: 6)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -3291,7 +3276,7 @@ struct DebugWindowView: View {
         .padding(.vertical, 3)
         .frame(width: width)
         .background(
-            glassDropdownBackground(cornerRadius: 8)
+            dropdownBackground(cornerRadius: 8)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -3435,7 +3420,7 @@ struct DebugWindowView: View {
             .frame(width: diagnosticActionButtonWidth, height: dropdownControlHeight)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isSelected ? Color.accentColor : (model.isSettingsGlassEnabled ? glassControlTint : solidControlFill))
+                    .fill(isSelected ? Color.accentColor : solidControlFill)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -3637,7 +3622,7 @@ struct DebugWindowView: View {
         .frame(width: fillsWidth ? nil : (width ?? settingsActionButtonWidth), height: dropdownControlHeight)
         .frame(maxWidth: fillsWidth ? .infinity : nil)
         .background(
-            glassControlBackground(cornerRadius: 6)
+            controlBackground(cornerRadius: 6)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -3652,7 +3637,7 @@ struct DebugWindowView: View {
             .foregroundStyle(.primary)
             .frame(width: dropdownControlHeight, height: dropdownControlHeight)
             .background(
-                glassControlBackground(cornerRadius: 6)
+                controlBackground(cornerRadius: 6)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -3673,7 +3658,7 @@ struct DebugWindowView: View {
         .padding(.horizontal, 9)
         .frame(width: width ?? settingsActionButtonWidth, height: dropdownControlHeight)
         .background(
-            glassControlBackground(cornerRadius: 6)
+            controlBackground(cornerRadius: 6)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -3727,7 +3712,7 @@ struct DebugWindowView: View {
         .padding(2)
         .frame(width: width ?? effectSegmentWidth, height: dropdownControlHeight)
         .background(
-            glassControlBackground(cornerRadius: 7)
+            controlBackground(cornerRadius: 7)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -3736,34 +3721,43 @@ struct DebugWindowView: View {
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
-    private func glassControlBackground(cornerRadius: CGFloat) -> some View {
+    private func controlBackground(cornerRadius: CGFloat) -> some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(model.isSettingsGlassEnabled ? glassControlTint : solidControlFill)
+            .fill(solidControlFill)
     }
 
+    private func dropdownBackground(cornerRadius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(solidDropdownFill)
+    }
+
+    /// The sidebar: slightly see-through, so the desktop tints it a little. Most of what shows
+    /// is still the solid sidebar color. Reduce Transparency gets only the solid color.
     @ViewBuilder
-    private func glassDropdownBackground(cornerRadius: CGFloat) -> some View {
-        if model.isSettingsGlassEnabled && !reduceTransparency {
-            if #available(macOS 26.0, *) {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.clear)
-                    .glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
-            } else {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.regularMaterial)
-            }
+    private var settingsSidebarBackground: some View {
+        if reduceTransparency {
+            solidSidebarColor
         } else {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(solidDropdownFill)
+            SettingsGlassBackdropView(material: .sidebar)
+                .overlay { solidSidebarColor.opacity(Self.sidebarSolidOpacity) }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
     }
 
-    @ViewBuilder
-    private func settingsPaneBackground(isSidebar: Bool) -> some View {
-        if !isSidebar {
-            // CodexBar 0.56.6 links against SDK 14; SDK 26 renders the same material
-            // darker. Preserve its native material and compensate only the page tone.
-            SettingsGlassBackdropView(material: .windowBackground)
+    /// How much of the solid sidebar color covers the see-through material: 0 is all material.
+    private static let sidebarSolidOpacity: Double = 0.8
+
+    private var solidSidebarColor: some View {
+        Color(nsColor: .windowBackgroundColor)
+            .overlay { Color.white.opacity(colorScheme == .dark ? 0.12 : 0.75) }
+    }
+
+    /// The header and the page behind the grouped boxes.
+    private var settingsPageBackground: some View {
+        // CodexBar 0.56.6 links against SDK 14; SDK 26 renders the same material
+        // darker. Preserve its native material and compensate only the page tone.
+        SettingsGlassBackdropView(material: .windowBackground)
             .overlay {
                 if #available(macOS 26.0, *) {
                     if colorScheme == .dark {
@@ -3775,34 +3769,6 @@ struct DebugWindowView: View {
             }
             .allowsHitTesting(false)
             .accessibilityHidden(true)
-        } else if isSidebar && model.isSettingsGlassEnabled && !reduceTransparency {
-            SettingsGlassBackdropView(
-                material: .sidebar
-            )
-            .overlay {
-                // The Standard UI option is persisted as `reduced`.
-                // Both strengths keep glass in the sidebar and use a solid header and page.
-                if model.settingsGlassEffect == .reduced {
-                    solidSettingsPaneBackground(isSidebar: isSidebar)
-                        .opacity(0.35)
-                }
-            }
-        } else {
-            solidSettingsPaneBackground(isSidebar: isSidebar)
-        }
-    }
-
-    private func solidSettingsPaneBackground(isSidebar: Bool) -> some View {
-        Color(nsColor: .windowBackgroundColor)
-            .overlay {
-                if isSidebar {
-                    Color.white.opacity(colorScheme == .dark ? 0.12 : 0.75)
-                }
-            }
-    }
-
-    private var glassControlTint: Color {
-        Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05)
     }
 
     private var solidControlFill: Color {
@@ -4368,13 +4334,6 @@ struct DebugWindowView: View {
         )
     }
 
-    private var settingsGlassEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { model.isSettingsGlassEnabled },
-            set: { model.setSettingsGlassEnabled($0) }
-        )
-    }
-
     private var debugSettingsVisibleBinding: Binding<Bool> {
         Binding(
             get: { model.isDebugSettingsVisible },
@@ -4492,13 +4451,6 @@ struct DebugWindowView: View {
             return
         }
         applyLightDebugTest(selectedLightDebugTest)
-    }
-
-    private var settingsGlassEffectBinding: Binding<SettingsGlassEffect> {
-        Binding(
-            get: { model.settingsGlassEffect },
-            set: { model.setSettingsGlassEffect($0) }
-        )
     }
 
     private var statusBarStyleBinding: Binding<TrafficSignalStyle> {
