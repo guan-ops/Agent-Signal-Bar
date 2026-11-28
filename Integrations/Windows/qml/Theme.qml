@@ -8,6 +8,9 @@ import AgentSignal
 QtObject {
     readonly property bool dark: App.dark
     readonly property string font: App.uiFont
+    // Segoe UI Variable at the optical size of "Segoe UI Variable Text", Windows' body-text face.
+    // Without it Qt uses the variable font's default optical size, which is tighter.
+    readonly property var fontAxes: font === "Segoe UI Variable" ? ({ "opsz": 10.5 }) : ({})
     readonly property color accent: App.accent
     // Text and icons on an accent fill. Windows hands Qt a light accent in dark mode and a dark
     // one in light mode (a grey accent becomes #DFDEDC in dark mode), so a fixed white can vanish.

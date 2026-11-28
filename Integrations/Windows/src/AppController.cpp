@@ -26,6 +26,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFont>
+#include <QFontDatabase>
 #include <QGuiApplication>
 #include <QLocale>
 #include <QPalette>
@@ -616,7 +617,12 @@ QString AppController::uiFont() const {
     if (lang == "zh-Hant") return "Microsoft JhengHei UI";
     if (lang == "ja") return "Yu Gothic UI";
     if (lang == "ko") return "Malgun Gothic";
-    return "Segoe UI Variable Text";
+    // Windows 11's variable Segoe UI. Qt's DirectWrite font database knows it only as the family
+    // "Segoe UI Variable" (Text, Small and Display are optical sizes, not families), so the old
+    // "Segoe UI Variable Text" never matched and Qt fell back to Tahoma. Theme.fontAxes selects the
+    // Text optical size. Windows 10 has no variable font: plain Segoe UI, which has the same widths.
+    static const bool variable = QFontDatabase::hasFamily(QStringLiteral("Segoe UI Variable"));
+    return variable ? QStringLiteral("Segoe UI Variable") : QStringLiteral("Segoe UI");
 #else
     return QGuiApplication::font().family();
 #endif

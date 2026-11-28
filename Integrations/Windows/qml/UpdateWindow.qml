@@ -156,6 +156,7 @@ Window {
                     width: notes.width
                     wrapMode: Text.WordWrap
                     font.family: Theme.font
+                    font.variableAxes: Theme.fontAxes
                     font.pixelSize: Theme.bodySize
                     color: Theme.text
                     linkColor: Theme.accent

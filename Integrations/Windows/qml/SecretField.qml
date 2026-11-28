@@ -11,6 +11,7 @@ TextField {
     implicitHeight: 26
     font.pixelSize: Theme.bodySize
     font.family: App.uiFont
+    font.variableAxes: Theme.fontAxes
     color: Theme.text
     placeholderTextColor: Theme.tertiary
     selectByMouse: true
