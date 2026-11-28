@@ -95,16 +95,17 @@ struct MenuUsageSummaryView: View {
                 } else { account }
                 quota
             }
+            // Both hosts (the native menu and the menu bar panel) are glass, so the groups are too.
             .padding(ASB.Space.m)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .asbGroupBackground()
+            .asbGlassGroupBackground()
             VStack(alignment: .leading, spacing: 10) {
                 tokens
                 CostCurrencyRateNote(store: model.costCurrency, text: model.text, compact: true)
             }
             .padding(ASB.Space.m)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .asbGroupBackground()
+            .asbGlassGroupBackground()
             Button(model.text("用量与账号设置…", "Usage & account settings…")) { onOpenSettings(navigation.provider) }
                 .buttonStyle(.borderless)
         }

@@ -36,6 +36,13 @@ enum ASB {
     enum Palette {
         /// Grouped boxes: white on the light window background, raised gray in dark mode.
         static let groupFill = dynamic(light: .white, dark: NSColor(calibratedWhite: 0.172, alpha: 1))
+        /// How dark a grouped box is on glass in dark mode: 0 shows the glass untouched, 1 is black.
+        static let glassGroupDarkOpacity: CGFloat = 0.25
+        /// Grouped boxes on a glass surface before macOS 26, where there is no Liquid Glass. In
+        /// dark mode the box is smoked glass instead of an opaque gray card, so the surface and
+        /// the colors behind it stay visible. Light mode keeps the white box.
+        static let glassGroupFill = dynamic(
+            light: .white, dark: NSColor(calibratedWhite: 0, alpha: glassGroupDarkOpacity))
         static let groupStroke = dynamic(
             light: NSColor(calibratedWhite: 0, alpha: 0.07), dark: NSColor(calibratedWhite: 1, alpha: 0.07))
         static let track = dynamic(
@@ -322,6 +329,27 @@ struct ASBPanelSurface: ViewModifier {
     }
 }
 
+/// A grouped box on a glass surface (the status menu, the menu bar panel). On macOS 26 and
+/// later the box is Liquid Glass, like the system's own controls, so the menu's glass and the
+/// colors behind it stay visible. Earlier systems get a see-through fill, and Reduce
+/// Transparency gets the solid box.
+struct ASBGlassGroupBackground: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: ASB.Radius.group, style: .continuous)
+        if reduceTransparency {
+            content.asbGroupBackground()
+        } else if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: shape)
+        } else {
+            content
+                .background(ASB.Palette.glassGroupFill, in: shape)
+                .overlay(shape.strokeBorder(ASB.Palette.groupStroke, lineWidth: 1).allowsHitTesting(false))
+        }
+    }
+}
+
 extension View {
     /// The grouped-box background for views that build their own padding and layout.
     func asbGroupBackground() -> some View {
@@ -331,6 +359,11 @@ extension View {
                     .strokeBorder(ASB.Palette.groupStroke, lineWidth: 1)
                     .allowsHitTesting(false)
             )
+    }
+
+    /// The grouped-box background for views that sit on a glass or material surface.
+    func asbGlassGroupBackground() -> some View {
+        modifier(ASBGlassGroupBackground())
     }
 
     /// The floating light's corner badges: an adaptive chip with a hairline and a soft

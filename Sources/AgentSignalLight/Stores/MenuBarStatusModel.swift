@@ -221,19 +221,6 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
     }
 }
 
-enum SettingsGlassEffect: String, CaseIterable, Hashable {
-    case reduced
-    case standard
-
-    static func preferenceValue(for rawValue: String?) -> SettingsGlassEffect? {
-        guard let rawValue else { return nil }
-        if rawValue == "enhanced" {
-            return .standard
-        }
-        return SettingsGlassEffect(rawValue: rawValue)
-    }
-}
-
 enum StatusMenuMode: String, CaseIterable, Hashable {
     case simple
     case detailed
@@ -430,11 +417,9 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var isClaudeDesktopMonitoringEnabled: Bool
     @Published var appLanguage: AppLanguage
     @Published var appTheme: AppTheme
-    @Published var isSettingsGlassEnabled: Bool
     @Published var isDebugSettingsVisible: Bool
     @Published var isDebugFileLoggingEnabled: Bool
     @Published var debugLogLevel: DebugLogLevel
-    @Published var settingsGlassEffect: SettingsGlassEffect
     @Published var isLowPowerModeEnabled: Bool
     @Published var isNewZealandTrafficLightModeEnabled: Bool
     @Published var isMonitoringPaused = false {
@@ -765,15 +750,11 @@ final class MenuBarStatusModel: ObservableObject {
         let storedBlockedSignalEffect = userDefaults.string(forKey: "blockedSignalEffect")
         let storedLanguage = userDefaults.string(forKey: "appLanguage")
         let storedTheme = userDefaults.string(forKey: "appTheme")
-        let storedSettingsGlassEnabled = userDefaults.object(forKey: "isSettingsGlassEnabled") as? Bool
         let storedDebugSettingsVisible =
             userDefaults.object(forKey: "isDebugSettingsVisible") as? Bool
         let storedDebugFileLoggingEnabled =
             userDefaults.object(forKey: "isDebugFileLoggingEnabled") as? Bool
         let storedDebugLogLevel = userDefaults.string(forKey: "debugLogLevel")
-        let storedSettingsGlassEffect =
-            userDefaults.string(forKey: "settingsGlassEffect")
-            ?? userDefaults.string(forKey: "settingsMenuGlassEffect")
         let storedLowPowerModeEnabled =
             userDefaults.object(forKey: "isLowPowerModeEnabled") as? Bool
         let storedNewZealandTrafficLightModeEnabled =
@@ -884,12 +865,9 @@ final class MenuBarStatusModel: ObservableObject {
         }
         appLanguage = storedLanguage.flatMap(AppLanguage.init(rawValue:)) ?? .system
         appTheme = storedTheme.flatMap(AppTheme.init(rawValue:)) ?? .system
-        isSettingsGlassEnabled = storedSettingsGlassEnabled ?? true
         isDebugSettingsVisible = storedDebugSettingsVisible ?? false
         isDebugFileLoggingEnabled = storedDebugFileLoggingEnabled ?? false
         debugLogLevel = storedDebugLogLevel.flatMap(DebugLogLevel.init(rawValue:)) ?? .verbose
-        settingsGlassEffect =
-            SettingsGlassEffect.preferenceValue(for: storedSettingsGlassEffect) ?? .reduced
         isLowPowerModeEnabled = storedLowPowerModeEnabled ?? false
         let resolvedNewZealandTrafficLightModeEnabled = storedNewZealandTrafficLightModeEnabled ?? true
         isNewZealandTrafficLightModeEnabled = resolvedNewZealandTrafficLightModeEnabled
@@ -2111,11 +2089,6 @@ final class MenuBarStatusModel: ObservableObject {
         userDefaults.set(theme.rawValue, forKey: "appTheme")
     }
 
-    func setSettingsGlassEnabled(_ enabled: Bool) {
-        isSettingsGlassEnabled = enabled
-        userDefaults.set(enabled, forKey: "isSettingsGlassEnabled")
-    }
-
     func setDebugSettingsVisible(_ visible: Bool) {
         isDebugSettingsVisible = visible
         userDefaults.set(visible, forKey: "isDebugSettingsVisible")
@@ -2408,11 +2381,6 @@ final class MenuBarStatusModel: ObservableObject {
             StatusLightOverrideFrame(signal: .done, tick: 0, allLightsOn: true, effectCustomization: signalEffectCustomization)
         ])
         appendDebugLog("debug light blink")
-    }
-
-    func setSettingsGlassEffect(_ effect: SettingsGlassEffect) {
-        settingsGlassEffect = effect
-        userDefaults.set(effect.rawValue, forKey: "settingsGlassEffect")
     }
 
     func setLowPowerModeEnabled(_ enabled: Bool) {
