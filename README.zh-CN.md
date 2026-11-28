@@ -74,6 +74,21 @@ Windows 版从 v1.7.0 开始提供。
 
 Windows 11 会把新安装的托盘图标放进「隐藏的图标」区域。可以把它拖到任务栏上，或在 **设置 → 个性化 → 任务栏 → 其他系统托盘图标** 里打开。应用内更新与 macOS 版使用同一套签名更新源。
 
+<table width="100%">
+  <tr>
+    <td align="center" width="24%"><strong>托盘面板</strong></td>
+    <td align="center" width="38%"><strong>运行</strong></td>
+    <td align="center" width="38%"><strong>用量</strong></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="docs/assets/windows/panel-card-zh-CN-dark.png"><img src="docs/assets/windows/panel-card-zh-CN-dark.png" alt="Windows 上的 Agent Signal Bar 托盘面板，显示演示 Codex 账号、额度和 Token 历史" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/windows/settings-activity-zh-CN-dark.png"><img src="docs/assets/windows/settings-activity-zh-CN-dark.png" alt="Windows 上的 Agent Signal Bar 运行页，显示演示 Codex 会话和最近事件" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/windows/settings-usage-zh-CN-dark.png"><img src="docs/assets/windows/settings-usage-zh-CN-dark.png" alt="Windows 上的 Agent Signal Bar 用量页，显示演示 Codex 账号和额度" width="100%"></a></td>
+  </tr>
+</table>
+
+以上为正式发布的 v1.7.0 Windows 版截图，使用合成演示数据，深色外观。图中账号是演示用的 `demo@agentsignalbar.app`。
+
 Windows 版提供托盘灯、悬浮灯、Codex 会话、Claude Code Hook、用量和应用内更新。已保存的 Codex 账号用 Windows DPAPI 加密。Windows 版暂不支持 Claude CLI `/usage` 探测、cswap 账号切换和 Pi 会话。除特别说明外，本文的截图和其余内容描述的是 macOS 版。详情见 [v1.7.0 发布说明](docs/releases/v1.7.0.md)。
 
 ## 实际界面

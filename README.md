@@ -74,6 +74,21 @@ The Windows version is new in v1.7.0.
 
 Windows 11 puts a newly installed tray icon in the hidden icons area. Drag it onto the taskbar, or turn it on under **Settings → Personalization → Taskbar → Other system tray icons**. Updates arrive in the app through the same signed update feed as macOS.
 
+<table width="100%">
+  <tr>
+    <td align="center" width="24%"><strong>Tray panel</strong></td>
+    <td align="center" width="38%"><strong>Activity</strong></td>
+    <td align="center" width="38%"><strong>Usage</strong></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="docs/assets/windows/panel-card-en-dark.png"><img src="docs/assets/windows/panel-card-en-dark.png" alt="Agent Signal Bar tray panel on Windows with a demo Codex account, quota, and token history" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/windows/settings-activity-en-dark.png"><img src="docs/assets/windows/settings-activity-en-dark.png" alt="Agent Signal Bar Activity page on Windows showing a demo Codex session and recent events" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/windows/settings-usage-en-dark.png"><img src="docs/assets/windows/settings-usage-en-dark.png" alt="Agent Signal Bar Usage page on Windows showing a demo Codex account and quota" width="100%"></a></td>
+  </tr>
+</table>
+
+These are captures of the released v1.7.0 Windows build with synthetic demo data, in Dark appearance. The account shown is the demo `demo@agentsignalbar.app`.
+
 The Windows version covers the tray light, the floating light, Codex sessions, Claude Code hooks, usage, and in-app updates. Saved Codex accounts are encrypted with Windows DPAPI. The Claude CLI `/usage` probe, cswap account switching, and Pi sessions are not available on Windows yet. The screenshots and the rest of this README describe the macOS app unless noted. See the [v1.7.0 release notes](docs/releases/v1.7.0.md) for details.
 
 ## See it in action
