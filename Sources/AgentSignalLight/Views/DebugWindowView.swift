@@ -8,6 +8,7 @@ struct DebugWindowView: View {
     @ObservedObject var model: MenuBarStatusModel
     @ObservedObject var updater: SparkleUpdaterService
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.displayScale) private var displayScale
     @State private var selectedSettingsTab: SettingsTab = .activity
     @State private var expandedSettingsDropdown: SettingsDropdownID?
@@ -43,7 +44,7 @@ struct DebugWindowView: View {
                 .padding(.top, 12)
                 .padding(.bottom, 10)
                 .fixedSize(horizontal: false, vertical: true)
-                .background { settingsPaneBackground(isSidebar: false).ignoresSafeArea() }
+                .background { settingsPageBackground.ignoresSafeArea() }
                 .overlay { SettingsWindowDragRegionView() }
                 .overlay(alignment: .bottom) {
                     Rectangle()
@@ -58,7 +59,7 @@ struct DebugWindowView: View {
                     .padding(.top, 8)
                     .frame(width: SettingsWindowMetrics.sidebarWidth)
                     .background {
-                        settingsPaneBackground(isSidebar: true)
+                        settingsSidebarBackground
                             .ignoresSafeArea()
                     }
                     .overlay(alignment: .trailing) {
@@ -72,7 +73,7 @@ struct DebugWindowView: View {
                 settingsContentArea
                     .id(selectedSettingsTab)
                     .background {
-                        settingsPaneBackground(isSidebar: false)
+                        settingsPageBackground
                             .ignoresSafeArea()
                     }
             }
@@ -3730,12 +3731,33 @@ struct DebugWindowView: View {
             .fill(solidDropdownFill)
     }
 
+    /// The sidebar: slightly see-through, so the desktop tints it a little. Most of what shows
+    /// is still the solid sidebar color. Reduce Transparency gets only the solid color.
     @ViewBuilder
-    private func settingsPaneBackground(isSidebar: Bool) -> some View {
-        if !isSidebar {
-            // CodexBar 0.56.6 links against SDK 14; SDK 26 renders the same material
-            // darker. Preserve its native material and compensate only the page tone.
-            SettingsGlassBackdropView(material: .windowBackground)
+    private var settingsSidebarBackground: some View {
+        if reduceTransparency {
+            solidSidebarColor
+        } else {
+            SettingsGlassBackdropView(material: .sidebar)
+                .overlay { solidSidebarColor.opacity(Self.sidebarSolidOpacity) }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// How much of the solid sidebar color covers the see-through material: 0 is all material.
+    private static let sidebarSolidOpacity: Double = 0.8
+
+    private var solidSidebarColor: some View {
+        Color(nsColor: .windowBackgroundColor)
+            .overlay { Color.white.opacity(colorScheme == .dark ? 0.12 : 0.75) }
+    }
+
+    /// The header and the page behind the grouped boxes.
+    private var settingsPageBackground: some View {
+        // CodexBar 0.56.6 links against SDK 14; SDK 26 renders the same material
+        // darker. Preserve its native material and compensate only the page tone.
+        SettingsGlassBackdropView(material: .windowBackground)
             .overlay {
                 if #available(macOS 26.0, *) {
                     if colorScheme == .dark {
@@ -3747,18 +3769,6 @@ struct DebugWindowView: View {
             }
             .allowsHitTesting(false)
             .accessibilityHidden(true)
-        } else {
-            solidSettingsPaneBackground(isSidebar: isSidebar)
-        }
-    }
-
-    private func solidSettingsPaneBackground(isSidebar: Bool) -> some View {
-        Color(nsColor: .windowBackgroundColor)
-            .overlay {
-                if isSidebar {
-                    Color.white.opacity(colorScheme == .dark ? 0.12 : 0.75)
-                }
-            }
     }
 
     private var solidControlFill: Color {
