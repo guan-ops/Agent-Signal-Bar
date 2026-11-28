@@ -15,6 +15,7 @@
 <p align="center">
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/github/v/release/guan-ops/Agent-Signal-Bar?style=flat-square&amp;color=111827" alt="最新版本"></a>
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/macOS-14%2B-111827?style=flat-square" alt="macOS 14+"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/Windows-10%201809%2B%20x64-111827?style=flat-square" alt="Windows 10 1809+ x64"></a>
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-0ea5e9?style=flat-square" alt="同时支持 Apple Silicon 和 Intel Mac"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-635bff?style=flat-square" alt="Apache License 2.0"></a>
   <a href="https://agentsignalbar.app"><img src="https://img.shields.io/badge/site-agentsignalbar.app-14b8a6?style=flat-square" alt="官网：agentsignalbar.app"></a>
@@ -28,11 +29,12 @@
 
 <p align="center">
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/AgentSignalBar.dmg"><strong>下载最新版 DMG</strong></a>
+  · <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest">Windows 安装程序</a>
   · <a href="https://agentsignalbar.app">官网</a>
   · <a href="CHANGELOG.md">更新日志</a>
 </p>
 
-Agent Signal Bar 把本地 AI Agent 活动转换成一套简单的红黄绿灯语，显示在 macOS 状态栏和可选的桌面悬浮信号灯中。它能从已知的本地 session 日志自动识别 Codex Desktop、CLI/TUI、VS Code、Xcode 和 IDEA 中的活动；可选 Hook 可补充授权请求和低延迟事件。Claude Code、本地脚本和自定义 Agent 则可以通过本地 Hook、内置 CLI 或 JSON 事件接入。
+Agent Signal Bar 把本地 AI Agent 活动转换成一套简单的红黄绿灯语，显示在 macOS 状态栏或 Windows 通知区域，以及可选的桌面悬浮信号灯中。它能从已知的本地 session 日志自动识别 Codex Desktop、CLI/TUI、VS Code、Xcode 和 IDEA 中的活动；可选 Hook 可补充授权请求和低延迟事件。Claude Code、本地脚本和自定义 Agent 则可以通过本地 Hook、内置 CLI 或 JSON 事件接入。
 
 ## 为什么需要 Agent Signal Bar
 
@@ -45,10 +47,10 @@ Agent Signal Bar 把本地 AI Agent 活动转换成一套简单的红黄绿灯�
 
 ### 系统要求
 
-- macOS 14 Sonoma 或更高版本
-- Apple Silicon 或 Intel Mac
+- **macOS：** macOS 14 Sonoma 或更高版本，Apple Silicon 或 Intel Mac
+- **Windows：** Windows 10 1809 或更高版本，x64
 
-### 下载与首次打开
+### macOS：下载与首次打开
 
 1. 从最新 GitHub Release 下载 [`AgentSignalBar.dmg`](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/AgentSignalBar.dmg)。
 2. 打开 DMG，把 `AgentSignalLight.app` 拖入 `Applications`。
@@ -58,6 +60,21 @@ Agent Signal Bar 把本地 AI Agent 活动转换成一套简单的红黄绿灯�
 > 当前 GitHub 构建使用 ad-hoc 签名，尚未进行 notarization 公证。如果 Gatekeeper 阻止首次启动，请右键 App 并选择 **打开**，或前往 **系统设置 → 隐私与安全性 → 仍要打开**。
 
 绿色的 **Code → Download ZIP** 按钮下载的是源码，不是 App 安装包。安装后可以通过 **Agent Signal Bar → 检查更新…** 或 **设置 → 关于 → 更新** 使用 Sparkle 更新。
+
+### Windows：下载与首次打开
+
+Windows 版从 v1.7.0 开始提供。
+
+1. 打开[最新 GitHub Release](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest)，下载 `AgentSignalBar-v<版本号>-windows-x64-setup.exe`。也可以下载免安装的便携版 `AgentSignalBar-v<版本号>-windows-x64.zip`。
+2. 运行安装程序。它按当前用户安装，不需要管理员权限。
+3. 从开始菜单打开 Agent Signal Bar。
+
+> [!NOTE]
+> 安装程序和可执行文件暂未做 Authenticode 签名。如果 SmartScreen 提示「Windows 已保护你的电脑」，请点 **更多信息 → 仍要运行**。
+
+Windows 11 会把新安装的托盘图标放进「隐藏的图标」区域。可以把它拖到任务栏上，或在 **设置 → 个性化 → 任务栏 → 其他系统托盘图标** 里打开。应用内更新与 macOS 版使用同一套签名更新源。
+
+Windows 版提供托盘灯、悬浮灯、Codex 会话、Claude Code Hook、用量和应用内更新。已保存的 Codex 账号用 Windows DPAPI 加密。Windows 版暂不支持 Claude CLI `/usage` 探测、cswap 账号切换和 Pi 会话。除特别说明外，本文的截图和其余内容描述的是 macOS 版。详情见 [v1.7.0 发布说明](docs/releases/v1.7.0.md)。
 
 ## 实际界面
 
@@ -191,6 +208,8 @@ Agent Signal Bar 是本地优先应用，但不应被理解为完全离线：
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ./script/doctor.sh
 ```
+
+Windows 版（Qt 6）的代码在 `Integrations/Windows/`，构建步骤见 [Windows README](Integrations/Windows/README.md)。
 
 发布打包与 Sparkle feed 细节见 [GitHub 发布管理](docs/GITHUB_RELEASES.md)和[发布检查清单](docs/RELEASE_CHECKLIST.md)。
 
