@@ -9,12 +9,13 @@
 </p>
 
 <p align="center">
-  Codex auto-monitoring · Claude Code hooks · Custom agents · Local-first
+  Codex auto-monitoring · Claude Code and Claude Desktop · Auto-follow · Local-first
 </p>
 
 <p align="center">
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/github/v/release/guan-ops/Agent-Signal-Bar?style=flat-square&amp;color=111827" alt="Latest release"></a>
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/macOS-14%2B-111827?style=flat-square" alt="macOS 14+"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/Windows-10%201809%2B%20x64-111827?style=flat-square" alt="Windows 10 1809+ x64"></a>
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-0ea5e9?style=flat-square" alt="Universal for Apple Silicon and Intel Macs"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-635bff?style=flat-square" alt="License: Apache-2.0"></a>
   <a href="https://agentsignalbar.app"><img src="https://img.shields.io/badge/site-agentsignalbar.app-14b8a6?style=flat-square" alt="Website: agentsignalbar.app"></a>
@@ -28,11 +29,12 @@
 
 <p align="center">
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/AgentSignalBar.dmg"><strong>Download the latest DMG</strong></a>
+  · <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest">Windows installer</a>
   · <a href="https://agentsignalbar.app">Website</a>
   · <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-Agent Signal Bar turns local AI-agent activity into a simple traffic-light language in your macOS menu bar and an optional floating desktop signal. It automatically detects Codex activity across Desktop, CLI/TUI, VS Code, Xcode, and IDEA from known local session logs. Optional hooks add permission and low-latency events, while Claude Code, scripts, and custom agents can report through local hooks, the bundled CLI, or JSON events.
+Agent Signal Bar turns local AI-agent activity into a simple traffic-light language in your macOS menu bar or Windows notification area, plus an optional floating desktop signal. It automatically detects Codex activity across Desktop, CLI/TUI, VS Code, Xcode, and IDEA from known local session logs. Optional hooks add permission and low-latency events. Claude Code and Claude Desktop sessions drive the light through hooks, and scripts and custom agents can report through the bundled CLI or JSON events. The light can follow whichever agent is active.
 
 ## Why Agent Signal Bar
 
@@ -45,10 +47,10 @@ Agent Signal Bar turns local AI-agent activity into a simple traffic-light langu
 
 ### Requirements
 
-- macOS 14 Sonoma or later
-- Apple Silicon or Intel Mac
+- **macOS:** macOS 14 Sonoma or later, Apple Silicon or Intel Mac
+- **Windows:** Windows 10 version 1809 or later, x64
 
-### Download and first run
+### macOS: download and first run
 
 1. Download [`AgentSignalBar.dmg`](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/AgentSignalBar.dmg) from the latest GitHub Release.
 2. Open the DMG and drag `AgentSignalLight.app` into `Applications`.
@@ -58,6 +60,36 @@ Agent Signal Bar turns local AI-agent activity into a simple traffic-light langu
 > Current GitHub builds are ad-hoc signed and not notarized. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or use **System Settings → Privacy & Security → Open Anyway**.
 
 The green **Code → Download ZIP** button downloads source code, not an app installer. After installation, use **Agent Signal Bar → Check for Updates…** or **Settings → About → Updates** for Sparkle updates.
+
+### Windows: download and first run
+
+The Windows version is new in v1.7.0.
+
+1. Open the [latest GitHub Release](https://github.com/guan-ops/Agent-Signal-Bar/releases/latest) and download `AgentSignalBar-v<version>-windows-x64-setup.exe`. A portable `AgentSignalBar-v<version>-windows-x64.zip` is also available.
+2. Run the installer. It installs for the current user and does not need administrator rights.
+3. Open Agent Signal Bar from the Start menu.
+
+> [!NOTE]
+> The installer and executables are not Authenticode-signed yet. If SmartScreen shows "Windows protected your PC", choose **More info → Run anyway**.
+
+Windows 11 puts a newly installed tray icon in the hidden icons area. Drag it onto the taskbar, or turn it on under **Settings → Personalization → Taskbar → Other system tray icons**. Updates arrive in the app through the same signed update feed as macOS.
+
+<table width="100%">
+  <tr>
+    <td align="center" width="24%"><strong>Tray panel</strong></td>
+    <td align="center" width="38%"><strong>Activity</strong></td>
+    <td align="center" width="38%"><strong>Usage</strong></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="docs/assets/windows/panel-card-en-dark.png"><img src="docs/assets/windows/panel-card-en-dark.png" alt="Agent Signal Bar tray panel on Windows with a demo Codex account, quota, and token history" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/windows/settings-activity-en-dark.png"><img src="docs/assets/windows/settings-activity-en-dark.png" alt="Agent Signal Bar Activity page on Windows showing a demo Codex session and recent events" width="100%"></a></td>
+    <td align="center"><a href="docs/assets/windows/settings-usage-en-dark.png"><img src="docs/assets/windows/settings-usage-en-dark.png" alt="Agent Signal Bar Usage page on Windows showing a demo Codex account and quota" width="100%"></a></td>
+  </tr>
+</table>
+
+These are captures of the released v1.7.0 Windows build with synthetic demo data, in Dark appearance. The account shown is the demo `demo@agentsignalbar.app`.
+
+The Windows version covers the tray light, the floating light, Codex sessions, Claude Code hooks, usage, and in-app updates. Saved Codex accounts are encrypted with Windows DPAPI. The Claude CLI `/usage` probe, cswap account switching, and Pi sessions are not available on Windows yet. The screenshots and the rest of this README describe the macOS app unless noted. See the [v1.7.0 release notes](docs/releases/v1.7.0.md) for details.
 
 ## See it in action
 
@@ -74,7 +106,7 @@ The green **Code → Download ZIP** button downloads source code, not an app ins
   </tr>
 </table>
 
-These are captures of the v1.6.0 app UI with synthetic demo data. Screenshots use Dark appearance; settings use Liquid Glass with the Standard effect. The floating signal stays above your desktop, follows the menu bar state, and supports dragging, free resizing, size presets, horizontal or vertical layouts, and compact session and usage popovers.
+These are captures of the v1.6.0 app UI with synthetic demo data. The macOS interface was redesigned in v1.7.0, so the current app looks different; these captures have not been refreshed yet. Screenshots use Dark appearance; settings use Liquid Glass with the Standard effect. The floating signal stays above your desktop, follows the menu bar state, and supports dragging, free resizing, size presets, horizontal or vertical layouts, and compact session and usage popovers.
 
 ### Activity and usage
 
@@ -104,7 +136,7 @@ All account, activity, quota, and token values shown are synthetic. The demo ema
   </tr>
 </table>
 
-Both styles support horizontal and vertical layouts. You can also tune blink speed, breathing strength, per-state effects, color theme, Liquid Glass appearance, and completion or warning sounds—including the bundled New Zealand crossing sounds.
+Both styles support horizontal and vertical layouts. A third style, **Single Lamp**, shows one lamp in the current signal color. You can also tune blink speed, breathing strength, per-state effects, color theme, Liquid Glass appearance, and completion or warning sounds—including the bundled New Zealand crossing sounds.
 
 ## What you get
 
@@ -113,9 +145,11 @@ Both styles support horizontal and vertical layouts. You can also tune blink spe
 - **Current Codex model estimates** for GPT-6 Astra/Sol/Luna and GPT-5.6, with distinct chart colors, Standard/Fast attribution, and per-request long-context pricing. See [model prices and estimation limits](docs/CODEX_MODEL_PRICING.md).
 - **Codex monitoring without required hooks** across Desktop, CLI/TUI, VS Code, Xcode, and IDEA, plus session, quota, token, and cost views.
 - **Saved Codex accounts** with account-bound credentials, quota snapshots, and reset-credit data.
+- **Claude usage** from OAuth, CLI, and optional web sources: quota windows, extra usage, balances, a multi-account overview, and local token history by day, model, project, and session. See [Claude support](docs/CLAUDE_SUPPORT.md).
+- **Auto-follow** that shows whichever agent is active. Pin one agent instead, and the light can still show another agent while the pinned one is idle.
 - **Detailed and native-style menu panels** with live sessions, recent activity, pause, settings, and relevant app shortcuts.
 - **Local extension points** through Codex hooks, Claude Code hooks, a generic JSON adapter, and the `agent-signal` CLI.
-- **Desktop-friendly customization** with two visual styles, size presets, free resizing, sound profiles, themes, launch at login, and multilingual UI.
+- **Desktop-friendly customization** with three status bar styles, size presets, free resizing, sound profiles, themes, launch at login, and multilingual UI.
 
 ## Signal language
 
@@ -139,7 +173,7 @@ Red and yellow states are protected from newer ordinary-work events. See the ful
 | Source | Connection | Current support |
 | --- | --- | --- |
 | Codex Desktop, CLI/TUI, VS Code, Xcode, and IDEA | Known local Codex session logs; optional hooks | Hook-free activity monitoring is verified; hooks add permission and low-latency events |
-| Claude Code | Claude Code hooks | Not tested on a physical machine |
+| Claude Code and Claude Desktop | Claude Code hooks; optional Claude Desktop response observer | Sessions drive the light, with the same quota, token, and floating badge views as Codex |
 | Local scripts and custom agents | Bundled CLI or generic JSON events | Supported through the shared local state model |
 
 Start with the [Codex setup](docs/CODEX_SETUP.md), [Claude Code setup](docs/CLAUDE_CODE_SETUP.md), or [local script setup](docs/LOCAL_SCRIPT_SETUP.md).
@@ -174,6 +208,14 @@ Publish and inspect state:
 ./scripts/agent-signal status --json
 ```
 
+Install, preview, or remove the Codex and Claude Code hooks:
+
+```bash
+./scripts/agent-signal install-hooks --target all --dry-run
+./scripts/agent-signal install-hooks --target claude --install
+./scripts/agent-signal install-hooks --target claude --remove
+```
+
 Wrap any command as an agent run:
 
 ```bash
@@ -191,6 +233,8 @@ Requires macOS 14+, Swift 6, and the full Xcode toolchain.
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ./script/doctor.sh
 ```
+
+The Windows version (Qt 6) lives in `Integrations/Windows/`; its build steps are in the [Windows README](Integrations/Windows/README.md) (Chinese).
 
 Release packaging and Sparkle-feed details live in [GitHub release management](docs/GITHUB_RELEASES.md) and the [release checklist](docs/RELEASE_CHECKLIST.md).
 
