@@ -33,16 +33,16 @@
 
 - Capture date: 2026-11-28.
 - Product: the released v1.7.0 Windows portable build, on Windows 11.
-- Rendered by the app itself with `AgentSignalBar.exe --capture`: demo data and a temporary settings file, no real settings, registry or `~/.codex` access. Images are 1x.
-- Dark appearance. All account, activity, quota, and usage data are synthetic. Email: `demo@agentsignalbar.app`.
+- Rendered by the app itself with `AgentSignalBar.exe --capture`: demo data and a temporary settings file, no real settings, registry or `~/.codex` access. Images are 2x (`QT_SCALE_FACTOR=2` for the capture process only).
+- Dark appearance. The selection colour is the capture machine's own Windows accent colour, which is grey. All account, activity, quota, and usage data are synthetic. Email: `demo@agentsignalbar.app`.
 - The Connect and Debug pages are not captured: they print hook and log paths under the Windows user folder.
 - These captures do not establish live quota retrieval or real-account end-to-end verification.
 
 | File | SHA-256 |
 | --- | --- |
-| `windows/panel-card-en-dark.png` | `0f64794b4d9e228f6b024c241084300ba8d37aabbf09d79d26b18bda9b185caf` |
-| `windows/panel-card-zh-CN-dark.png` | `ce0d945593510d093ac6ccd6653bfd956124918fe5bd7701550d9d4636d6881b` |
-| `windows/settings-activity-en-dark.png` | `9b78c5f03db53ee4a10185e70238f1dfb038657ed8081bd1385184df94fb90e0` |
-| `windows/settings-activity-zh-CN-dark.png` | `3b4811d21189d4c75ee87e58308328011c718668e2aab56f682f14b846e5ccf1` |
-| `windows/settings-usage-en-dark.png` | `1daf097c45eaba0673e9718338bd311585df2d97b72623f2155124faaeab2be5` |
-| `windows/settings-usage-zh-CN-dark.png` | `d56600ae83588338dd6003dc08f7e3ac7f64eac863a162651abf290ce98bcea5` |
+| `windows/panel-card-en-dark.png` | `c4e57f1bdd62fb2c423a595e72dedb423a06b689bf7d9887454cb8b22cc8f820` |
+| `windows/panel-card-zh-CN-dark.png` | `0eef1ab5dfe30db08549cc96086238c0a73406354cdebb194074d93fea527d9f` |
+| `windows/settings-activity-en-dark.png` | `4340c3c089e0e97ffe68caa4923a171038a0ef2c2494efcfb31fddc7b8e54e96` |
+| `windows/settings-activity-zh-CN-dark.png` | `0ed1f24b8af961e2a897fd076d003675b90a56fb3fce8ce52dda16b42a5d20a6` |
+| `windows/settings-usage-en-dark.png` | `21457cb14f90416e392d6015f51f36a35cc45eada7de4c1933258bc21a64a1bd` |
+| `windows/settings-usage-zh-CN-dark.png` | `241434f7640a08082df6ac5906c8bff96e78e380b0fe744dc9314a69d6997db9` |
