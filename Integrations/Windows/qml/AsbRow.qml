@@ -15,9 +15,11 @@ RowLayout {
     ColumnLayout {
         Layout.fillWidth: true
         spacing: 2
+        // Text.Wrap, not WordWrap: a long path or URL has no spaces, and WordWrap let it run past
+        // the window and under the trailing control (Install CLI shows the app folder).
         AsbText {
             text: root.title
-            wrapMode: Text.WordWrap
+            wrapMode: Text.Wrap
             Layout.fillWidth: true
         }
         AsbText {
@@ -25,7 +27,7 @@ RowLayout {
             text: root.subtitle
             caption: true
             secondary: true
-            wrapMode: Text.WordWrap
+            wrapMode: Text.Wrap
             Layout.fillWidth: true
         }
     }
