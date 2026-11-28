@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Codex 自动监控 · Claude Code Hook · 自定义 Agent · 本地优先
+  Codex 自动监控 · Claude Code 与 Claude 桌面版 · 自动跟随 · 本地优先
 </p>
 
 <p align="center">
@@ -34,7 +34,7 @@
   · <a href="CHANGELOG.md">更新日志</a>
 </p>
 
-Agent Signal Bar 把本地 AI Agent 活动转换成一套简单的红黄绿灯语，显示在 macOS 状态栏或 Windows 通知区域，以及可选的桌面悬浮信号灯中。它能从已知的本地 session 日志自动识别 Codex Desktop、CLI/TUI、VS Code、Xcode 和 IDEA 中的活动；可选 Hook 可补充授权请求和低延迟事件。Claude Code、本地脚本和自定义 Agent 则可以通过本地 Hook、内置 CLI 或 JSON 事件接入。
+Agent Signal Bar 把本地 AI Agent 活动转换成一套简单的红黄绿灯语，显示在 macOS 状态栏或 Windows 通知区域，以及可选的桌面悬浮信号灯中。它能从已知的本地 session 日志自动识别 Codex Desktop、CLI/TUI、VS Code、Xcode 和 IDEA 中的活动；可选 Hook 可补充授权请求和低延迟事件。Claude Code 和 Claude 桌面版会话通过 Hook 驱动状态灯，本地脚本和自定义 Agent 可以通过内置 CLI 或 JSON 事件接入。状态灯可以自动跟随正在运行的 Agent。
 
 ## 为什么需要 Agent Signal Bar
 
@@ -106,7 +106,7 @@ Windows 版提供托盘灯、悬浮灯、Codex 会话、Claude Code Hook、用�
   </tr>
 </table>
 
-以上为 v1.6.0 应用真实界面截图，使用合成演示数据。所有截图统一为深色外观，设置窗口开启 Liquid Glass 并选择「标准」效果。悬浮信号灯可以常驻桌面并跟随状态栏同步变化，支持拖动、自由缩放、尺寸预设、横向或竖向布局，以及紧凑的 session 与用量浮层。
+以上为 v1.6.0 应用真实界面截图，使用合成演示数据。macOS 界面在 v1.7.0 重新设计过，当前应用的外观与截图不同，这些截图尚未更新。所有截图统一为深色外观，设置窗口开启 Liquid Glass 并选择「标准」效果。悬浮信号灯可以常驻桌面并跟随状态栏同步变化，支持拖动、自由缩放、尺寸预设、横向或竖向布局，以及紧凑的 session 与用量浮层。
 
 ### 运行与用量
 
@@ -136,7 +136,7 @@ Windows 版提供托盘灯、悬浮灯、Codex 会话、Claude Code Hook、用�
   </tr>
 </table>
 
-两种风格都支持横向与竖向布局。你还可以调整闪烁速度、呼吸强度、各状态灯效、颜色主题、Liquid Glass 外观，以及完成或警告提示音——其中包括项目内置的新西兰行人过街声音。
+两种风格都支持横向与竖向布局。第三种「单灯」样式只显示一颗当前信号颜色的灯。你还可以调整闪烁速度、呼吸强度、各状态灯效、颜色主题、Liquid Glass 外观，以及完成或警告提示音——其中包括项目内置的新西兰行人过街声音。
 
 ## 主要能力
 
@@ -145,9 +145,11 @@ Windows 版提供托盘灯、悬浮灯、Codex 会话、Claude Code Hook、用�
 - **最新 Codex 模型估算**：支持 GPT-6 Astra／Sol／Luna 和 GPT-5.6，采用独立图表配色，区分 Standard／Fast，并按请求应用长上下文价格。参见[模型价格与估算范围](docs/CODEX_MODEL_PRICING.md)。
 - **无需安装 Hook 的 Codex 监控**，覆盖 Desktop、CLI/TUI、VS Code、Xcode 和 IDEA，并提供 session、额度、Token 和费用视图。
 - **多个已保存 Codex 账号**，确保凭据、额度快照与限额重置数据和所选账号对应。
+- **Claude 用量**：支持 OAuth、CLI 和可选网页来源，显示额度窗口、额外用量、余额、多账号概览，以及按日、模型、项目、会话展开的本机 Token 明细。参见 [Claude 支持](docs/CLAUDE_SUPPORT.md)。
+- **自动跟随**正在运行的 Agent。也可以固定某个 Agent；它空闲时，状态灯仍可以临时显示另一个正在运行的 Agent。
 - **详细与原生风格状态栏面板**，显示实时 session、最近活动、暂停、设置和相关 App 快捷入口。
 - **本地扩展接口**，包括 Codex Hook、Claude Code Hook、通用 JSON 适配器和 `agent-signal` CLI。
-- **适合桌面常驻的自定义选项**，包括两种视觉风格、尺寸预设、自由缩放、声音方案、主题、开机启动和多语言界面。
+- **适合桌面常驻的自定义选项**，包括三种状态栏样式、尺寸预设、自由缩放、声音方案、主题、开机启动和多语言界面。
 
 ## 灯语
 
@@ -171,7 +173,7 @@ Windows 版提供托盘灯、悬浮灯、Codex 会话、Claude Code Hook、用�
 | 来源 | 连接方式 | 当前支持状态 |
 | --- | --- | --- |
 | Codex Desktop、CLI/TUI、VS Code、Xcode 和 IDEA | 已知的本地 Codex session 日志；可选 Hook | 无 Hook 活动监控已经实际验证；Hook 可补充授权和低延迟事件 |
-| Claude Code | Claude Code Hook | 未经过实机测试 |
+| Claude Code 与 Claude 桌面版 | Claude Code Hook；可选的 Claude 桌面版回复检测 | 会话可驱动状态灯，并提供与 Codex 相同的额度、Token 和悬浮角标视图 |
 | 本地脚本与自定义 Agent | 内置 CLI 或通用 JSON 事件 | 通过共享本地状态模型支持 |
 
 可以从 [Codex 接入](docs/CODEX_SETUP.md)、[Claude Code 接入](docs/CLAUDE_CODE_SETUP.md)或[本地脚本接入](docs/LOCAL_SCRIPT_SETUP.md)开始。
@@ -204,6 +206,14 @@ Agent Signal Bar 是本地优先应用，但不应被理解为完全离线：
 ./scripts/agent-signal working --session build-1 --agent script --event BuildStarted
 ./scripts/agent-signal done --session build-1 --agent script --event BuildFinished
 ./scripts/agent-signal status --json
+```
+
+安装、预览或移除 Codex 和 Claude Code 的 Hook：
+
+```bash
+./scripts/agent-signal install-hooks --target all --dry-run
+./scripts/agent-signal install-hooks --target claude --install
+./scripts/agent-signal install-hooks --target claude --remove
 ```
 
 把任意命令包装成一次 Agent 运行：

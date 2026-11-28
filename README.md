@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Codex auto-monitoring · Claude Code hooks · Custom agents · Local-first
+  Codex auto-monitoring · Claude Code and Claude Desktop · Auto-follow · Local-first
 </p>
 
 <p align="center">
@@ -34,7 +34,7 @@
   · <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-Agent Signal Bar turns local AI-agent activity into a simple traffic-light language in your macOS menu bar or Windows notification area, plus an optional floating desktop signal. It automatically detects Codex activity across Desktop, CLI/TUI, VS Code, Xcode, and IDEA from known local session logs. Optional hooks add permission and low-latency events, while Claude Code, scripts, and custom agents can report through local hooks, the bundled CLI, or JSON events.
+Agent Signal Bar turns local AI-agent activity into a simple traffic-light language in your macOS menu bar or Windows notification area, plus an optional floating desktop signal. It automatically detects Codex activity across Desktop, CLI/TUI, VS Code, Xcode, and IDEA from known local session logs. Optional hooks add permission and low-latency events. Claude Code and Claude Desktop sessions drive the light through hooks, and scripts and custom agents can report through the bundled CLI or JSON events. The light can follow whichever agent is active.
 
 ## Why Agent Signal Bar
 
@@ -106,7 +106,7 @@ The Windows version covers the tray light, the floating light, Codex sessions, C
   </tr>
 </table>
 
-These are captures of the v1.6.0 app UI with synthetic demo data. Screenshots use Dark appearance; settings use Liquid Glass with the Standard effect. The floating signal stays above your desktop, follows the menu bar state, and supports dragging, free resizing, size presets, horizontal or vertical layouts, and compact session and usage popovers.
+These are captures of the v1.6.0 app UI with synthetic demo data. The macOS interface was redesigned in v1.7.0, so the current app looks different; these captures have not been refreshed yet. Screenshots use Dark appearance; settings use Liquid Glass with the Standard effect. The floating signal stays above your desktop, follows the menu bar state, and supports dragging, free resizing, size presets, horizontal or vertical layouts, and compact session and usage popovers.
 
 ### Activity and usage
 
@@ -136,7 +136,7 @@ All account, activity, quota, and token values shown are synthetic. The demo ema
   </tr>
 </table>
 
-Both styles support horizontal and vertical layouts. You can also tune blink speed, breathing strength, per-state effects, color theme, Liquid Glass appearance, and completion or warning sounds—including the bundled New Zealand crossing sounds.
+Both styles support horizontal and vertical layouts. A third style, **Single Lamp**, shows one lamp in the current signal color. You can also tune blink speed, breathing strength, per-state effects, color theme, Liquid Glass appearance, and completion or warning sounds—including the bundled New Zealand crossing sounds.
 
 ## What you get
 
@@ -145,9 +145,11 @@ Both styles support horizontal and vertical layouts. You can also tune blink spe
 - **Current Codex model estimates** for GPT-6 Astra/Sol/Luna and GPT-5.6, with distinct chart colors, Standard/Fast attribution, and per-request long-context pricing. See [model prices and estimation limits](docs/CODEX_MODEL_PRICING.md).
 - **Codex monitoring without required hooks** across Desktop, CLI/TUI, VS Code, Xcode, and IDEA, plus session, quota, token, and cost views.
 - **Saved Codex accounts** with account-bound credentials, quota snapshots, and reset-credit data.
+- **Claude usage** from OAuth, CLI, and optional web sources: quota windows, extra usage, balances, a multi-account overview, and local token history by day, model, project, and session. See [Claude support](docs/CLAUDE_SUPPORT.md).
+- **Auto-follow** that shows whichever agent is active. Pin one agent instead, and the light can still show another agent while the pinned one is idle.
 - **Detailed and native-style menu panels** with live sessions, recent activity, pause, settings, and relevant app shortcuts.
 - **Local extension points** through Codex hooks, Claude Code hooks, a generic JSON adapter, and the `agent-signal` CLI.
-- **Desktop-friendly customization** with two visual styles, size presets, free resizing, sound profiles, themes, launch at login, and multilingual UI.
+- **Desktop-friendly customization** with three status bar styles, size presets, free resizing, sound profiles, themes, launch at login, and multilingual UI.
 
 ## Signal language
 
@@ -171,7 +173,7 @@ Red and yellow states are protected from newer ordinary-work events. See the ful
 | Source | Connection | Current support |
 | --- | --- | --- |
 | Codex Desktop, CLI/TUI, VS Code, Xcode, and IDEA | Known local Codex session logs; optional hooks | Hook-free activity monitoring is verified; hooks add permission and low-latency events |
-| Claude Code | Claude Code hooks | Not tested on a physical machine |
+| Claude Code and Claude Desktop | Claude Code hooks; optional Claude Desktop response observer | Sessions drive the light, with the same quota, token, and floating badge views as Codex |
 | Local scripts and custom agents | Bundled CLI or generic JSON events | Supported through the shared local state model |
 
 Start with the [Codex setup](docs/CODEX_SETUP.md), [Claude Code setup](docs/CLAUDE_CODE_SETUP.md), or [local script setup](docs/LOCAL_SCRIPT_SETUP.md).
@@ -204,6 +206,14 @@ Publish and inspect state:
 ./scripts/agent-signal working --session build-1 --agent script --event BuildStarted
 ./scripts/agent-signal done --session build-1 --agent script --event BuildFinished
 ./scripts/agent-signal status --json
+```
+
+Install, preview, or remove the Codex and Claude Code hooks:
+
+```bash
+./scripts/agent-signal install-hooks --target all --dry-run
+./scripts/agent-signal install-hooks --target claude --install
+./scripts/agent-signal install-hooks --target claude --remove
 ```
 
 Wrap any command as an agent run:
